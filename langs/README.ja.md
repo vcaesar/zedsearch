@@ -10,6 +10,7 @@
 [![golangci-lint](https://img.shields.io/badge/linter-golangci--lint-blue)](https://golangci-lint.run/)
 [![Release](https://img.shields.io/github/v/release/vcaesar/zedsearch)](https://github.com/vcaesar/zedsearch/releases/latest)
 [![Docs](https://img.shields.io/badge/Docs-Docs-green)](https://zincsearch-docs.zinc.dev/) [![codecov](https://codecov.io/github/vcaesar/zedsearch/branch/main/graph/badge.svg)](https://codecov.io/github/vcaesar/zedsearch)
+<a href="https://discord.gg/535uZPakJw"><img src="https://img.shields.io/discord/1484658282777018551.svg?logo=discord&logoColor=white&label=Discord&color=5865F2" alt="Join the Discord chat at https://discord.gg/535uZPakJw"></a>
 
 [English](../README.md) | [简体中文](README.zh.md) | [繁體中文](README.zht.md) | 日本語 | [한국어](README.ko.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Español](README.es.md) | [Русский](README.ru.md) | [Português](README.pt.md)
 
@@ -23,7 +24,7 @@ API でデータを取り込み、Kibana で検索するだけであれば、Ela
 
 ZedSearch の簡単なデモは以下の動画をご覧ください。
 
-[![Zinc Youtube](../screenshots/zinc-youtube.jpg)](https://www.youtube.com/watch?v=aZXtuVjt1ow)
+<!-- [![Zinc Youtube](../screenshots/zinc-youtube.jpg)](https://www.youtube.com/watch?v=aZXtuVjt1ow) -->
 
 # なぜ ZedSearch なのか
 
@@ -66,6 +67,8 @@ go + gin + react
 # リリース
 
 ZedSearch は数百の本番環境で導入されています。
+
+各プラットフォーム向けのバイナリは [Releases ページ](https://github.com/vcaesar/zedsearch/releases/latest) にあります。デフォルトのアーカイブは UPX で圧縮されていません。ダウンロードサイズを抑えたい場合は、すべての Linux ビルドと Windows amd64 ビルドに [UPX](https://upx.github.io/) で圧縮した `*_upx.tar.gz` も用意しています（起動がやや遅くなり、一部のウイルス対策ソフトが圧縮された `.exe` ファイルを誤検知する場合があります）。
 
 ## ビルド
 

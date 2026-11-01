@@ -10,6 +10,7 @@
 [![golangci-lint](https://img.shields.io/badge/linter-golangci--lint-blue)](https://golangci-lint.run/)
 [![Release](https://img.shields.io/github/v/release/vcaesar/zedsearch)](https://github.com/vcaesar/zedsearch/releases/latest)
 [![Docs](https://img.shields.io/badge/Docs-Docs-green)](https://zincsearch-docs.zinc.dev/) [![codecov](https://codecov.io/github/vcaesar/zedsearch/branch/main/graph/badge.svg)](https://codecov.io/github/vcaesar/zedsearch)
+<a href="https://discord.gg/535uZPakJw"><img src="https://img.shields.io/discord/1484658282777018551.svg?logo=discord&logoColor=white&label=Discord&color=5865F2" alt="Join the Discord chat at https://discord.gg/535uZPakJw"></a>
 
 [English](../README.md) | [简体中文](README.zh.md) | [繁體中文](README.zht.md) | [日本語](README.ja.md) | 한국어 | [Français](README.fr.md) | [Deutsch](README.de.md) | [Español](README.es.md) | [Русский](README.ru.md) | [Português](README.pt.md)
 
@@ -23,7 +24,7 @@ API로 데이터를 수집하고 Kibana로 검색하기만 한다면 Elasticsear
 
 ZedSearch의 간단한 데모는 아래 동영상을 확인하세요.
 
-[![Zinc Youtube](../screenshots/zinc-youtube.jpg)](https://www.youtube.com/watch?v=aZXtuVjt1ow)
+<!-- [![Zinc Youtube](../screenshots/zinc-youtube.jpg)](https://www.youtube.com/watch?v=aZXtuVjt1ow) -->
 
 # 왜 ZedSearch인가
 
@@ -66,6 +67,8 @@ go + gin + react
 # 릴리스
 
 ZedSearch는 수백 개의 프로덕션 환경에 설치되어 있습니다.
+
+모든 플랫폼용 바이너리는 [릴리스 페이지](https://github.com/vcaesar/zedsearch/releases/latest)에서 받을 수 있습니다. 기본 아카이브는 UPX로 압축되지 않습니다. 더 작은 다운로드가 필요하면 모든 Linux 빌드와 Windows amd64 빌드에 [UPX](https://upx.github.io/)로 압축한 `*_upx.tar.gz`도 제공됩니다(시작이 약간 느려지며, 일부 백신 프로그램이 압축된 `.exe` 파일을 오탐할 수 있습니다).
 
 ## 빌드
 

@@ -10,6 +10,7 @@
 [![golangci-lint](https://img.shields.io/badge/linter-golangci--lint-blue)](https://golangci-lint.run/)
 [![Release](https://img.shields.io/github/v/release/vcaesar/zedsearch)](https://github.com/vcaesar/zedsearch/releases/latest)
 [![Docs](https://img.shields.io/badge/Docs-Docs-green)](https://zincsearch-docs.zinc.dev/) [![codecov](https://codecov.io/github/vcaesar/zedsearch/branch/main/graph/badge.svg)](https://codecov.io/github/vcaesar/zedsearch)
+<a href="https://discord.gg/535uZPakJw"><img src="https://img.shields.io/discord/1484658282777018551.svg?logo=discord&logoColor=white&label=Discord&color=5865F2" alt="Join the Discord chat at https://discord.gg/535uZPakJw"></a>
 
 [English](../README.md) | [简体中文](README.zh.md) | 繁體中文 | [日本語](README.ja.md) | [한국어](README.ko.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Español](README.es.md) | [Русский](README.ru.md) | [Português](README.pt.md)
 
@@ -23,7 +24,7 @@ ZedSearch 是一個進行全文索引的搜尋引擎。它是 Elasticsearch 的�
 
 觀看下方影片，快速了解 ZedSearch 的展示。
 
-[![Zinc Youtube](../screenshots/zinc-youtube.jpg)](https://www.youtube.com/watch?v=aZXtuVjt1ow)
+<!-- [![Zinc Youtube](../screenshots/zinc-youtube.jpg)](https://www.youtube.com/watch?v=aZXtuVjt1ow) -->
 
 # 為什麼選擇 ZedSearch
 
@@ -66,6 +67,8 @@ go + gin + react
 # 發行版本
 
 ZedSearch 已有數百個正式環境部署。
+
+各平台的二進位檔可在 [Releases 頁面](https://github.com/vcaesar/zedsearch/releases/latest) 取得。預設封存檔未使用 UPX 壓縮；為了更小的下載大小，所有 Linux 版本與 Windows amd64 版本另外提供經 [UPX](https://upx.github.io/) 壓縮的 `*_upx.tar.gz`（啟動稍慢，且部分防毒軟體可能會誤判壓縮過的 `.exe` 檔）。
 
 ## 建置
 
