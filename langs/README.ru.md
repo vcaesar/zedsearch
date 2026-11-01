@@ -10,6 +10,7 @@
 [![golangci-lint](https://img.shields.io/badge/linter-golangci--lint-blue)](https://golangci-lint.run/)
 [![Release](https://img.shields.io/github/v/release/vcaesar/zedsearch)](https://github.com/vcaesar/zedsearch/releases/latest)
 [![Docs](https://img.shields.io/badge/Docs-Docs-green)](https://zincsearch-docs.zinc.dev/) [![codecov](https://codecov.io/github/vcaesar/zedsearch/branch/main/graph/badge.svg)](https://codecov.io/github/vcaesar/zedsearch)
+<a href="https://discord.gg/535uZPakJw"><img src="https://img.shields.io/discord/1484658282777018551.svg?logo=discord&logoColor=white&label=Discord&color=5865F2" alt="Join the Discord chat at https://discord.gg/535uZPakJw"></a>
 
 [English](../README.md) | [简体中文](README.zh.md) | [繁體中文](README.zht.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Español](README.es.md) | Русский | [Português](README.pt.md)
 
@@ -23,7 +24,7 @@ ZedSearch — это поисковый движок с полнотекстов
 
 Посмотрите видео ниже, чтобы увидеть краткую демонстрацию ZedSearch.
 
-[![Zinc Youtube](../screenshots/zinc-youtube.jpg)](https://www.youtube.com/watch?v=aZXtuVjt1ow)
+<!-- [![Zinc Youtube](../screenshots/zinc-youtube.jpg)](https://www.youtube.com/watch?v=aZXtuVjt1ow) -->
 
 # Почему ZedSearch
 
@@ -66,6 +67,8 @@ go + gin + react
 # Релизы
 
 ZedSearch используется в сотнях производственных установок.
+
+Бинарные файлы для всех платформ доступны на [странице релизов](https://github.com/vcaesar/zedsearch/releases/latest). Архивы по умолчанию не сжаты UPX; для меньшего размера загрузки все сборки для Linux и сборка для Windows amd64 также публикуются в виде `*_upx.tar.gz`, упакованного [UPX](https://upx.github.io/) (запуск немного медленнее, а некоторые антивирусы могут ошибочно помечать упакованные `.exe`-файлы).
 
 ## Сборка
 

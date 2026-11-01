@@ -24,13 +24,15 @@ $commitHash = git rev-parse HEAD 2>$null
 Write-Host "CommitHash: $commitHash"
 if (-not $commitHash) { $commitHash = "unknown" }
 $ldFlags = "-w -s -X 'github.com/vcaesar/zedsearch/pkg/meta.Version=$version'" +
-"-X 'github.com/vcaesar/zedsearch/pkg/meta.BuildDate=$buildDate'" +
-"-X 'github.com/vcaesar/zedsearch/pkg/meta.CommitHash=$commitHash'"
+" -X 'github.com/vcaesar/zedsearch/pkg/meta.BuildDate=$buildDate'" +
+" -X 'github.com/vcaesar/zedsearch/pkg/meta.CommitHash=$commitHash'"
 
 $output = & {
+    $env:CGO_ENABLED = "0"
     $env:GOOS = "windows"
     $env:GOARCH = "amd64"
-    go build -ldflags $ldFlags -o zedsearch.exe cmd/zedsearch/main.go
+    # embed the UI, drop gse dictionaries; same as .goreleaser.yml
+    go build -trimpath -tags ne,web -ldflags $ldFlags -o zedsearch.exe cmd/zedsearch/main.go
 } 2>&1
 if ($LASTEXITCODE -ne 0) {
     Write-Host $output -ForegroundColor Red

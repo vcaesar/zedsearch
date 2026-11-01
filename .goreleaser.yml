@@ -43,15 +43,49 @@ builds:
       - "7"
     main: ./cmd/zedsearch/main.go
 
-# Linux-only: UPX doesn't support macOS/BSD and Windows AV tends to flag packed binaries.
+  # Same binary, packed by UPX below and shipped as extra *_upx.tar.gz archives.
+  # UPX doesn't support macOS/BSD, and its Windows arm/arm64 support is incomplete.
+  - id: zedsearch_upx
+    flags:
+      - -trimpath
+    tags:
+      - ne
+      - web
+    ldflags:
+      - -s -w
+      - -X github.com/vcaesar/zedsearch/pkg/meta.Version={{.Version}}
+      - -X github.com/vcaesar/zedsearch/pkg/meta.BuildDate={{.Date}}
+      - -X github.com/vcaesar/zedsearch/pkg/meta.CommitHash={{.Commit}}
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm
+      - arm64
+    goarm:
+      - "6"
+      - "7"
+    ignore:
+      - goos: windows
+        goarch: arm
+      - goos: windows
+        goarch: arm64
+    main: ./cmd/zedsearch/main.go
+
+# Only the zedsearch_upx build is packed; default archives, Docker images and
+# the Homebrew cask stay unpacked. Some AV tools may flag packed .exe files.
 upx:
-  - enabled: true
-    goos: [linux]
+  - ids: [zedsearch_upx]
+    enabled: true
     compress: best
     lzma: true
 
 archives:
   - id: zedsearch
+    ids: [zedsearch_binaries]
     name_template: >-
       {{- .ProjectName }}_
       {{- .Version }}_
@@ -60,6 +94,17 @@ archives:
       {{- else if eq .Arch "386" }}i386
       {{- else }}{{ .Arch }}{{ end }}
       {{- if .Arm }}v{{ .Arm }}{{ end -}}
+  - id: zedsearch_upx
+    ids: [zedsearch_upx]
+    name_template: >-
+      {{- .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end -}}
+      _upx
 
 checksum:
   name_template: "checksums.txt"
@@ -97,6 +142,7 @@ dockers_v2:
 # https://goreleaser.com/customization/homebrew_casks/
 homebrew_casks:
   - name: zedsearch
+    ids: [zedsearch]
     repository:
       owner: zinclabs
       name: homebrew-tap

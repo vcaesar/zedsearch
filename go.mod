@@ -11,7 +11,7 @@ require (
 	github.com/expr-lang/expr v1.17.8
 	github.com/getsentry/sentry-go v0.50.0
 	github.com/gin-gonic/gin v1.12.0
-	github.com/go-ego/gse v1.1.0
+	github.com/go-ego/gse v1.3.1
 	github.com/goccy/go-json v0.12.0
 	github.com/gofiber/fiber/v3 v3.6.1
 	github.com/gofrs/flock v0.13.1
@@ -28,9 +28,9 @@ require (
 	github.com/stretchr/testify v1.12.1
 	github.com/swaggo/swag v1.16.6
 	github.com/vcaesar/bluge_segment_api v1.2.2
-	github.com/vcaesar/ice v1.4.0
+	github.com/vcaesar/ice v1.4.1
 	github.com/vcaesar/query_string v0.6.0
-	github.com/vcaesar/riot v1.61.3
+	github.com/vcaesar/riot v1.62.0
 	github.com/zedsearch/wal v1.3.0
 	go.etcd.io/bbolt v1.5.0
 	go.etcd.io/etcd/api/v3 v3.7.3
@@ -127,7 +127,7 @@ require (
 	github.com/ugorji/go/codec v1.3.2 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.77.0 // indirect
-	github.com/vcaesar/cedar v0.50.0 // indirect
+	github.com/vcaesar/cedar v0.50.1 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
 	go.etcd.io/etcd/client/pkg/v3 v3.7.3 // indirect

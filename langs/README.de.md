@@ -10,6 +10,7 @@
 [![golangci-lint](https://img.shields.io/badge/linter-golangci--lint-blue)](https://golangci-lint.run/)
 [![Release](https://img.shields.io/github/v/release/vcaesar/zedsearch)](https://github.com/vcaesar/zedsearch/releases/latest)
 [![Docs](https://img.shields.io/badge/Docs-Docs-green)](https://zincsearch-docs.zinc.dev/) [![codecov](https://codecov.io/github/vcaesar/zedsearch/branch/main/graph/badge.svg)](https://codecov.io/github/vcaesar/zedsearch)
+<a href="https://discord.gg/535uZPakJw"><img src="https://img.shields.io/discord/1484658282777018551.svg?logo=discord&logoColor=white&label=Discord&color=5865F2" alt="Join the Discord chat at https://discord.gg/535uZPakJw"></a>
 
 [English](../README.md) | [简体中文](README.zh.md) | [繁體中文](README.zht.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [Français](README.fr.md) | Deutsch | [Español](README.es.md) | [Русский](README.ru.md) | [Português](README.pt.md)
 
@@ -23,7 +24,7 @@ Sie ist ein direkter Ersatz für Elasticsearch, wenn Sie nur Daten über APIs ei
 
 Im folgenden Video sehen Sie eine kurze Demo von ZedSearch.
 
-[![Zinc Youtube](../screenshots/zinc-youtube.jpg)](https://www.youtube.com/watch?v=aZXtuVjt1ow)
+<!-- [![Zinc Youtube](../screenshots/zinc-youtube.jpg)](https://www.youtube.com/watch?v=aZXtuVjt1ow) -->
 
 # Warum ZedSearch
 
@@ -66,6 +67,8 @@ Siehe [Schnellstart](https://zincsearch-docs.zinc.dev/quickstart/)
 # Releases
 
 ZedSearch hat Hunderte von Produktionsinstallationen.
+
+Binärdateien für alle Plattformen finden Sie auf der [Release-Seite](https://github.com/vcaesar/zedsearch/releases/latest). Die Standardarchive sind nicht mit UPX komprimiert; für einen kleineren Download gibt es für alle Linux-Builds und den Windows-amd64-Build zusätzlich ein mit [UPX](https://upx.github.io/) gepacktes `*_upx.tar.gz` (etwas langsamerer Start, und manche Antivirenprogramme melden gepackte `.exe`-Dateien möglicherweise fälschlich).
 
 ## Build
 
