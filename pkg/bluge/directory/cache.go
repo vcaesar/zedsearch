@@ -29,9 +29,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/blevesearch/mmap-go"
 	"github.com/rs/zerolog/log"
 	segment "github.com/vcaesar/bluge_segment_api"
+	"github.com/zedsearch/mmap-go"
 
 	"github.com/vcaesar/zedsearch/pkg/config"
 )
