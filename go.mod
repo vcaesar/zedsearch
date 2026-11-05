@@ -27,9 +27,9 @@ require (
 	github.com/stretchr/testify v1.12.1
 	github.com/swaggo/swag v1.16.6
 	github.com/vcaesar/bluge_segment_api v1.2.2
-	github.com/vcaesar/ice v1.5.3
+	github.com/vcaesar/ice v1.5.4
 	github.com/vcaesar/query_string v0.6.0
-	github.com/vcaesar/riot v1.72.0
+	github.com/vcaesar/riot v1.72.1
 	github.com/zedsearch/mmap-go v1.3.0
 	github.com/zedsearch/wal v1.3.0
 	go.etcd.io/bbolt v1.5.0
