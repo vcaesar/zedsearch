@@ -98,6 +98,51 @@ func TestSegmentReplicaPersistsFiles(t *testing.T) {
 	assert.False(t, ok, "a broken record is ignored")
 }
 
+// A segment replica checkpoints only once it kept operations newer than
+// its files, an idle copy neither stages its segments nor calls the owner.
+func TestSegmentReplicaTickSkipsIdleCheckpoint(t *testing.T) {
+	name := "TestSegmentReplicaTickSkipsIdleCheckpoint.index_1"
+	newDiskIndex(t, name)
+	topo := newFakeTopology("node-b")
+	topo.set(name, "node-a", "node-b")
+	transport := newLoopTransport()
+	calls := make(chan Checkpoint, 4)
+	transport.snapshot = func(_ string, req *SnapshotRequest, _ string) (*SnapshotInfo, error) {
+		calls <- req.Have
+		return nil, ErrNotModified
+	}
+	m := newManager(t, ModeSegment, topo, transport)
+	r := m.replicaFor(name)
+
+	tests := []struct {
+		name      string
+		ready     bool
+		seq       uint64
+		filesSeq  uint64
+		wantCheck bool
+		wantHave  Checkpoint
+	}{
+		{name: "not installed", wantCheck: true},
+		{name: "idle", ready: true, seq: 4, filesSeq: 4},
+		{name: "kept operations", ready: true, seq: 6, filesSeq: 4, wantCheck: true, wantHave: Checkpoint{Term: "t1", Seq: 4}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r.mu.Lock()
+			r.term, r.seq, r.filesSeq, r.ready = "t1", tt.seq, tt.filesSeq, tt.ready
+			r.mu.Unlock()
+			m.replicaTick(name)
+			m.wg.Wait()
+			if !tt.wantCheck {
+				assert.Empty(t, calls)
+				return
+			}
+			require.Len(t, calls, 1)
+			assert.Equal(t, tt.wantHave, <-calls)
+		})
+	}
+}
+
 // Stop records the position of every replica, a graceful restart resumes
 // exactly where it stopped.
 func TestStopPersistsReplicas(t *testing.T) {

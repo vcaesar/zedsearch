@@ -57,6 +57,16 @@ func (r *replica) isRecovering() bool {
 	return r.recovering
 }
 
+// hasKept reports whether a segment replica took operations newer than its
+// files. The owner ships every write and probes lagging replicas, so
+// without any the owner is still at the installed files: a checkpoint
+// would only stage the local segments to hear ErrNotModified.
+func (r *replica) hasKept() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.seq > r.filesSeq
+}
+
 func (r *replica) ack() Ack {
 	return Ack{Term: r.term, Seq: r.seq, Recovering: r.recovering}
 }

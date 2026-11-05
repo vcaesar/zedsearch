@@ -3,4 +3,11 @@ data
 dist
 miniodata
 .minio.sys
+.git
+.codg
+**/node_modules
+**/data
+test/tmp
+test/logs
+test/v0
 

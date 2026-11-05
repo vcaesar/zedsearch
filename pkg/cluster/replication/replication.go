@@ -20,9 +20,9 @@
 //     acknowledges a write once every in-sync replica appended it; replicas
 //     index the entries themselves (OpenSearch document replication)
 //   - segment: entries are forwarded the same way for durability but the
-//     replicas only keep them; they copy the owner's segments on every
-//     checkpoint and replay the kept entries when promoted (segment
-//     replication)
+//     replicas only keep them; they copy the owner's segments on the
+//     next checkpoint after keeping new entries and replay the kept
+//     entries when promoted (segment replication)
 //   - remote: indexes on object storage upload their entries to the bucket
 //     before a write is acknowledged; segments already live there, so a new
 //     owner replays the remote translog (remote-backed storage)
@@ -349,7 +349,7 @@ func (m *manager) ownerTick(ctx context.Context, index *core.Index) {
 
 func (m *manager) replicaTick(name string) {
 	r := m.replicaFor(name)
-	if m.mode == ModeSegment || !r.isReady() {
+	if !r.isReady() || m.mode == ModeSegment && r.hasKept() {
 		m.startRecovery(name)
 		return
 	}

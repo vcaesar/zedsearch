@@ -207,9 +207,10 @@ func (index *Index) SnapshotTo(dir string) ([]byte, error) {
 	return data, nil
 }
 
-// linkGraphs hard links the persisted HNSW graphs of src into dst, which a
-// riot backup leaves out. Opening dst loads them instead of rebuilding them
-// on the first knn search, and removes those whose segment is not there.
+// linkGraphs hard links the persisted HNSW graphs of src into dst, which
+// older riot backups leave out; newer ones already put them in dst. Opening
+// dst loads them instead of rebuilding them on the first knn search, and
+// removes those whose segment is not there.
 func linkGraphs(src, dst string) error {
 	graphs, err := filepath.Glob(filepath.Join(src, "*"+blugeindex.ItemKindGraph))
 	if err != nil {
@@ -217,7 +218,8 @@ func linkGraphs(src, dst string) error {
 	}
 	for _, path := range graphs {
 		err := os.Link(path, filepath.Join(dst, filepath.Base(path)))
-		if err != nil && !os.IsNotExist(err) { // a merge removed it
+		// a merge removed it, or the backup already holds it
+		if err != nil && !os.IsNotExist(err) && !os.IsExist(err) {
 			return err
 		}
 	}
