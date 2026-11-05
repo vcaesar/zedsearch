@@ -137,6 +137,13 @@ func TestLinkGraphs(t *testing.T) {
 	require.Len(t, entries, 1, "only graphs are linked")
 	assert.Equal(t, "000000010001.hnsw", entries[0].Name())
 
-	assert.Error(t, linkGraphs(src, dst), "an existing target is an error")
+	// newer riot backups already hold the graphs
+	require.NoError(t, linkGraphs(src, dst), "an existing target is kept")
+	entries, err = os.ReadDir(dst)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
 	require.NoError(t, linkGraphs(filepath.Join(src, "missing"), dst), "no source graphs")
+	notDir := filepath.Join(dst, "file")
+	require.NoError(t, os.WriteFile(notDir, nil, 0o640))
+	assert.Error(t, linkGraphs(src, notDir), "other errors are returned")
 }

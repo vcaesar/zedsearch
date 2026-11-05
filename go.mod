@@ -27,9 +27,9 @@ require (
 	github.com/stretchr/testify v1.12.1
 	github.com/swaggo/swag v1.16.6
 	github.com/vcaesar/bluge_segment_api v1.2.2
-	github.com/vcaesar/ice v1.5.2
+	github.com/vcaesar/ice v1.5.3
 	github.com/vcaesar/query_string v0.6.0
-	github.com/vcaesar/riot v1.71.0
+	github.com/vcaesar/riot v1.72.0
 	github.com/zedsearch/mmap-go v1.3.0
 	github.com/zedsearch/wal v1.3.0
 	go.etcd.io/bbolt v1.5.0
@@ -102,6 +102,7 @@ require (
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/minio/crc64nvme v1.1.1 // indirect
 	github.com/minio/md5-simd v1.1.2 // indirect
+	github.com/minio/minlz v1.2.3 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.3-0.20250322232337-35a7c28c31ee // indirect
 	github.com/molecule-man/go-brrr v1.3.1 // indirect
@@ -109,6 +110,7 @@ require (
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/pandatix/go-abnf v0.5.5 // indirect
 	github.com/philhofer/fwd v1.2.1 // indirect
+	github.com/pierrec/lz4/v4 v4.1.33 // indirect
 	github.com/planetscale/vtprotobuf v0.6.1-0.20250313105119-ba97887b0a25 // indirect
 	github.com/power-devops/perfstat v0.0.0-20260916203055-22a1a467d9f0 // indirect
 	github.com/prometheus/client_model v0.6.3 // indirect
