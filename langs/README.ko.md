@@ -9,7 +9,7 @@
 [![Go Version](https://img.shields.io/github/go-mod/go-version/vcaesar/zedsearch)](../go.mod)
 [![golangci-lint](https://img.shields.io/badge/linter-golangci--lint-blue)](https://golangci-lint.run/)
 [![Release](https://img.shields.io/github/v/release/vcaesar/zedsearch)](https://github.com/vcaesar/zedsearch/releases/latest)
-[![Docs](https://img.shields.io/badge/Docs-Docs-green)](https://zincsearch-docs.zinc.dev/) [![codecov](https://codecov.io/github/vcaesar/zedsearch/branch/main/graph/badge.svg)](https://codecov.io/github/vcaesar/zedsearch)
+[![Docs](https://img.shields.io/badge/Docs-Docs-green)](../docs/web/index.md) [![codecov](https://codecov.io/github/vcaesar/zedsearch/branch/main/graph/badge.svg)](https://codecov.io/github/vcaesar/zedsearch)
 <a href="https://discord.gg/535uZPakJw"><img src="https://img.shields.io/discord/1484658282777018551.svg?logo=discord&logoColor=white&label=Discord&color=5865F2" alt="Join the Discord chat at https://discord.gg/535uZPakJw"></a>
 
 [English](../README.md) | [简体中文](README.zh.md) | [繁體中文](README.zht.md) | [日本語](README.ja.md) | 한국어 | [Français](README.fr.md) | [Deutsch](README.de.md) | [Español](README.es.md) | [Русский](README.ru.md) | [Português](README.pt.md)
@@ -24,7 +24,7 @@ API로 데이터를 수집하고 Kibana로 검색하기만 한다면 Elasticsear
 
 ZedSearch의 간단한 데모는 아래 동영상을 확인하세요.
 
-<!-- [![Zinc Youtube](../screenshots/zinc-youtube.jpg)](https://www.youtube.com/watch?v=aZXtuVjt1ow) -->
+<!-- [![Zed Youtube](../screenshots/zed-youtube.jpg)](https://www.youtube.com/watch?v=aZXtuVjt1ow) -->
 
 # 왜 ZedSearch인가
 
@@ -44,9 +44,41 @@ go + gin + react
 8. 집계(aggregation) 지원
 9. 이벤트 시간 정규화와 로그 검색 기본값을 갖춘 옵트인 [로그 인덱스](../pkg/logs/README.md)
 
+# 벤치마크
+
+문서 50,000개에 대한 검색 애플리케이션 쿼리 7가지(상위 10개와 정확한 전체 개수)입니다. MacBook Pro M1에서 모든 서버를 Docker로 실행했습니다: 필터가 있는 term 쿼리, 두 필드의 OR, 전체 문서의 가격 정렬, 101번째 페이지, terms 및 histogram 집계, 하이라이트. QPS를 제외하면 낮을수록 좋으며, "—"는 해당 엔진이 쿼리를 표현할 수 없음을 뜻합니다(Meilisearch는 숫자 히스토그램이 없고 OpenObserve는 하이라이트를 지원하지 않음).
+
+| 쿼리 | ZedSearch | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 | OpenObserve 1.1 |
+|---|---:|---:|---:|---:|---:|
+| `filtered` (클라이언트 1개) | **0.89 ms** | 1.38 ms | 1.44 ms | 1.87 ms | 9.44 ms |
+| `filtered` (클라이언트 8개) | 2,959 QPS | 2,742 QPS | **3,066 QPS** | 1,924 QPS | 321 QPS |
+| `sort_price` (문서 5만 개) | 1.85 ms | 2.52 ms | 1.58 ms | **1.09 ms** | 4.40 ms |
+| `multi_field` title + body | **0.63 ms** | 1.44 ms | 1.51 ms | 1.19 ms | 21.0 ms |
+| `deep_page` from 1000 | **1.24 ms** | 1.42 ms | 1.47 ms | 12.7 ms | 18.1 ms |
+| `agg_terms` `category` | **1.48 ms** | 1.66 ms | 2.12 ms | 1.63 ms | 18.6 ms |
+| `agg_histogram` `price` | **1.00 ms** | 1.67 ms | 1.72 ms | — | 18.7 ms |
+| `highlight` `body` | **0.81 ms** | 1.96 ms | 1.97 ms | 1.92 ms | — |
+
+### 단일 쿼리 (v2)
+
+같은 세션에서 실행한 v2 쿼리로, 각각 한 가지 쿼리 유형만 측정합니다. Meilisearch는 OR과 정확한 구문을 표현할 수 없습니다.
+
+| 쿼리 | ZedSearch | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 | OpenObserve 1.1 |
+|---|---:|---:|---:|---:|---:|
+| `term` rare | **0.50 ms** | 1.43 ms | 1.16 ms | 1.14 ms | 15.7 ms |
+| `term` mid | **0.58 ms** | 1.28 ms | 1.27 ms | 1.16 ms | 17.6 ms |
+| `term` keyword | **0.57 ms** | 1.75 ms | 2.32 ms | 1.03 ms | 5.59 ms |
+| `bool` should | **0.63 ms** | 1.61 ms | 1.75 ms | — | 26.7 ms |
+| `bool` must | **1.01 ms** | 2.36 ms | 3.30 ms | 1.28 ms | 24.1 ms |
+| `range` | **0.64 ms** | 1.32 ms | 1.28 ms | 1.32 ms | 5.31 ms |
+| `match_all` | **0.66 ms** | 1.48 ms | 1.38 ms | 1.03 ms | 4.68 ms |
+| `prefix` `w1*` | **0.71 ms** | 1.87 ms | 2.66 ms | 1.32 ms | 11.9 ms |
+| `match_phrase` | **10.3 ms** | 12.7 ms | 12.6 ms | — | 16.3 ms |
+| `bool` should (클라이언트 8개) | **5,179 QPS** | 2,707 QPS | 2,616 QPS | — | 131 QPS |
+
 # 문서
 
-문서는 [https://zincsearch-docs.zinc.dev/](https://zincsearch-docs.zinc.dev/)에서 확인할 수 있습니다
+문서는 [docs/web](../docs/web/index.md)에서, API 문서는 [zedsearch-docs](https://github.com/zedsearch/zedsearch-docs)에서 확인할 수 있습니다
 
 # 스크린샷
 
@@ -62,7 +94,7 @@ go + gin + react
 
 ## 빠른 시작
 
-[빠른 시작](https://zincsearch-docs.zinc.dev/quickstart/)을 확인하세요
+[빠른 시작](../docs/web/quickstart.md)을 확인하세요
 
 # 릴리스
 
@@ -105,7 +137,7 @@ zed_shard_num = 3
 
 - ZedSearch 개발 및 기여 방법
 
-  [기여 가이드](../CONTRIBUTING.md)를 확인하세요. [로드맵](https://zincsearch-docs.zinc.dev/roadmap/)도 확인하세요
+  [기여 가이드](../CONTRIBUTING.md)를 확인하세요. [로드맵](../docs/web/roadmap.md)도 확인하세요
 
 # 예제
 
