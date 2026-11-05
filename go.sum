@@ -266,12 +266,12 @@ github.com/vcaesar/bluge_segment_api v1.2.2 h1:8nCzQvlyUQLqerP6zRiB4YUc2NYrdRX+9
 github.com/vcaesar/bluge_segment_api v1.2.2/go.mod h1:KO7cpxXvohHHktHmWOaJcsYwt/I9a8fuhTUrVGUPPYk=
 github.com/vcaesar/cedar v0.50.1 h1:JhchIiYZyvjT7EhjMR3oN7JH7QNgeqLrw/zaPBrTWRQ=
 github.com/vcaesar/cedar v0.50.1/go.mod h1:eHvpmJXJmOowP8mW/Xqjra+HmKovJNcRxRPtezHjh7I=
-github.com/vcaesar/ice v1.5.3 h1:Aofvz/xRixGevuxTEtLLKbBa0PMBm52KQTbkKECSEZc=
-github.com/vcaesar/ice v1.5.3/go.mod h1:EVJP3pcOV6+wKwtu4d69Jw2lTquXui9yBba8Bi4klKw=
+github.com/vcaesar/ice v1.5.4 h1:16mijW9OBuXIQgqEhIu9dWIlFK1EYTG0eDjibf2917M=
+github.com/vcaesar/ice v1.5.4/go.mod h1:EVJP3pcOV6+wKwtu4d69Jw2lTquXui9yBba8Bi4klKw=
 github.com/vcaesar/query_string v0.6.0 h1:fKyrOjB10yR64wTuBw5Vav9R1hrJGk3BnBrwUAtp9AE=
 github.com/vcaesar/query_string v0.6.0/go.mod h1:HSDMFFPT3Tfl5PPFnxBGSPYDA3zlj2n5MYL9CylkR4U=
-github.com/vcaesar/riot v1.72.0 h1:E2Brjg9PUBBRI5ruGbRsvQhW3YibfEEBqn2UeJ8HbfM=
-github.com/vcaesar/riot v1.72.0/go.mod h1:zPusMhsbJGrXTLIbmGfhn1u6MAnW1qIXPw3iPgt5vGU=
+github.com/vcaesar/riot v1.72.1 h1:JFyBeOdLjQHmwe6obMwVgk8ewX0Yed7wbEzp15yDsM4=
+github.com/vcaesar/riot v1.72.1/go.mod h1:FEV4H75JukwkMaXlwGjdRP1Fy4tGvbf4bbI0JgLdKkI=
 github.com/vcaesar/tt v0.40.0 h1:vWUNRJn13ozP3xXlAXV5q9WivaDSHRS2jQ2J2ayCvQs=
 github.com/vcaesar/tt v0.40.0/go.mod h1:cH2+AwGAJm19Wa6xvEa+0r+sXDJBT0QgNQey6mwqLeU=
 github.com/x448/float16 v0.8.4 h1:qLwI1I70+NjRFUR3zs1JPUCgaCXSh3SW62uAKT1mSBM=

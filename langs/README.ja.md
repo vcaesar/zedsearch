@@ -51,8 +51,8 @@ go + gin + react
 | クエリ | ZedSearch | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 | OpenObserve 1.1 |
 |---|---:|---:|---:|---:|---:|
 | `filtered` (1 クライアント) | **0.89 ms** | 1.38 ms | 1.44 ms | 1.87 ms | 9.44 ms |
-| `filtered` (8 クライアント) | 2,959 QPS | 2,742 QPS | **3,066 QPS** | 1,924 QPS | 321 QPS |
-| `sort_price` (5 万件) | 1.85 ms | 2.52 ms | 1.58 ms | **1.09 ms** | 4.40 ms |
+| `filtered` (8 クライアント) | **3,216 QPS** | 2,742 QPS | 3,066 QPS | 1,924 QPS | 321 QPS |
+| `sort_price` (5 万件) | **0.74 ms** | 2.52 ms | 1.58 ms | 1.09 ms | 4.40 ms |
 | `multi_field` title + body | **0.63 ms** | 1.44 ms | 1.51 ms | 1.19 ms | 21.0 ms |
 | `deep_page` from 1000 | **1.24 ms** | 1.42 ms | 1.47 ms | 12.7 ms | 18.1 ms |
 | `agg_terms` `category` | **1.48 ms** | 1.66 ms | 2.12 ms | 1.63 ms | 18.6 ms |
