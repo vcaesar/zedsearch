@@ -69,6 +69,33 @@ func TestGenerators(t *testing.T) {
 	})
 }
 
+func TestParseEnd(t *testing.T) {
+	now := time.Date(2026, 11, 4, 8, 15, 42, 0, time.FixedZone("PST", -8*3600))
+	tests := []struct {
+		name    string
+		in      string
+		want    time.Time
+		wantErr bool
+	}{
+		{"empty uses now", "", time.Date(2026, 11, 4, 16, 15, 0, 0, time.UTC), false},
+		{"utc", "2026-10-30T19:39:00Z", time.Date(2026, 10, 30, 19, 39, 0, 0, time.UTC), false},
+		{"offset", "2026-10-30T12:39:00-07:00", time.Date(2026, 10, 30, 19, 39, 0, 0, time.UTC), false},
+		{"invalid", "2026-10-30", time.Time{}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseEnd(tt.in, now)
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			assert.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, time.UTC, got.Location())
+		})
+	}
+}
+
 func TestRun(t *testing.T) {
 	prefix := "TestRun.mock_"
 	end := time.Now().UTC().Truncate(time.Minute)

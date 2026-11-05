@@ -48,8 +48,8 @@ func TestBoolQuery(t *testing.T) {
 
 		var filter *riot.BooleanQuery
 		for _, m := range bq.Musts() {
-			if f, ok := m.(*riot.BooleanQuery); ok {
-				filter = f
+			if f, ok := m.(*filterClause); ok {
+				filter = f.BooleanQuery
 			}
 		}
 		if assert.NotNil(t, filter) {

@@ -35,19 +35,19 @@ func Request(v interface{}) (search.SortOrder, error) {
 	sorts := make(search.SortOrder, 0, 1)
 	switch v := v.(type) {
 	case string:
-		sorts = append(sorts, search.ParseSearchSortString(v))
+		sorts = append(sorts, parseSortString(v))
 		return sorts, nil
 	case []interface{}:
 		for _, v := range v {
 			switch v := v.(type) {
 			case string:
-				sorts = append(sorts, search.ParseSearchSortString(v))
+				sorts = append(sorts, parseSortString(v))
 			case map[string]interface{}:
 				if len(v) > 1 {
 					return nil, errors.New(errors.ErrorTypeParsingException, "[sort] field doesn't support multiple values")
 				}
 				for field, v := range v {
-					sort := search.SortBy(search.Field(field))
+					sort := search.SortBy(FirstValue(field))
 					switch v := v.(type) {
 					case string:
 						if strings.ToLower(v) == "desc" {
@@ -76,4 +76,46 @@ func Request(v interface{}) (search.SortOrder, error) {
 	}
 
 	return sorts, nil
+}
+
+// parseSortString is search.ParseSearchSortString with a FirstValue source.
+func parseSortString(input string) *search.Sort {
+	desc := strings.HasPrefix(input, "-")
+	input = strings.TrimPrefix(strings.TrimPrefix(input, "-"), "+")
+	if input == "_score" {
+		return search.SortBy(&search.ScoreSource{}).Desc()
+	}
+	rv := search.SortBy(FirstValue(input))
+	if desc {
+		rv.Desc()
+	}
+	return rv
+}
+
+// FirstValue is a sort / aggregation source returning the first doc value of
+// a field. It returns what search.FieldSource.Value does, the first value,
+// without the per-document slice that search.RemoveNumericPaddedTerms
+// allocates, or the error it builds for every non-numeric term.
+type FirstValue string
+
+func (f FirstValue) Fields() []string { return []string{string(f)} }
+
+// NumericField implements search.NumericFieldSource: for a numeric column
+// with one value the first doc value is that value prefix-coded, so riot
+// can reject hits by their typed value.
+func (f FirstValue) NumericField() string { return string(f) }
+
+func (f FirstValue) Value(match *search.DocumentMatch) []byte {
+	if vals := match.DocValues(string(f)); len(vals) > 0 {
+		return vals[0]
+	}
+	return nil
+}
+
+// AppendValue implements search.TextValueAppender; nil means missing.
+func (f FirstValue) AppendValue(match *search.DocumentMatch, buf []byte) []byte {
+	if v := f.Value(match); v != nil {
+		return append(buf[:0], v...)
+	}
+	return nil
 }

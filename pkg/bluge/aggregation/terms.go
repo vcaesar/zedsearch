@@ -130,18 +130,26 @@ func (a *TermsCalculator) Consume(d *search.DocumentMatch) {
 
 func (a *TermsCalculator) consumeTextValueSource(d *search.DocumentMatch) {
 	a.total++
-	src := a.src.(search.TextValueSource)
-	term := src.Value(d)
-	termStr := string(term)
-	bucket, ok := a.bucketsMap[termStr]
-	if ok {
-		bucket.Consume(d)
+	var term []byte
+	if f, ok := a.src.(search.FieldSource); ok {
+		// FieldSource.Value is firstTerm(RemoveNumericPaddedTerms(values)), which
+		// is always values[0] but allocates a slice and an error per document.
+		if vals := d.DocValues(string(f)); len(vals) > 0 {
+			term = vals[0]
+		}
 	} else {
-		newBucket := search.NewBucket(termStr, a.aggregations)
-		newBucket.Consume(d)
-		a.bucketsMap[termStr] = newBucket
-		a.bucketsList = append(a.bucketsList, newBucket)
+		term = a.src.(search.TextValueSource).Value(d)
 	}
+	// the inline string(term) lookup does not allocate; only new keys are copied
+	if bucket, ok := a.bucketsMap[string(term)]; ok {
+		bucket.Consume(d)
+		return
+	}
+	termStr := string(term)
+	newBucket := search.NewBucket(termStr, a.aggregations)
+	newBucket.Consume(d)
+	a.bucketsMap[termStr] = newBucket
+	a.bucketsList = append(a.bucketsList, newBucket)
 }
 
 func (a *TermsCalculator) consumeTextValuesSource(d *search.DocumentMatch) {
