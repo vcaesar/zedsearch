@@ -52,7 +52,10 @@ func MultiSearch(
 		if err != nil {
 			return nil, err
 		}
-		return readers[0].Search(ctx, req)
+		// a sort scan returns bare hits, merged below like several shards
+		if _, _, ok := scanSortField(req); !ok {
+			return readers[0].Search(ctx, req)
+		}
 	}
 
 	bucketAggs := make(map[string]search.Aggregation)
@@ -85,6 +88,11 @@ func MultiSearch(
 			}
 		}
 		eg.Go(func() error {
+			var ok bool
+			var err error
+			if docs[i], aggs[i], ok, err = sortScan(ctx, r, req); ok || err != nil {
+				return err
+			}
 			dmi, err := r.Search(ctx, req)
 			if err != nil {
 				return err
