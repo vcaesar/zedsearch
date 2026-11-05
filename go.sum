@@ -262,12 +262,12 @@ github.com/vcaesar/bluge_segment_api v1.2.2 h1:8nCzQvlyUQLqerP6zRiB4YUc2NYrdRX+9
 github.com/vcaesar/bluge_segment_api v1.2.2/go.mod h1:KO7cpxXvohHHktHmWOaJcsYwt/I9a8fuhTUrVGUPPYk=
 github.com/vcaesar/cedar v0.50.1 h1:JhchIiYZyvjT7EhjMR3oN7JH7QNgeqLrw/zaPBrTWRQ=
 github.com/vcaesar/cedar v0.50.1/go.mod h1:eHvpmJXJmOowP8mW/Xqjra+HmKovJNcRxRPtezHjh7I=
-github.com/vcaesar/ice v1.5.0 h1:zvFFwAqRvkz6i0Rz2eJzW00REgoZRqIMvWdf0664h3U=
-github.com/vcaesar/ice v1.5.0/go.mod h1:s6Xr2q3eRfloT40FAiu2ytUh00oprbHh/uJZZr3wGoc=
+github.com/vcaesar/ice v1.5.2 h1:wlrybsdlTod2j0wLnR7/UWDke7wNwEZfRBLI21dnxfg=
+github.com/vcaesar/ice v1.5.2/go.mod h1:q5ORtthuIg4HN4UxqyzkzXALXm6uzXP+VmzeA4bpNmg=
 github.com/vcaesar/query_string v0.6.0 h1:fKyrOjB10yR64wTuBw5Vav9R1hrJGk3BnBrwUAtp9AE=
 github.com/vcaesar/query_string v0.6.0/go.mod h1:HSDMFFPT3Tfl5PPFnxBGSPYDA3zlj2n5MYL9CylkR4U=
-github.com/vcaesar/riot v1.70.0 h1:XuO5eo7FzoXrGR8U1rrglEnbc1lOOFMh7IQowSO8bkE=
-github.com/vcaesar/riot v1.70.0/go.mod h1:LX04wADjBaGaEYQqq89wtYABTq9/EAY58n5KBMn/6uE=
+github.com/vcaesar/riot v1.71.0 h1:+S/UbYUXfjCbxaaG/oZHSXiIATCCiN6t/yQv2jf9gt4=
+github.com/vcaesar/riot v1.71.0/go.mod h1:kNhe4RTne5Ll2H5xXcfsJ1sYH4xrGrCEGCOTF/GzHvc=
 github.com/vcaesar/tt v0.40.0 h1:vWUNRJn13ozP3xXlAXV5q9WivaDSHRS2jQ2J2ayCvQs=
 github.com/vcaesar/tt v0.40.0/go.mod h1:cH2+AwGAJm19Wa6xvEa+0r+sXDJBT0QgNQey6mwqLeU=
 github.com/x448/float16 v0.8.4 h1:qLwI1I70+NjRFUR3zs1JPUCgaCXSh3SW62uAKT1mSBM=
@@ -282,8 +282,8 @@ github.com/zedsearch/segment v0.9.2 h1:XPmmo66bgyZpfejq4D/YCDwqm5eD4fs0+/iW3W1TU
 github.com/zedsearch/segment v0.9.2/go.mod h1:AMh+UEXlsoMChEnE1X504mUwRqSqIe4cUSnOO3F40W8=
 github.com/zedsearch/snowballstem v0.9.1 h1:0+/takNN9pwSK1jFhbpex+LhhY04k9uOCHiFJxWpJ2w=
 github.com/zedsearch/snowballstem v0.9.1/go.mod h1:FfZYi0UfI1JfzG496N/5b2CUpwUVK+yPH/zBeTKHxMo=
-github.com/zedsearch/vellum v1.2.2 h1:svIzYouSxFPc9m9JbcOI/F93OnMKM9rioui39Q9U/8g=
-github.com/zedsearch/vellum v1.2.2/go.mod h1:589H9BuuJCwEuu2MgzAdt5xr/NmTN3hbr81D4tHp3xc=
+github.com/zedsearch/vellum v1.2.3 h1:KbJWN5rZlhVTyfjmMWbfYsG3w2knEX0+r2wXcOpRH8k=
+github.com/zedsearch/vellum v1.2.3/go.mod h1:589H9BuuJCwEuu2MgzAdt5xr/NmTN3hbr81D4tHp3xc=
 github.com/zedsearch/wal v1.3.0 h1:eHpn01zoOMRvtMzrwYhOdTFwvgHkFvVA7lxjwWhJhnw=
 github.com/zedsearch/wal v1.3.0/go.mod h1:1rUsJ2HqoYwbxOCBq5DB1ykLx0SfUtqcv4iAoLVni8Q=
 github.com/zeebo/assert v1.3.0 h1:g7C04CbJuIDKNPFHmsk4hwZDO5O+kntRxzaUoNXj+IQ=

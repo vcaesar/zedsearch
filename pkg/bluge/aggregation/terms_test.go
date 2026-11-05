@@ -98,3 +98,28 @@ func TestTermsAggregationKeyOrderByFieldType(t *testing.T) {
 		})
 	}
 }
+
+// The FieldSource fast path buckets the first value, as FieldSource.Value
+// does, for keyword and numeric-encoded terms and for missing values.
+func TestTermsAggregationTextFirstValue(t *testing.T) {
+	docs := []*search.DocumentMatch{
+		newTestMatch(t, []string{"f"}, map[string][][]byte{"f": textTerms("b", "a")}),
+		newTestMatch(t, []string{"f"}, map[string][][]byte{"f": textTerms("a")}),
+		newTestMatch(t, []string{"f"}, map[string][][]byte{"f": numTerms(5)}),
+		newTestMatch(t, []string{"f"}, map[string][][]byte{}),
+	}
+	agg := NewTermsAggregation(search.Field("f"), TextValueSource, 10)
+	calc := agg.Calculator().(*TermsCalculator)
+	want := map[string]int{}
+	for _, d := range docs {
+		calc.Consume(d)
+		want[string(search.Field("f").Value(d))]++
+	}
+	calc.Finish()
+	got := map[string]int{}
+	for _, b := range calc.Buckets() {
+		got[b.Name()] = int(b.Aggregations()["count"].(search.MetricCalculator).Value())
+	}
+	assert.Equal(t, want, got)
+	assert.Len(t, got, 4) // "b", "a", the numeric term and missing ""
+}

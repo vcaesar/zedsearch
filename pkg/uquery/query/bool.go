@@ -22,6 +22,7 @@ import (
 
 	"github.com/vcaesar/riot"
 	"github.com/vcaesar/riot/analysis"
+	"github.com/vcaesar/riot/search"
 
 	"github.com/vcaesar/zedsearch/pkg/errors"
 	"github.com/vcaesar/zedsearch/pkg/meta"
@@ -111,7 +112,7 @@ func BoolQuery(query map[string]interface{}, mappings *meta.Mappings, analyzers 
 			default:
 				return nil, errors.New(errors.ErrorTypeXContentParseException, fmt.Sprintf("[bool] %s doesn't support values of type: %T", k, v))
 			}
-			boolQuery.AddMust(filterQuery)
+			boolQuery.AddMust(&filterClause{BooleanQuery: filterQuery})
 		case "minimum_should_match":
 			minimumShouldMatch = v
 		default:
@@ -128,4 +129,18 @@ func BoolQuery(query map[string]interface{}, mappings *meta.Mappings, analyzers 
 	}
 
 	return boolQuery, nil
+}
+
+// filterClause is the boost-0 query of a bool filter clause. Its matches add
+// nothing to the score, so its searchers skip reading term freqs and norms
+// (riot's "none" scoring) unless scores are explained.
+type filterClause struct {
+	*riot.BooleanQuery
+}
+
+func (q *filterClause) Searcher(i search.Reader, options search.SearcherOptions) (search.Searcher, error) {
+	if !options.Explain {
+		options.Score = "none"
+	}
+	return q.BooleanQuery.Searcher(i, options)
 }

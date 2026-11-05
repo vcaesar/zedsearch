@@ -19,6 +19,11 @@
 // vectors, the logs profile, geo_point, nested and join.
 //
 //	cd cmd/zedsearch && go run ./mockdata -reset
+//
+// -end pins the last document timestamp, so the same data can be regenerated
+// into another data path (e.g. for a new on-disk index version):
+//
+//	ZED_DATA_PATH=./data-v2 go run ./mockdata -end 2026-10-30T19:39:00Z
 package main
 
 import (
@@ -310,6 +315,18 @@ func indexed(index *core.Index, name string, stamps []string) (int, error) {
 	return done, nil
 }
 
+// parseEnd returns the last document timestamp: s as RFC3339, or now when empty.
+func parseEnd(s string, now time.Time) (time.Time, error) {
+	if s == "" {
+		return now.UTC().Truncate(time.Minute), nil
+	}
+	end, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("-end: %w", err)
+	}
+	return end.UTC(), nil
+}
+
 // run seeds every dataset as prefix+name with counts[name] docs. reset drops
 // existing indexes first so mapping changes take effect.
 func run(prefix string, counts map[string]int, end time.Time, reset bool) error {
@@ -333,6 +350,7 @@ func run(prefix string, counts map[string]int, end time.Time, reset bool) error 
 func main() {
 	prefix := flag.String("prefix", "mock_", "index name prefix")
 	reset := flag.Bool("reset", false, "delete existing mock indexes before seeding")
+	endFlag := flag.String("end", "", "RFC3339 timestamp of the last document (default now)")
 	counts := map[string]*int{
 		"products": flag.Int("products", 200, "number of product documents"),
 		"logs":     flag.Int("logs", 1000, "number of log documents"),
@@ -345,7 +363,10 @@ func main() {
 	for k, v := range counts {
 		n[k] = *v
 	}
-	err := run(*prefix, n, time.Now().UTC().Truncate(time.Minute), *reset)
+	end, err := parseEnd(*endFlag, time.Now())
+	if err == nil {
+		err = run(*prefix, n, end, *reset)
+	}
 	if cerr := errors.Join(core.ZED_INDEX_LIST.Close(), metadata.Close()); cerr != nil {
 		err = errors.Join(err, cerr)
 	}
