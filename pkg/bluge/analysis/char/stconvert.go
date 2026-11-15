@@ -1,12 +1,11 @@
 package char
 
 import (
-	"github.com/liuzl/gocc"
-	"github.com/rs/zerolog/log"
+	"github.com/go-ego/gocc"
 )
 
 type STConvertCharFilter struct {
-	cc *gocc.OpenCC
+	cc *gocc.Converter
 }
 
 func NewSTConvertCharFilter(conversion string) (*STConvertCharFilter, error) {
@@ -18,9 +17,5 @@ func NewSTConvertCharFilter(conversion string) (*STConvertCharFilter, error) {
 }
 
 func (t STConvertCharFilter) Filter(input []byte) []byte {
-	out, err := t.cc.Convert(string(input))
-	if err != nil {
-		log.Error().Err(err).Msg("stconvert error")
-	}
-	return []byte(out)
+	return t.cc.AppendConvert(nil, input)
 }

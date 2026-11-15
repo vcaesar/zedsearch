@@ -14,13 +14,12 @@ miniodata
 # Test binary, built with `go test -c`
 *.test
 
-/test/*
-!/test/api/
-/test/api/*
-!/test/api/logs_test.go
+test/api/test
+test/benchmark
 .v0
 v0
 .codg
+test0
 # web
 mysearch
 
@@ -42,3 +41,4 @@ tmp/
 
 # binary in root
 /zincsearch
+/zedsearch
