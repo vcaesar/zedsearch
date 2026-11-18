@@ -18,7 +18,9 @@
 Part of this work fall under the AtomAI Enterprise Edition (EE)
 and are licensed under the Business Source License 1.1,
 if you are the Cloud companies or your companies with revenue greater than $1M,
-please refer to [AGPL-3.0](./LICENSE-EE)) and LICENSE-EE for details.
+please refer to [AGPL-3.0](./LICENSE-EE)) and LICENSE-EE for details,
+and production use of the Licensed Work requires a commercial license agreement with Zedsearch.
+Contact info@atomai.cc for licensing.
 
 The other parts of this work are licensed under the [Apache license](./LICENSE).
 */

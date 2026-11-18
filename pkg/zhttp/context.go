@@ -64,6 +64,8 @@ type Context interface {
 	SetBody(body []byte)
 	// Context returns the request context.
 	Context() context.Context
+	// SetContext replaces the request context for the rest of the chain.
+	SetContext(ctx context.Context)
 	// Set stores a value for the rest of the chain.
 	Set(key string, value interface{})
 	// Get returns a value stored with Set.
