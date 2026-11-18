@@ -11,7 +11,14 @@
 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 * See the License for the specific language governing permissions and
 * limitations under the License.
- */
+*
+Part of this work fall under the AtomAI Enterprise Edition (EE)
+and are licensed under the Business Source License 1.1,
+if you are the Cloud companies or your companies with revenue greater than $1M,
+please refer to [AGPL-3.0](./LICENSE-EE)) and LICENSE-EE for details,
+or production use of the Licensed Work requires a commercial license agreement with Zedsearch.
+Contact info@atomai.cc for licensing.
+*/
 
 package replication
 
@@ -32,6 +39,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/vcaesar/zedsearch/pkg/cluster"
+	"github.com/vcaesar/zedsearch/pkg/tracing"
 	"github.com/vcaesar/zedsearch/pkg/zutils/json"
 )
 
@@ -115,7 +123,7 @@ type HTTPTransport struct {
 
 // NewHTTPTransport builds a transport authenticating with secret.
 func NewHTTPTransport(secret string) *HTTPTransport {
-	return &HTTPTransport{secret: secret, client: &http.Client{}}
+	return &HTTPTransport{secret: secret, client: &http.Client{Transport: tracing.Transport(nil)}}
 }
 
 // CheckSecret reports whether a request carries the cluster secret.

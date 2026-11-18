@@ -47,3 +47,37 @@ func TestMappings_RangeProperty(t *testing.T) {
 		assert.Equal(t, 1, n)
 	})
 }
+
+func TestMappings_Source(t *testing.T) {
+	m := NewMappings()
+	assert.True(t, m.SourceEnabled())
+	got, err := m.MarshalJSON()
+	assert.NoError(t, err)
+	assert.JSONEq(t, `{"properties":{}}`, string(got))
+
+	m.SetSourceEnabled(false)
+	assert.False(t, m.SourceEnabled())
+	got, err = m.MarshalJSON()
+	assert.NoError(t, err)
+	assert.JSONEq(t, `{"properties":{},"_source":{"enabled":false}}`, string(got))
+
+	clone := m.DeepClone()
+	assert.False(t, clone.SourceEnabled())
+	clone.SetSourceEnabled(true)
+	assert.False(t, m.SourceEnabled(), "clone shares no state")
+}
+
+func TestMappings_All(t *testing.T) {
+	m := NewMappings()
+	assert.False(t, m.AllEnabled(), "follows zed_all_field, off by default")
+	m.SetAllEnabled(true)
+	assert.True(t, m.AllEnabled())
+	got, err := m.MarshalJSON()
+	assert.NoError(t, err)
+	assert.JSONEq(t, `{"properties":{},"_all":{"enabled":true}}`, string(got))
+
+	clone := m.DeepClone()
+	assert.True(t, clone.AllEnabled())
+	clone.SetAllEnabled(false)
+	assert.True(t, m.AllEnabled(), "clone shares no state")
+}

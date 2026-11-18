@@ -20,6 +20,9 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/vcaesar/ice/vec"
+
+	"github.com/vcaesar/zedsearch/pkg/zutils/json"
 )
 
 func TestParseVector(t *testing.T) {
@@ -63,4 +66,156 @@ func TestNewProperty_Vector(t *testing.T) {
 	assert.False(t, p.Aggregatable)
 	clone := p.DeepClone()
 	assert.Equal(t, 3, clone.Dims)
+}
+
+func TestExcludeSourceVectors(t *testing.T) {
+	source := map[string]interface{}{
+		"name":   "x",
+		"emb":    []interface{}{1.0, 2.0},
+		"a":      map[string]interface{}{"b": []interface{}{3.0}, "c": 1.0},
+		"flat.v": []interface{}{4.0},
+	}
+	got, excluded := ExcludeSourceVectors(source, []string{"emb", "a.b", "flat.v", "missing", "name.x"})
+	assert.Equal(t, []string{"emb", "a.b", "flat.v"}, excluded)
+	assert.Equal(t, map[string]interface{}{"name": "x", "a": map[string]interface{}{"c": 1.0}}, got)
+	// source is not modified
+	assert.Contains(t, source, "emb")
+	assert.Contains(t, source["a"], "b")
+
+	same, excluded := ExcludeSourceVectors(source, nil)
+	assert.Nil(t, excluded)
+	assert.Equal(t, source, same)
+}
+
+func TestSourceVectors(t *testing.T) {
+	encode := func(v []float32) []byte {
+		b, err := vec.Encode(v)
+		assert.NoError(t, err)
+		return b
+	}
+	assert.Nil(t, NewSourceVectors(nil))
+
+	t.Run("nil restores nothing", func(t *testing.T) {
+		var v *SourceVectors
+		v.Reset()
+		assert.False(t, v.Visit(SourceVectorsField, []byte("emb")))
+		assert.Nil(t, v.Fields())
+		got, err := v.Restore([]byte(`{"a":1}`))
+		assert.NoError(t, err)
+		assert.Equal(t, `{"a":1}`, string(got))
+	})
+
+	v := NewSourceVectors([]string{"emb", "a.b", "flat.v"})
+	assert.ElementsMatch(t, []string{"emb", "a.b", "flat.v", SourceVectorsField}, v.Fields())
+
+	t.Run("restore excluded vectors", func(t *testing.T) {
+		v.Reset()
+		buf := encode([]float32{0.1, 2})
+		assert.True(t, v.Visit("emb", buf))
+		buf[len(buf)-1] = 0xff // visitors reuse buffers, values are copied
+		assert.True(t, v.Visit("a.b", encode([]float32{3})))
+		assert.True(t, v.Visit("flat.v", encode([]float32{4})))
+		assert.False(t, v.Visit("name", []byte("x")))
+		assert.True(t, v.Visit(SourceVectorsField, []byte("emb\na.b\nflat.v")))
+		got, err := v.Restore([]byte(`{"name":"x","a":{"c":1}}`))
+		assert.NoError(t, err)
+		var doc map[string]interface{}
+		assert.NoError(t, json.Unmarshal(got, &doc))
+		assert.Equal(t, map[string]interface{}{
+			"name":   "x",
+			"emb":    []interface{}{0.1, 2.0},
+			"a":      map[string]interface{}{"b": []interface{}{3.0}, "c": 1.0},
+			"flat.v": []interface{}{4.0},
+		}, doc)
+	})
+
+	t.Run("without marker source is unchanged", func(t *testing.T) {
+		v.Reset()
+		v.Visit("emb", encode([]float32{1}))
+		got, err := v.Restore([]byte(`{"emb":[1.5]}`))
+		assert.NoError(t, err)
+		assert.Equal(t, `{"emb":[1.5]}`, string(got))
+	})
+
+	t.Run("unmapped excluded field is skipped", func(t *testing.T) {
+		v.Reset()
+		v.Visit(SourceVectorsField, []byte("gone"))
+		got, err := v.Restore([]byte(`{"name":"x"}`))
+		assert.NoError(t, err)
+		assert.JSONEq(t, `{"name":"x"}`, string(got))
+	})
+
+	t.Run("reset forgets the vectors and keeps their buffers", func(t *testing.T) {
+		emb := encode([]float32{7, 8})
+		v.Reset()
+		v.Visit("emb", emb)
+		v.Reset()
+		v.Visit(SourceVectorsField, []byte("emb"))
+		got, err := v.Restore([]byte(`{"name":"x"}`))
+		assert.NoError(t, err)
+		assert.JSONEq(t, `{"name":"x"}`, string(got))
+
+		assert.Zero(t, testing.AllocsPerRun(10, func() {
+			v.Reset()
+			v.Visit("emb", emb)
+		}))
+	})
+
+	t.Run("errors", func(t *testing.T) {
+		v.Reset()
+		v.Visit(SourceVectorsField, []byte("emb"))
+		v.Visit("emb", []byte("bad"))
+		_, err := v.Restore([]byte(`{}`))
+		assert.Error(t, err)
+		_, err = v.Restore([]byte(`not json`))
+		assert.Error(t, err)
+	})
+}
+
+func TestIndexSettings_ExcludeSourceVectors(t *testing.T) {
+	yes, no := true, false
+	tests := []struct {
+		name    string
+		data    string
+		want    *bool
+		wantErr bool
+	}{
+		{name: "unset", data: `{"number_of_shards": 2}`},
+		{name: "native", data: `{"exclude_source_vectors": false}`, want: &no},
+		{name: "es dotted", data: `{"index.mapping.exclude_source_vectors": true}`, want: &yes},
+		{name: "es nested", data: `{"index": {"mapping": {"exclude_source_vectors": false}}}`, want: &no},
+		{name: "es without index prefix", data: `{"mapping": {"exclude_source_vectors": "true"}}`, want: &yes},
+		{name: "opensearch derived source", data: `{"index": {"knn.derived_source.enabled": false}}`, want: &no},
+		{name: "native wins", data: `{"exclude_source_vectors": true, "index.mapping.exclude_source_vectors": false}`, want: &yes},
+		{name: "not bool", data: `{"index.mapping.exclude_source_vectors": "maybe"}`, wantErr: true},
+		{name: "native not bool", data: `{"exclude_source_vectors": "x"}`, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := new(IndexSettings)
+			err := json.Unmarshal([]byte(tt.data), s)
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			assert.NoError(t, err)
+			assert.Equal(t, tt.want, s.ExcludeSourceVectors)
+		})
+	}
+}
+
+func TestVectorIndexOptions_Quantization(t *testing.T) {
+	assert.Equal(t, "none", (&VectorIndexOptions{Type: VectorIndexHNSW}).Quantization().String())
+	assert.Equal(t, "int8", (&VectorIndexOptions{Type: VectorIndexInt8HNSW}).Quantization().String())
+	assert.Equal(t, "int8", (&VectorIndexOptions{}).Quantization().String())
+}
+
+func TestMappings_VectorFields(t *testing.T) {
+	m := NewMappings()
+	m.SetProperty("emb", NewProperty("vector"))
+	off := NewProperty("vector")
+	off.Index = false
+	m.SetProperty("off", off)
+	m.SetProperty("name", NewProperty("text"))
+	assert.Equal(t, []string{"emb"}, m.VectorFields())
 }

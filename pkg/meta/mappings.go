@@ -12,7 +12,14 @@
 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 * See the License for the specific language governing permissions and
 * limitations under the License.
- */
+*
+Part of this work fall under the AtomAI Enterprise Edition (EE)
+and are licensed under the Business Source License 1.1,
+if you are the Cloud companies or your companies with revenue greater than $1M,
+please refer to [AGPL-3.0](./LICENSE-EE)) and LICENSE-EE for details,
+or production use of the Licensed Work requires a commercial license agreement with Zedsearch.
+Contact info@atomai.cc for licensing.
+*/
 
 package meta
 
@@ -21,13 +28,56 @@ import (
 	"sync"
 
 	"github.com/vcaesar/riot"
+	"github.com/vcaesar/riot/hnsw"
 
+	"github.com/vcaesar/zedsearch/pkg/config"
 	"github.com/vcaesar/zedsearch/pkg/zutils/json"
 )
 
 type Mappings struct {
 	Properties map[string]Property `json:"properties,omitempty"`
-	lock       sync.RWMutex
+	// Source is the Elasticsearch `_source` mapping; nil stores _source.
+	Source *SourceMapping `json:"_source,omitempty"`
+	// All is the `_all` mapping; nil follows zed_all_field.
+	All  *SourceMapping `json:"_all,omitempty"`
+	lock sync.RWMutex
+}
+
+// SourceMapping set to {"enabled": false} does not store the original
+// document: hits and get return no _source, and reindex is rejected.
+type SourceMapping struct {
+	Enabled bool `json:"enabled"`
+}
+
+// SourceEnabled reports whether documents keep their _source.
+func (t *Mappings) SourceEnabled() bool {
+	t.lock.RLock()
+	defer t.lock.RUnlock()
+	return t.Source == nil || t.Source.Enabled
+}
+
+// AllEnabled reports whether documents index the _all field.
+func (t *Mappings) AllEnabled() bool {
+	t.lock.RLock()
+	defer t.lock.RUnlock()
+	if t.All == nil {
+		return config.Global.AllField
+	}
+	return t.All.Enabled
+}
+
+// SetAllEnabled sets the _all mapping.
+func (t *Mappings) SetAllEnabled(enabled bool) {
+	t.lock.Lock()
+	defer t.lock.Unlock()
+	t.All = &SourceMapping{Enabled: enabled}
+}
+
+// SetSourceEnabled sets the _source mapping.
+func (t *Mappings) SetSourceEnabled(enabled bool) {
+	t.lock.Lock()
+	defer t.lock.Unlock()
+	t.Source = &SourceMapping{Enabled: enabled}
 }
 
 type Property struct {
@@ -61,14 +111,32 @@ type Property struct {
 	// IndexOptions enables HNSW approximate search on a vector field by default.
 	IndexOptions *VectorIndexOptions `json:"index_options,omitempty"`
 	// Similarity is the default knn metric of a vector field, cosine when empty.
-	Similarity riot.Metric `json:"similarity,omitempty"`
+	Similarity riot.Metric `json:"similarity,omitempty" swaggertype:"string"`
 }
 
 // VectorIndexOptions are the HNSW graph parameters of a vector field. Zero
 // values take riot's defaults. Persisted graphs are keyed by them.
 type VectorIndexOptions struct {
-	M              int `json:"m,omitempty"`
-	EfConstruction int `json:"ef_construction,omitempty"`
+	// Type is VectorIndexHNSW or VectorIndexInt8HNSW; empty, as persisted
+	// before types, builds int8 graphs.
+	Type           string `json:"type,omitempty"`
+	M              int    `json:"m,omitempty"`
+	EfConstruction int    `json:"ef_construction,omitempty"`
+}
+
+// Vector index types, as Elasticsearch dense_vector index_options.type.
+const (
+	VectorIndexHNSW     = "hnsw"      // graphs compare float32 vectors
+	VectorIndexInt8HNSW = "int8_hnsw" // graphs compare int8 codes, a quarter of the size
+)
+
+// Quantization returns the vectors HNSW graphs of o compare. Searches rescore
+// with float32 vectors either way.
+func (o *VectorIndexOptions) Quantization() hnsw.Quantization {
+	if o.Type == VectorIndexHNSW {
+		return hnsw.QuantizationNone
+	}
+	return hnsw.QuantizationInt8
 }
 
 // Hidden fields used for nested and join documents.
@@ -190,6 +258,18 @@ func (t *Mappings) ListProperty() map[string]Property {
 	return m
 }
 
+// VectorFields returns the indexed vector fields, whose values are stored.
+func (t *Mappings) VectorFields() []string {
+	var fields []string
+	t.RangeProperty(func(field string, prop Property) bool {
+		if prop.Type == "vector" && prop.Index {
+			fields = append(fields, field)
+		}
+		return true
+	})
+	return fields
+}
+
 // RangeProperty calls fn for each property until fn returns false. Unlike
 // ListProperty it does not copy the map; fn runs under the read lock and must
 // not modify t.
@@ -213,6 +293,12 @@ func (t *Mappings) DeepClone() *Mappings {
 	for k, v := range t.Properties {
 		m.Properties[k] = v.DeepClone()
 	}
+	if t.Source != nil {
+		m.Source = &SourceMapping{Enabled: t.Source.Enabled}
+	}
+	if t.All != nil {
+		m.All = &SourceMapping{Enabled: t.All.Enabled}
+	}
 
 	return m
 }
@@ -227,6 +313,22 @@ func (t *Mappings) MarshalJSON() ([]byte, error) {
 		return nil, err
 	}
 	b.Write(p)
+	if t.Source != nil {
+		b.WriteString(`,"_source":`)
+		src, err := json.Marshal(t.Source)
+		if err != nil {
+			return nil, err
+		}
+		b.Write(src)
+	}
+	if t.All != nil {
+		b.WriteString(`,"_all":`)
+		all, err := json.Marshal(t.All)
+		if err != nil {
+			return nil, err
+		}
+		b.Write(all)
+	}
 	b.WriteByte('}')
 	return b.Bytes(), nil
 }

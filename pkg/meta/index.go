@@ -12,11 +12,23 @@
 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 * See the License for the specific language governing permissions and
 * limitations under the License.
- */
+*
+Part of this work fall under the AtomAI Enterprise Edition (EE)
+and are licensed under the Business Source License 1.1,
+if you are the Cloud companies or your companies with revenue greater than $1M,
+please refer to [AGPL-3.0](./LICENSE-EE)) and LICENSE-EE for details,
+and production use of the Licensed Work requires a commercial license agreement with Zedsearch.
+Contact info@atomai.cc for licensing.
+*/
 
 package meta
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/vcaesar/zedsearch/pkg/zutils"
+	"github.com/vcaesar/zedsearch/pkg/zutils/json"
+)
 
 const (
 	IndexTypeStandard = "standard"
@@ -84,6 +96,46 @@ type IndexSettings struct {
 	Tier string `json:"tier,omitempty"`
 	// Lifecycle drives automatic tier transitions by index age.
 	Lifecycle *IndexLifecycle `json:"lifecycle,omitempty"`
+	// ExcludeSourceVectors keeps vector fields out of the stored _source and
+	// restores them from the stored vectors on read; nil takes
+	// zed_exclude_source_vectors. Set at creation only.
+	ExcludeSourceVectors *bool `json:"exclude_source_vectors,omitempty"`
+}
+
+// excludeSourceVectorsKeys are the Elasticsearch and OpenSearch names of
+// ExcludeSourceVectors, dotted or nested, with or without the index prefix.
+var excludeSourceVectorsKeys = []string{
+	"index.mapping.exclude_source_vectors", "mapping.exclude_source_vectors",
+	"index.knn.derived_source.enabled", "knn.derived_source.enabled",
+}
+
+// UnmarshalJSON also reads ExcludeSourceVectors from its Elasticsearch and
+// OpenSearch setting names.
+func (s *IndexSettings) UnmarshalJSON(data []byte) error {
+	type plain IndexSettings
+	if err := json.Unmarshal(data, (*plain)(s)); err != nil {
+		return err
+	}
+	if s.ExcludeSourceVectors != nil {
+		return nil
+	}
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	for _, key := range excludeSourceVectorsKeys {
+		v, ok := LookupPath(raw, key)
+		if !ok {
+			continue
+		}
+		b, err := zutils.ToBool(v)
+		if err != nil {
+			return fmt.Errorf("setting [%s] must be a boolean", key)
+		}
+		s.ExcludeSourceVectors = &b
+		return nil
+	}
+	return nil
 }
 
 // IndexLifecycle mirrors a minimal ILM policy: move the index to the next
