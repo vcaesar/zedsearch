@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 
 	"github.com/vcaesar/zedsearch/pkg/config"
@@ -110,6 +111,9 @@ func TestSetPrometheus(t *testing.T) {
 	e.GET("/api/:target/_doc/:id", func(c zhttp.Context) { c.Status(http.StatusOK) })
 	core.SetMetricStatsByIndex("TestSetPrometheus.index", "docs", 3)
 
+	// the counters are process-global, so assert the delta to stay repeatable under -count
+	docRequests := requestsTotal.WithLabelValues("200", http.MethodGet, "/api/:target/_doc/:id")
+	before := testutil.ToFloat64(docRequests)
 	assert.Equal(t, http.StatusOK, serve(e, httptest.NewRequest(http.MethodGet, "/healthz", nil)).Code)
 	for _, id := range []string{"a1", "b2", "c3"} {
 		assert.Equal(t, http.StatusOK, serve(e, httptest.NewRequest(http.MethodGet, "/api/logs/_doc/"+id, nil)).Code)
@@ -119,7 +123,8 @@ func TestSetPrometheus(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 	body := w.Body.String()
 	assert.Contains(t, body, `zed_requests_total{code="200",method="GET",url="/healthz"}`)
-	assert.Contains(t, body, `zed_requests_total{code="200",method="GET",url="/api/:target/_doc/:id"} 3`)
+	assert.Contains(t, body, `zed_requests_total{code="200",method="GET",url="/api/:target/_doc/:id"}`)
+	assert.Equal(t, before+3, testutil.ToFloat64(docRequests))
 	assert.Contains(t, body, `zed_requests_total{code="404",method="GET",url="<unmatched>"}`)
 	assert.NotContains(t, body, "/api/logs/_doc/a1")
 	assert.NotContains(t, body, "/no/such/x1")
