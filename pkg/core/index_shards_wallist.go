@@ -11,7 +11,14 @@
 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 * See the License for the specific language governing permissions and
 * limitations under the License.
- */
+*
+Part of this work fall under the AtomAI Enterprise Edition (EE)
+and are licensed under the Business Source License 1.1,
+if you are the Cloud companies or your companies with revenue greater than $1M,
+please refer to [AGPL-3.0](./LICENSE-EE)) and LICENSE-EE for details,
+and production use of the Licensed Work requires a commercial license agreement with Zedsearch.
+Contact info@atomai.cc for licensing.
+*/
 
 package core
 
@@ -117,7 +124,9 @@ func (t *IndexShardWALList) ConsumeWAL() {
 		}
 
 		// update index stats
+		updated := false
 		for name := range indexUpdated {
+			updated = true
 			index, ok := indexes[name]
 			if !ok {
 				continue
@@ -137,7 +146,10 @@ func (t *IndexShardWALList) ConsumeWAL() {
 			delete(indexes, name)
 		}
 
-		// force gc
-		runtime.GC()
+		// release the batch memory, but not on idle ticks: a forced GC every
+		// WalSyncInterval stalls searches for nothing
+		if updated {
+			runtime.GC()
+		}
 	}
 }

@@ -12,7 +12,14 @@
 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 * See the License for the specific language governing permissions and
 * limitations under the License.
- */
+*
+Part of this work fall under the AtomAI Enterprise Edition (EE)
+and are licensed under the Business Source License 1.1,
+if you are the Cloud companies or your companies with revenue greater than $1M,
+please refer to [AGPL-3.0](./LICENSE-EE)) and LICENSE-EE for details,
+and production use of the Licensed Work requires a commercial license agreement with Zedsearch.
+Contact info@atomai.cc for licensing.
+*/
 
 package core
 
@@ -113,7 +120,7 @@ func MultiSearch(indexNames []string, query *meta.ZedQuery) (*meta.SearchRespons
 		return nil, err
 	}
 
-	return searchV2(shardNum, int64(len(readers)), dmi, query, mappings)
+	return searchV2(shardNum, int64(len(readers)), dmi, query, mappings, analyzers)
 }
 
 // isMatchIndex("abc", "a")  false

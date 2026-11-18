@@ -17,6 +17,7 @@
 package core
 
 import (
+	"context"
 	"reflect"
 	"strconv"
 	"testing"
@@ -29,6 +30,7 @@ import (
 	"github.com/vcaesar/riot/analysis"
 	"github.com/vcaesar/riot/analysis/analyzer"
 
+	"github.com/vcaesar/zedsearch/pkg/config"
 	"github.com/vcaesar/zedsearch/pkg/meta"
 	"github.com/vcaesar/zedsearch/pkg/zutils/json"
 )
@@ -360,6 +362,107 @@ func TestIndex_BuildBlugeDocumentFromJSON_GeoPoint(t *testing.T) {
 	}
 }
 
+func TestIndexShard_checkProperty_KeepsMappedText(t *testing.T) {
+	indexName := "TestIndexShard_checkProperty_KeepsMappedText.index_1"
+	index, err := NewIndex(indexName, "disk", 1)
+	assert.NoError(t, err)
+	assert.NoError(t, StoreIndex(index))
+	defer func() { assert.NoError(t, DeleteIndex(indexName)) }()
+	defer func(v bool) { config.Global.EnableTextKeywordMapping = v }(config.Global.EnableTextKeywordMapping)
+
+	for _, keyword := range []bool{false, true} {
+		t.Run(strconv.FormatBool(keyword), func(t *testing.T) {
+			config.Global.EnableTextKeywordMapping = keyword
+			mappings := meta.NewMappings()
+			mappings.SetProperty("body", meta.Property{Type: "text", Index: true, Highlightable: true, Analyzer: "simple"})
+			shard := index.GetShardByDocID("1")
+
+			assert.Equal(t, keyword, shard.checkProperty(mappings, "body", "quick fox"))
+			body, _ := mappings.GetProperty("body")
+			assert.True(t, body.Highlightable)
+			assert.Equal(t, "simple", body.Analyzer)
+			_, sub := mappings.GetProperty("body.keyword")
+			assert.Equal(t, keyword, sub)
+			_, field := body.Fields["keyword"]
+			assert.Equal(t, keyword, field)
+			assert.False(t, shard.checkProperty(mappings, "body", "quick fox"), "already mapped")
+		})
+	}
+}
+
+func TestIndex_BuildBlugeDocumentFromJSON_AllFieldPositions(t *testing.T) {
+	indexName := "TestIndex_BuildBlugeDocumentFromJSON_AllFieldPositions.index_1"
+	index, err := NewIndex(indexName, "disk", 1)
+	assert.NoError(t, err)
+	assert.NoError(t, StoreIndex(index))
+	defer func() { assert.NoError(t, DeleteIndex(indexName)) }()
+	defer func(v bool) { config.Global.AllFieldPositions = v }(config.Global.AllFieldPositions)
+	// .keyword sub-fields (sh/test.sh enables them) would add whole values to _all
+	defer func(v bool) { config.Global.EnableTextKeywordMapping = v }(config.Global.EnableTextKeywordMapping)
+	config.Global.EnableTextKeywordMapping = false
+	index.GetMappings().SetAllEnabled(true)
+
+	tests := []struct {
+		name       string
+		positions  bool
+		phraseHits uint64
+	}{
+		{name: "positions", positions: true, phraseHits: 1},
+		{name: "terms only", positions: false, phraseHits: 0},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config.Global.AllFieldPositions = tt.positions
+			docID := strconv.Itoa(i)
+			shard := index.GetShardByDocID(docID)
+			got, err := shard.CheckDocument(docID, map[string]interface{}{"title": "quick fox", "body": "quick brown fox"}, false, 0)
+			assert.NoError(t, err)
+			var doc map[string]interface{}
+			assert.NoError(t, json.Unmarshal(got, &doc))
+			bdoc, err := shard.BuildBlugeDocumentFromJSON(docID, doc)
+			assert.NoError(t, err)
+
+			bdoc.Analyze()
+			found := false
+			bdoc.EachField(func(f segment.Field) {
+				if f.Name() != "_all" {
+					return
+				}
+				found = true
+				assert.Equal(t, 5, f.Length())
+				f.EachTerm(func(term segment.FieldTerm) {
+					want := map[string]int{"quick": 2, "fox": 2, "brown": 1}[string(term.Term())]
+					assert.Equal(t, want, term.Frequency(), string(term.Term()))
+					locs := 0
+					term.EachLocation(func(segment.Location) { locs++ })
+					if tt.positions {
+						assert.Equal(t, want, locs)
+					} else {
+						assert.Zero(t, locs)
+					}
+				})
+			})
+			assert.True(t, found, "_all field not indexed")
+
+			w, err := riot.OpenWriter(riot.InMemoryOnlyConfig())
+			assert.NoError(t, err)
+			defer func() { assert.NoError(t, w.Close()) }()
+			assert.NoError(t, w.Insert(bdoc))
+			r, err := w.Reader()
+			assert.NoError(t, err)
+			defer func() { assert.NoError(t, r.Close()) }()
+			count := func(q riot.Query) uint64 {
+				dmi, err := r.Search(context.Background(), riot.NewTopNSearch(10, q).WithStandardAggregations())
+				assert.NoError(t, err)
+				return dmi.Aggregations().Count()
+			}
+			assert.Equal(t, uint64(1), count(riot.NewTermQuery("brown").SetField("_all")))
+			assert.Equal(t, tt.phraseHits, count(riot.NewMatchPhraseQuery("brown fox").SetField("_all")))
+			assert.Equal(t, uint64(1), count(riot.NewMatchPhraseQuery("brown fox").SetField("body")))
+		})
+	}
+}
+
 func TestIndex_BuildBlugeDocumentFromJSON_Vector(t *testing.T) {
 	indexName := "TestIndex_BuildBlugeDocumentFromJSON_Vector.index_1"
 	index, err := NewIndex(indexName, "disk", 2)
@@ -473,4 +576,99 @@ func TestIndex_Settings(t *testing.T) {
 		err := DeleteIndex(indexName)
 		assert.NoError(t, err)
 	})
+}
+
+func TestIndex_BuildBlugeDocumentFromJSON_ExcludeSourceVectors(t *testing.T) {
+	for _, exclude := range []bool{true, false} {
+		t.Run(strconv.FormatBool(exclude), func(t *testing.T) {
+			indexName := "TestIndex_BuildBlugeDocumentFromJSON_ExcludeSourceVectors.index_" + strconv.FormatBool(exclude)
+			index, err := NewIndex(indexName, "disk", 1)
+			assert.NoError(t, err)
+			assert.NoError(t, index.SetSettings(&meta.IndexSettings{ExcludeSourceVectors: &exclude}))
+			assert.NoError(t, StoreIndex(index))
+			defer func() { assert.NoError(t, DeleteIndex(indexName)) }()
+			index.GetMappings().SetProperty("emb", meta.NewProperty("vector"))
+			index.GetMappings().SetProperty("name", meta.NewProperty("keyword"))
+			assert.Equal(t, exclude, index.ExcludeSourceVectors())
+
+			shard := index.GetShardByDocID("1")
+			got, err := shard.CheckDocument("1", map[string]interface{}{"name": "x", "emb": []interface{}{1.0, 2.0}}, false, 0)
+			assert.NoError(t, err)
+			var doc map[string]interface{}
+			assert.NoError(t, json.Unmarshal(got, &doc))
+			bdoc, err := shard.BuildBlugeDocumentFromJSON("1", doc)
+			assert.NoError(t, err)
+
+			stored := map[string]string{}
+			bdoc.EachField(func(f segment.Field) {
+				if f.Name() == "_source" || f.Name() == meta.SourceVectorsField {
+					stored[f.Name()] = string(f.Value())
+				}
+			})
+			if exclude {
+				assert.JSONEq(t, `{"name":"x"}`, stored["_source"])
+				assert.Equal(t, "emb", stored[meta.SourceVectorsField])
+			} else {
+				assert.JSONEq(t, `{"name":"x","emb":[1,2]}`, stored["_source"])
+				assert.NotContains(t, stored, meta.SourceVectorsField)
+			}
+		})
+	}
+}
+
+func TestIndex_SetSettings_ExcludeSourceVectorsImmutable(t *testing.T) {
+	indexName := "TestIndex_SetSettings_ExcludeSourceVectorsImmutable.index_1"
+	index, err := NewIndex(indexName, "disk", 1)
+	assert.NoError(t, err)
+	assert.NoError(t, StoreIndex(index))
+	defer func() { assert.NoError(t, DeleteIndex(indexName)) }()
+	assert.Equal(t, config.Global.ExcludeSourceVectors, index.ExcludeSourceVectors())
+	no, yes := false, true
+	assert.NoError(t, index.SetSettings(&meta.IndexSettings{ExcludeSourceVectors: &no}))
+	assert.NoError(t, index.SetSettings(&meta.IndexSettings{ExcludeSourceVectors: &yes}))
+	assert.False(t, index.ExcludeSourceVectors())
+}
+
+func TestIndex_BuildBlugeDocumentFromJSON_OptionalFields(t *testing.T) {
+	defer func(v bool) { config.Global.AutoTimestamp = v }(config.Global.AutoTimestamp)
+	tests := []struct {
+		name          string
+		all           bool
+		autoTimestamp bool
+		doc           map[string]interface{}
+		wantAll       bool
+		wantTimestamp bool
+	}{
+		{name: "defaults off", autoTimestamp: true, doc: map[string]interface{}{"body": "fox"}, wantTimestamp: true},
+		{name: "_all on", all: true, autoTimestamp: true, doc: map[string]interface{}{"body": "fox"}, wantAll: true, wantTimestamp: true},
+		{name: "no auto timestamp", doc: map[string]interface{}{"body": "fox"}},
+		{name: "no auto timestamp keeps own", doc: map[string]interface{}{"body": "fox", "@timestamp": "2026-01-02T03:04:05Z"}, wantTimestamp: true},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			indexName := "TestIndex_BuildBlugeDocumentFromJSON_OptionalFields.index_" + strconv.Itoa(i)
+			index, err := NewIndex(indexName, "disk", 1)
+			assert.NoError(t, err)
+			assert.NoError(t, StoreIndex(index))
+			defer func() { assert.NoError(t, DeleteIndex(indexName)) }()
+			if tt.all {
+				index.GetMappings().SetAllEnabled(true)
+			}
+			config.Global.AutoTimestamp = tt.autoTimestamp
+
+			shard := index.GetShardByDocID("1")
+			got, err := shard.CheckDocument("1", tt.doc, false, 0)
+			assert.NoError(t, err)
+			var doc map[string]interface{}
+			assert.NoError(t, json.Unmarshal(got, &doc))
+			bdoc, err := shard.BuildBlugeDocumentFromJSON("1", doc)
+			assert.NoError(t, err)
+
+			fields := map[string]bool{}
+			bdoc.EachField(func(f segment.Field) { fields[f.Name()] = true })
+			assert.Equal(t, tt.wantAll, fields["_all"])
+			assert.Equal(t, tt.wantTimestamp, fields[meta.TimeFieldName])
+			assert.True(t, fields["body"])
+		})
+	}
 }

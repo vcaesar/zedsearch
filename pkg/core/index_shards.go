@@ -12,7 +12,14 @@
 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 * See the License for the specific language governing permissions and
 * limitations under the License.
- */
+*
+Part of this work fall under the AtomAI Enterprise Edition (EE)
+and are licensed under the Business Source License 1.1,
+if you are the Cloud companies or your companies with revenue greater than $1M,
+please refer to [AGPL-3.0](./LICENSE-EE)) and LICENSE-EE for details,
+or production use of the Licensed Work requires a commercial license agreement with Zedsearch.
+Contact info@atomai.cc for licensing.
+*/
 
 package core
 
@@ -419,6 +426,9 @@ func (s *IndexShard) FindDocumentByDocID(docID string) (*meta.Hit, error) {
 				var indexName string
 				var timestamp time.Time
 				var sourceData map[string]interface{}
+				var storedSource []byte
+				var hasSource bool
+				vectors := meta.NewSourceVectors(s.root.GetMappings().VectorFields())
 				if next, err := dmi.Next(); err == nil {
 					_ = next.VisitStoredFields(func(field string, value []byte) bool {
 						switch field {
@@ -429,11 +439,20 @@ func (s *IndexShard) FindDocumentByDocID(docID string) (*meta.Hit, error) {
 						case "@timestamp":
 							timestamp, _ = riot.DecodeDateTime(value)
 						case "_source":
-							sourceData = source.Response(&meta.Source{Enable: true}, value)
-						default: // do nothing
+							storedSource, hasSource = append([]byte(nil), value...), true
+						default:
+							vectors.Visit(field, value)
 						}
 						return true
 					})
+				}
+				if hasSource {
+					value, err := vectors.Restore(storedSource)
+					if err != nil {
+						log.Error().Err(err).Str("index", s.GetIndexName()).Str("id", id).Msg("failed to restore _source vectors")
+						value = storedSource
+					}
+					sourceData = source.Response(&meta.Source{Enable: true}, value)
 				}
 				hit = &meta.Hit{
 					Index:     indexName,

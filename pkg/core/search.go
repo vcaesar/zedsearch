@@ -12,7 +12,14 @@
 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 * See the License for the specific language governing permissions and
 * limitations under the License.
- */
+*
+Part of this work fall under the AtomAI Enterprise Edition (EE)
+and are licensed under the Business Source License 1.1,
+if you are the Cloud companies or your companies with revenue greater than $1M,
+please refer to [AGPL-3.0](./LICENSE-EE)) and LICENSE-EE for details,
+and production use of the Licensed Work requires a commercial license agreement with Zedsearch.
+Contact info@atomai.cc for licensing.
+*/
 
 package core
 
@@ -23,16 +30,20 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/vcaesar/riot"
 	"github.com/vcaesar/riot/analysis"
+	"github.com/vcaesar/riot/analysis/analyzer"
 	"github.com/vcaesar/riot/search"
 	"github.com/vcaesar/riot/search/highlight"
 
 	zedsearch "github.com/vcaesar/zedsearch/pkg/bluge/search"
 	"github.com/vcaesar/zedsearch/pkg/meta"
 	"github.com/vcaesar/zedsearch/pkg/uquery"
+	zedanalysis "github.com/vcaesar/zedsearch/pkg/uquery/analysis"
 	"github.com/vcaesar/zedsearch/pkg/uquery/fields"
+	zedhighlight "github.com/vcaesar/zedsearch/pkg/uquery/highlight"
 	uquerydsl "github.com/vcaesar/zedsearch/pkg/uquery/query"
 	"github.com/vcaesar/zedsearch/pkg/uquery/source"
 	"github.com/vcaesar/zedsearch/pkg/uquery/timerange"
+	"github.com/vcaesar/zedsearch/pkg/zutils/json"
 )
 
 func (index *Index) Search(query *meta.ZedQuery) (*meta.SearchResponse, error) {
@@ -82,10 +93,11 @@ func (index *Index) Search(query *meta.ZedQuery) (*meta.SearchResponse, error) {
 		return nil, err
 	}
 
-	return searchV2(index.GetAllShardNum(), int64(len(readers)), dmi, query, mappings)
+	return searchV2(index.GetAllShardNum(), int64(len(readers)), dmi, query, mappings, analyzers)
 }
 
-func searchV2(shardNum, readerNum int64, dmi search.DocumentMatchIterator, query *meta.ZedQuery, mappings *meta.Mappings) (*meta.SearchResponse, error) {
+func searchV2(shardNum, readerNum int64, dmi search.DocumentMatchIterator, query *meta.ZedQuery,
+	mappings *meta.Mappings, analyzers map[string]*analysis.Analyzer) (*meta.SearchResponse, error) {
 	resp := &meta.SearchResponse{
 		Hits: meta.Hits{Hits: []meta.Hit{}},
 	}
@@ -99,6 +111,27 @@ func searchV2(shardNum, readerNum int64, dmi search.DocumentMatchIterator, query
 			highlighter = highlight.NewHTMLHighlighter()
 		}
 	}
+	highlightAnalyzers := highlightFieldAnalyzers(query.Highlight, mappings, analyzers)
+	// highlightField returns the fragments of value, nil when matchedOnly is set
+	// and value has no matched term.
+	highlightField := func(next *search.DocumentMatch, field string, value []byte, matchedOnly bool) []string {
+		options, ok := query.Highlight.Fields[field]
+		if !ok {
+			return nil
+		}
+		v, ok := next.Locations[field]
+		if !ok {
+			return nil
+		}
+		v = zedhighlight.Locations(highlightAnalyzers[field], value, v)
+		if matchedOnly && len(v) == 0 {
+			return nil
+		}
+		if len(options.PreTags) > 0 && len(options.PostTags) > 0 {
+			return highlight.NewHTMLHighlighterTags(options.PreTags[0], options.PostTags[0]).BestFragments(v, value, options.NumberOfFragments)
+		}
+		return highlighter.BestFragments(v, value, options.NumberOfFragments)
+	}
 
 	Hits := make([]meta.Hit, 0)
 	// declared once and reset per hit: the stored fields closure below makes
@@ -106,10 +139,15 @@ func searchV2(shardNum, readerNum int64, dmi search.DocumentMatchIterator, query
 	var id, indexName string
 	var timestamp time.Time
 	var sourceData, fieldsData, highlightData map[string]interface{}
+	var rawSource, storedSource []byte
+	var hasSource bool
+	vectors := meta.NewSourceVectors(mappings.VectorFields())
 	next, err := dmi.Next()
 	for err == nil && next != nil {
 		id, indexName, timestamp = "", "", time.Time{}
 		sourceData, fieldsData, highlightData = nil, nil, nil
+		rawSource, storedSource, hasSource = rawSource[:0], storedSource[:0], false
+		vectors.Reset()
 		if query.Highlight != nil {
 			highlightData = make(map[string]interface{})
 		}
@@ -122,22 +160,18 @@ func searchV2(shardNum, readerNum int64, dmi search.DocumentMatchIterator, query
 			case "@timestamp":
 				timestamp, _ = riot.DecodeDateTime(value)
 			case "_source":
-				sourceData = source.Response(query.Source.(*meta.Source), value)
-				if query.Fields != nil {
-					fieldsData = fields.Response(query.Fields.([]*meta.Field), value, mappings)
+				storedSource, hasSource = append(storedSource, value...), true
+				if len(highlightAnalyzers) > 0 {
+					rawSource = append(rawSource, value...)
 				}
 			default:
+				if vectors.Visit(field, value) {
+					return true
+				}
 				// highlight
-				if query.Highlight != nil && query.Highlight.Fields != nil {
-					if options, ok := query.Highlight.Fields[field]; ok {
-						if v, ok := next.Locations[field]; ok {
-							if len(options.PreTags) > 0 && len(options.PostTags) > 0 {
-								highlighter := highlight.NewHTMLHighlighterTags(options.PreTags[0], options.PostTags[0])
-								highlightData[field] = highlighter.BestFragments(v, value, options.NumberOfFragments)
-							} else {
-								highlightData[field] = highlighter.BestFragments(v, value, options.NumberOfFragments)
-							}
-						}
+				if len(highlightAnalyzers) > 0 {
+					if fragments := highlightField(next, field, value, false); fragments != nil {
+						highlightData[field] = fragments
 					}
 				}
 			}
@@ -148,8 +182,27 @@ func searchV2(shardNum, readerNum int64, dmi search.DocumentMatchIterator, query
 			log.Printf("core.SearchV2: error accessing stored fields: %s", err.Error())
 			continue
 		}
+		if hasSource {
+			value, rerr := vectors.Restore(storedSource)
+			if rerr != nil {
+				log.Printf("core.SearchV2: error restoring _source vectors of [%s]: %s", id, rerr.Error())
+				value = storedSource
+			}
+			sourceData = source.Response(query.Source.(*meta.Source), value)
+			if query.Fields != nil {
+				fieldsData = fields.Response(query.Fields.([]*meta.Field), value, mappings)
+			}
+		}
+		// as Elasticsearch, fields without a stored value are highlighted from _source
+		if len(rawSource) > 0 && len(highlightData) < len(highlightAnalyzers) {
+			highlightFromSource(rawSource, highlightAnalyzers, next.Locations, highlightData, func(field string, value []byte) []string {
+				return highlightField(next, field, value, true)
+			})
+		}
 
-		if query.Source.(*meta.Source) == nil || !query.Source.(*meta.Source).Enable || len(query.Source.(*meta.Source).Fields) == 0 {
+		// documents of an index with _source disabled have no _source
+		if sourceData != nil && !timestamp.IsZero() && (query.Source.(*meta.Source) == nil ||
+			!query.Source.(*meta.Source).Enable || len(query.Source.(*meta.Source).Fields) == 0) {
 			sourceData["@timestamp"] = timestamp
 		}
 
@@ -184,6 +237,89 @@ func searchV2(shardNum, readerNum int64, dmi search.DocumentMatchIterator, query
 	}
 
 	return resp, nil
+}
+
+// highlightFromSource highlights each matched field of fields missing in data
+// with the string values of the field in the _source document raw.
+func highlightFromSource(raw []byte, fields map[string]*analysis.Analyzer, matched search.FieldTermLocationMap,
+	data map[string]interface{}, highlightField func(field string, value []byte) []string) {
+	missing := false
+	for field := range fields {
+		if _, ok := data[field]; !ok && matched[field] != nil {
+			missing = true
+			break
+		}
+	}
+	if !missing {
+		return
+	}
+	var doc map[string]interface{}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		log.Printf("core.SearchV2: error decoding _source for highlight: %s", err.Error())
+		return
+	}
+	for field := range fields {
+		if _, ok := data[field]; ok {
+			continue
+		}
+		var fragments []string
+		for _, value := range sourceStrings(doc, field) {
+			fragments = append(fragments, highlightField(field, []byte(value))...)
+		}
+		if len(fragments) > 0 {
+			data[field] = fragments
+		}
+	}
+}
+
+// sourceStrings returns the string values of the dotted field path in doc,
+// either a string or the strings of an array.
+func sourceStrings(doc map[string]interface{}, field string) []string {
+	if v, ok := doc[field]; ok {
+		switch v := v.(type) {
+		case string:
+			return []string{v}
+		case []interface{}:
+			values := make([]string, 0, len(v))
+			for _, e := range v {
+				if s, ok := e.(string); ok {
+					values = append(values, s)
+				}
+			}
+			return values
+		}
+		return nil
+	}
+	for i := len(field) - 1; i > 0; i-- {
+		if field[i] != '.' {
+			continue
+		}
+		if sub, ok := doc[field[:i]].(map[string]interface{}); ok {
+			return sourceStrings(sub, field[i+1:])
+		}
+	}
+	return nil
+}
+
+// highlightFieldAnalyzers returns the index analyzer of each highlighted
+// text field, nil for keywords, to find the offsets of matched terms.
+func highlightFieldAnalyzers(h *meta.Highlight, mappings *meta.Mappings, analyzers map[string]*analysis.Analyzer) map[string]*analysis.Analyzer {
+	if h == nil || len(h.Fields) == 0 {
+		return nil
+	}
+	zers := make(map[string]*analysis.Analyzer, len(h.Fields))
+	for field := range h.Fields {
+		if prop, ok := mappings.GetProperty(field); ok && prop.Type != "text" {
+			zers[field] = nil
+			continue
+		}
+		zer, _ := zedanalysis.QueryAnalyzerForField(analyzers, mappings, field)
+		if zer == nil {
+			zer = analyzer.NewStandardAnalyzer()
+		}
+		zers[field] = zer
+	}
+	return zers
 }
 
 // rewriteJoinQuery resolves nested and join clauses of query and hides nested

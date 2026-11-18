@@ -254,6 +254,8 @@ func TestIndex_Search(t *testing.T) {
 		err = StoreIndex(index)
 		assert.NoError(t, err)
 
+		// the queries search the _all field, off by default
+		index.GetMappings().SetAllEnabled(true)
 		index.GetMappings().SetProperty("address.city", meta.Property{
 			Type:          "text",
 			Index:         true,
@@ -324,7 +326,7 @@ func TestSearchV2_ResetsFieldsPerHit(t *testing.T) {
 	require.NoError(t, err)
 
 	query := &meta.ZedQuery{Source: &meta.Source{Enable: true}}
-	resp, err := searchV2(1, 1, dmi, query, meta.NewMappings())
+	resp, err := searchV2(1, 1, dmi, query, meta.NewMappings(), nil)
 	require.NoError(t, err)
 	require.Len(t, resp.Hits.Hits, 2)
 
@@ -338,4 +340,151 @@ func TestSearchV2_ResetsFieldsPerHit(t *testing.T) {
 	assert.Empty(t, got[1].Index, "_index must not leak from the previous hit")
 	assert.True(t, got[1].Timestamp.IsZero(), "@timestamp must not leak from the previous hit")
 	assert.Equal(t, float64(2), got[1].Source.(map[string]interface{})["x"])
+}
+
+func TestIndex_Search_HighlightWithoutOffsets(t *testing.T) {
+	indexName := "TestIndex_Search_HighlightWithoutOffsets.index_1"
+	index, err := NewIndex(indexName, "disk", 1)
+	require.NoError(t, err)
+	require.NoError(t, StoreIndex(index))
+	defer func() { assert.NoError(t, DeleteIndex(indexName)) }()
+	index.GetMappings().SetProperty("body", meta.Property{Type: "text", Index: true, Highlightable: true})
+
+	require.NoError(t, index.CreateDocument("1", map[string]interface{}{"body": "Quick fox, quick brown fox"}, false))
+	waitForDocs(t, index, 1)
+
+	tests := []struct {
+		name  string
+		query *meta.Query
+		want  string
+	}{
+		{
+			name:  "match",
+			query: &meta.Query{Match: map[string]*meta.MatchQuery{"body": {Query: "brown"}}},
+			want:  "Quick fox, quick <b>brown</b> fox",
+		},
+		{
+			name:  "phrase marks only the phrase",
+			query: &meta.Query{MatchPhrase: map[string]*meta.MatchPhraseQuery{"body": {Query: "quick brown"}}},
+			want:  "Quick fox, <b>quick</b> <b>brown</b> fox",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, err := index.Search(&meta.ZedQuery{Query: tt.query, Size: 10, Highlight: &meta.Highlight{
+				Fields: map[string]*meta.Highlight{"body": {PreTags: []string{"<b>"}, PostTags: []string{"</b>"}}},
+			}})
+			require.NoError(t, err)
+			require.Len(t, resp.Hits.Hits, 1)
+			assert.Equal(t, []string{tt.want}, resp.Hits.Hits[0].Highlight["body"])
+		})
+	}
+}
+
+func TestIndex_Search_HighlightFromSource(t *testing.T) {
+	indexName := "TestIndex_Search_HighlightFromSource.index_1"
+	index, err := NewIndex(indexName, "disk", 1)
+	require.NoError(t, err)
+	require.NoError(t, StoreIndex(index))
+	defer func() { assert.NoError(t, DeleteIndex(indexName)) }()
+	// as Elasticsearch, no field is highlightable or stored
+	for _, f := range []string{"body", "tags", "meta.note"} {
+		index.GetMappings().SetProperty(f, meta.Property{Type: "text", Index: true})
+	}
+
+	require.NoError(t, index.CreateDocument("1", map[string]interface{}{
+		"body": "Quick fox, quick brown fox",
+		"tags": []interface{}{"red fox", "brown dog"},
+		"meta": map[string]interface{}{"note": "a brown note"},
+	}, false))
+	waitForDocs(t, index, 1)
+
+	tags := map[string]*meta.Highlight{"body": {}, "tags": {}, "meta.note": {}, "title": {}}
+	resp, err := index.Search(&meta.ZedQuery{
+		Query: &meta.Query{QueryString: &meta.QueryStringQuery{Query: "body:brown tags:brown meta.note:brown"}},
+		Size:  10, Highlight: &meta.Highlight{PreTags: []string{"<b>"}, PostTags: []string{"</b>"}, Fields: tags},
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.Hits.Hits, 1)
+	h := resp.Hits.Hits[0].Highlight
+	assert.Equal(t, []string{"Quick fox, quick <b>brown</b> fox"}, h["body"])
+	assert.Equal(t, []string{"<b>brown</b> dog"}, h["tags"])
+	assert.Equal(t, []string{"a <b>brown</b> note"}, h["meta.note"])
+	assert.NotContains(t, h, "title")
+	assert.NotNil(t, resp.Hits.Hits[0].Source)
+
+	resp, err = index.Search(&meta.ZedQuery{
+		Query: &meta.Query{Match: map[string]*meta.MatchQuery{"body": {Query: "brown"}}},
+		Size:  10, Highlight: &meta.Highlight{Fields: map[string]*meta.Highlight{"tags": {}}},
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.Hits.Hits, 1)
+	assert.Empty(t, resp.Hits.Hits[0].Highlight, "tags did not match")
+}
+
+func TestSourceStrings(t *testing.T) {
+	doc := map[string]interface{}{
+		"a":   "x",
+		"b":   []interface{}{"y", 1.0, "z"},
+		"c":   map[string]interface{}{"d": "w", "e": map[string]interface{}{"f": "v"}},
+		"g.h": "dotted",
+		"n":   1.0,
+	}
+	tests := []struct {
+		field string
+		want  []string
+	}{
+		{"a", []string{"x"}},
+		{"b", []string{"y", "z"}},
+		{"c.d", []string{"w"}},
+		{"c.e.f", []string{"v"}},
+		{"g.h", []string{"dotted"}},
+		{"n", nil},
+		{"c", nil},
+		{"missing.x", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.field, func(t *testing.T) {
+			assert.Equal(t, tt.want, sourceStrings(doc, tt.field))
+		})
+	}
+}
+
+func TestIndex_Search_SourceDisabled(t *testing.T) {
+	indexName := "TestIndex_Search_SourceDisabled.index_1"
+	index, err := NewIndex(indexName, "disk", 1)
+	require.NoError(t, err)
+	require.NoError(t, StoreIndex(index))
+	defer func() { assert.NoError(t, DeleteIndex(indexName)) }()
+
+	mappings := meta.NewMappings()
+	mappings.SetSourceEnabled(false)
+	mappings.SetProperty("body", meta.Property{Type: "text", Index: true, Highlightable: true})
+	require.NoError(t, index.SetMappings(mappings))
+	assert.False(t, index.GetMappings().SourceEnabled())
+
+	nested := meta.NewMappings()
+	nested.SetProperty("items", meta.NewProperty("nested"))
+	assert.Error(t, index.SetMappings(nested), "nested needs _source")
+
+	require.NoError(t, index.CreateDocument("1", map[string]interface{}{"body": "quick brown fox"}, false))
+	waitForDocs(t, index, 1)
+
+	resp, err := index.Search(&meta.ZedQuery{
+		Query: &meta.Query{Match: map[string]*meta.MatchQuery{"body": {Query: "brown"}}},
+		Size:  10,
+		Highlight: &meta.Highlight{Fields: map[string]*meta.Highlight{
+			"body": {PreTags: []string{"<b>"}, PostTags: []string{"</b>"}},
+		}},
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.Hits.Hits, 1)
+	hit := resp.Hits.Hits[0]
+	assert.Equal(t, "1", hit.ID)
+	assert.Nil(t, hit.Source)
+	assert.Equal(t, []string{"quick <b>brown</b> fox"}, hit.Highlight["body"])
+
+	got, err := index.GetDocument("1")
+	require.NoError(t, err)
+	assert.Nil(t, got.Source)
 }

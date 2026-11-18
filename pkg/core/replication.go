@@ -11,7 +11,14 @@
 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 * See the License for the specific language governing permissions and
 * limitations under the License.
- */
+*
+Part of this work fall under the AtomAI Enterprise Edition (EE)
+and are licensed under the Business Source License 1.1,
+if you are the Cloud companies or your companies with revenue greater than $1M,
+please refer to [AGPL-3.0](./LICENSE-EE)) and LICENSE-EE for details,
+and production use of the Licensed Work requires a commercial license agreement with Zedsearch.
+Contact info@atomai.cc for licensing.
+*/
 
 package core
 
@@ -150,6 +157,12 @@ func (index *Index) WaitApplied(timeout time.Duration) error {
 		}
 	}
 	return nil
+}
+
+// Refresh waits until the documents written so far are searchable. The WAL
+// consumer applies them, so writers and WAL stay open.
+func (index *Index) Refresh() error {
+	return index.WaitApplied(walFlushTimeout)
 }
 
 // SyncWAL flushes the open WAL of every shard to stable storage.

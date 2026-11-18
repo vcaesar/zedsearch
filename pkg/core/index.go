@@ -12,7 +12,14 @@
 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 * See the License for the specific language governing permissions and
 * limitations under the License.
- */
+*
+Part of this work fall under the AtomAI Enterprise Edition (EE)
+and are licensed under the Business Source License 1.1,
+if you are the Cloud companies or your companies with revenue greater than $1M,
+please refer to [AGPL-3.0](./LICENSE-EE)) and LICENSE-EE for details,
+and production use of the Licensed Work requires a commercial license agreement with Zedsearch.
+Contact info@atomai.cc for licensing.
+*/
 
 package core
 
@@ -25,6 +32,7 @@ import (
 	"github.com/vcaesar/riot/analysis"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/vcaesar/zedsearch/pkg/config"
 	"github.com/vcaesar/zedsearch/pkg/logs"
 	"github.com/vcaesar/zedsearch/pkg/meta"
 	zedanalysis "github.com/vcaesar/zedsearch/pkg/uquery/analysis"
@@ -104,6 +112,15 @@ func (index *Index) GetSettings() *meta.IndexSettings {
 	s := index.ref.Settings
 	index.lock.RUnlock()
 	return s
+}
+
+// ExcludeSourceVectors reports whether new documents keep their vector
+// fields out of the stored _source.
+func (index *Index) ExcludeSourceVectors() bool {
+	if s := index.GetSettings(); s != nil && s.ExcludeSourceVectors != nil {
+		return *s.ExcludeSourceVectors
+	}
+	return config.Global.ExcludeSourceVectors
 }
 
 func (index *Index) GetStats() meta.IndexStat {
@@ -196,6 +213,10 @@ func (index *Index) SetSettings(settings *meta.IndexSettings) error {
 	}
 	if settings.NumberOfShards > 0 && index.ref.Settings.NumberOfShards == 0 {
 		index.ref.Settings.NumberOfShards = settings.NumberOfShards
+	}
+	if settings.ExcludeSourceVectors != nil && index.ref.Settings.ExcludeSourceVectors == nil {
+		v := *settings.ExcludeSourceVectors
+		index.ref.Settings.ExcludeSourceVectors = &v
 	}
 	if settings.Tier != "" {
 		index.ref.Settings.Tier = settings.Tier
@@ -291,6 +312,29 @@ func (index *Index) SetMappings(mappings *meta.Mappings) error {
 	index.lock.Lock()
 	if index.ref.Mappings == nil {
 		index.ref.Mappings = meta.NewMappings()
+	}
+	sourceEnabled := index.ref.Mappings.SourceEnabled()
+	if mappings.Source != nil {
+		sourceEnabled = mappings.Source.Enabled
+	}
+	if !sourceEnabled {
+		// nested documents are rebuilt from the stored _source on update and delete
+		for field, prop := range mappings.ListProperty() {
+			if prop.Type == "nested" {
+				index.lock.Unlock()
+				return fmt.Errorf("[mappings] nested field [%s] requires _source", field)
+			}
+		}
+		if len(nestedPaths(index.ref.Mappings)) > 0 {
+			index.lock.Unlock()
+			return fmt.Errorf("[mappings] nested fields require _source")
+		}
+	}
+	if mappings.Source != nil {
+		index.ref.Mappings.SetSourceEnabled(mappings.Source.Enabled)
+	}
+	if mappings.All != nil {
+		index.ref.Mappings.SetAllEnabled(mappings.All.Enabled)
 	}
 	for field, prop := range mappings.ListProperty() {
 		index.ref.Mappings.SetProperty(field, prop)

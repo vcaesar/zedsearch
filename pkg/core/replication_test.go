@@ -18,7 +18,9 @@ package core
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -207,6 +209,31 @@ func TestFlushAndLoadIndex(t *testing.T) {
 
 	_, err = LoadIndex("TestFlushAndLoadIndex.missing")
 	assert.Error(t, err)
+}
+
+// Refresh returns once the documents written before it are searchable,
+// and leaves the writers and the WAL open.
+func TestIndexRefresh(t *testing.T) {
+	name := "TestIndexRefresh.index_1"
+	index, err := NewIndex(name, StorageTypeDisk, 2)
+	require.NoError(t, err)
+	require.NoError(t, StoreIndex(index))
+	t.Cleanup(func() { _ = DeleteIndex(name) })
+
+	// nothing written: no WAL is open, nothing to wait for
+	require.NoError(t, index.Refresh())
+
+	const docs = 300
+	for i := range docs {
+		require.NoError(t, index.CreateDocument(strconv.Itoa(i), map[string]interface{}{"name": "refreshed"}, false))
+	}
+	require.NoError(t, index.Refresh())
+	n, err := countDocs(index)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(docs), n, "documents are searchable when Refresh returns")
+	for _, shard := range index.shards {
+		assert.Equal(t, uint64(1), atomic.LoadUint64(&shard.open), "Refresh closed shard %s", shard.GetID())
+	}
 }
 
 func TestStoreGuard(t *testing.T) {
