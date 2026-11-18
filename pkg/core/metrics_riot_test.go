@@ -67,3 +67,35 @@ zed_riot_open_writers{index="TestRiotCollector.index_1"} 1
 	}, 10*time.Second, 20*time.Millisecond)
 	assert.Contains(t, counters(), "zed_riot_file_merge_seconds_total")
 }
+
+// TestRiotCollector_ConcurrentRollover scrapes while second shards are added
+// and writers are closed; run with -race.
+func TestRiotCollector_ConcurrentRollover(t *testing.T) {
+	name := "TestRiotCollector_ConcurrentRollover.index_1"
+	index, err := NewIndex(name, "disk", 1)
+	require.NoError(t, err)
+	require.NoError(t, StoreIndex(index))
+	t.Cleanup(func() { assert.NoError(t, DeleteIndex(name)) })
+	require.NoError(t, index.CreateDocument("1", map[string]interface{}{"name": "riot"}, false))
+	waitForDocs(t, index, 1)
+
+	reg := prometheus.NewPedanticRegistry()
+	require.NoError(t, reg.Register(RiotCollector))
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 50; i++ {
+			_, err := reg.Gather()
+			assert.NoError(t, err)
+		}
+	}()
+	shard := index.GetShardByDocID("1")
+	for i := 0; i < 3; i++ {
+		require.NoError(t, shard.NewShard())
+	}
+	<-done
+
+	assert.Len(t, index.openWriterStats(), 4)
+	require.NoError(t, shard.Close())
+	assert.Empty(t, index.openWriterStats())
+}

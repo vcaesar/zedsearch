@@ -23,10 +23,10 @@ Contact info@atomai.cc for licensing.
 package core
 
 import (
+	"slices"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/vcaesar/riot"
 	blugeindex "github.com/vcaesar/riot/index"
 )
 
@@ -93,16 +93,14 @@ func (riotCollector) Describe(ch chan<- *prometheus.Desc) {
 
 func (riotCollector) Collect(ch chan<- prometheus.Metric) {
 	for _, index := range ZED_INDEX_LIST.List() {
-		writers := index.openWriters()
+		writers := index.openWriterStats()
 		if len(writers) == 0 {
 			continue
 		}
 		sums := make([]float64, len(riotMetrics))
-		for _, w := range writers {
-			// Status never touches the directory, unlike DirectoryStats which lists object storage.
-			stats := w.Status()
-			for i, m := range riotMetrics {
-				sums[i] += m.value(&stats)
+		for i := range writers {
+			for j, m := range riotMetrics {
+				sums[j] += m.value(&writers[i])
 			}
 		}
 		name := index.GetName()
@@ -113,27 +111,29 @@ func (riotCollector) Collect(ch chan<- prometheus.Metric) {
 	}
 }
 
-// openWriters returns the shard writers already open, without opening any.
-func (index *Index) openWriters() []*riot.Writer {
+// openWriterStats returns the stats of the shard writers already open, without opening any.
+// Second shards are appended under index.lock, writers are opened under the second shard lock
+// and closed under the shard lock, so each snapshot is taken under the lock its mutation uses.
+func (index *Index) openWriterStats() []blugeindex.Stats {
 	index.lock.RLock()
-	shards := make([]*IndexShard, 0, len(index.shards))
+	shards := make(map[*IndexShard][]*IndexSecondShard, len(index.shards))
 	for _, shard := range index.shards {
-		shards = append(shards, shard)
+		shards[shard] = slices.Clone(shard.shards)
 	}
 	index.lock.RUnlock()
 
-	var writers []*riot.Writer
-	for _, shard := range shards {
+	var stats []blugeindex.Stats
+	for shard, seconds := range shards {
 		shard.lock.RLock()
-		seconds := shard.shards
-		shard.lock.RUnlock()
 		for _, second := range seconds {
 			second.lock.RLock()
 			if second.writer != nil {
-				writers = append(writers, second.writer)
+				// Status never touches the directory, unlike DirectoryStats which lists object storage.
+				stats = append(stats, second.writer.Status())
 			}
 			second.lock.RUnlock()
 		}
+		shard.lock.RUnlock()
 	}
-	return writers
+	return stats
 }

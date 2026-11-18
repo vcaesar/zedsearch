@@ -199,6 +199,10 @@ func (s *IndexShard) buildField(mappings *meta.Mappings, bdoc *riot.Document, ke
 			return nil
 		}
 		field = riot.NewKeywordField(key, v)
+		if prop.Highlightable {
+			// matches are reported by term location, a keyword has none without positions
+			field.SearchTermPositions()
+		}
 	case "bool":
 		field = riot.NewKeywordField(key, strconv.FormatBool(value.(bool)))
 	case "geo_point":

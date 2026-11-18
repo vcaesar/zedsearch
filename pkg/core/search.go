@@ -25,6 +25,8 @@ package core
 
 import (
 	"context"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -93,11 +95,13 @@ func (index *Index) Search(query *meta.ZedQuery) (*meta.SearchResponse, error) {
 		return nil, err
 	}
 
-	return searchV2(index.GetAllShardNum(), int64(len(readers)), dmi, query, mappings, analyzers)
+	return searchV2(index.GetAllShardNum(), int64(len(readers)), dmi, query, mappings, analyzers, nil)
 }
 
+// searchV2 renders the hits of dmi. Highlighting and fields use the mappings
+// and analyzers of the hit's index in indexes, mappings and analyzers otherwise.
 func searchV2(shardNum, readerNum int64, dmi search.DocumentMatchIterator, query *meta.ZedQuery,
-	mappings *meta.Mappings, analyzers map[string]*analysis.Analyzer) (*meta.SearchResponse, error) {
+	mappings *meta.Mappings, analyzers map[string]*analysis.Analyzer, indexes map[string]*Index) (*meta.SearchResponse, error) {
 	resp := &meta.SearchResponse{
 		Hits: meta.Hits{Hits: []meta.Hit{}},
 	}
@@ -111,10 +115,22 @@ func searchV2(shardNum, readerNum int64, dmi search.DocumentMatchIterator, query
 			highlighter = highlight.NewHTMLHighlighter()
 		}
 	}
-	highlightAnalyzers := highlightFieldAnalyzers(query.Highlight, mappings, analyzers)
-	// highlightField returns the fragments of value, nil when matchedOnly is set
-	// and value has no matched term.
-	highlightField := func(next *search.DocumentMatch, field string, value []byte, matchedOnly bool) []string {
+	highlightOn := query.Highlight != nil && len(query.Highlight.Fields) > 0
+	highlightIndexes := make(map[string]*highlightIndex)
+	highlightFor := func(indexName string) *highlightIndex {
+		if h, ok := highlightIndexes[indexName]; ok {
+			return h
+		}
+		m, a := mappings, analyzers
+		if index, ok := indexes[indexName]; ok {
+			m, a = index.GetMappings(), index.GetAnalyzers()
+		}
+		h := &highlightIndex{mappings: m, analyzers: highlightFieldAnalyzers(query.Highlight, m, a)}
+		highlightIndexes[indexName] = h
+		return h
+	}
+	// highlightField returns the fragments of value, nil when it has no matched term.
+	highlightField := func(next *search.DocumentMatch, zer *analysis.Analyzer, field string, value []byte) []string {
 		options, ok := query.Highlight.Fields[field]
 		if !ok {
 			return nil
@@ -123,8 +139,8 @@ func searchV2(shardNum, readerNum int64, dmi search.DocumentMatchIterator, query
 		if !ok {
 			return nil
 		}
-		v = zedhighlight.Locations(highlightAnalyzers[field], value, v)
-		if matchedOnly && len(v) == 0 {
+		v = zedhighlight.Locations(zer, value, v)
+		if len(v) == 0 {
 			return nil
 		}
 		if len(options.PreTags) > 0 && len(options.PostTags) > 0 {
@@ -141,12 +157,22 @@ func searchV2(shardNum, readerNum int64, dmi search.DocumentMatchIterator, query
 	var sourceData, fieldsData, highlightData map[string]interface{}
 	var rawSource, storedSource []byte
 	var hasSource bool
-	vectors := meta.NewSourceVectors(mappings.VectorFields())
+	// stored values to highlight, kept until _index, stored after them, is known
+	var storedValues []byte
+	var storedFields []storedField
+	// restoring only applies the fields a document lists as excluded, so the
+	// vector fields of all indexes are safe for each hit
+	vectorFields := mappings.VectorFields()
+	for _, index := range indexes {
+		vectorFields = append(vectorFields, index.GetMappings().VectorFields()...)
+	}
+	vectors := meta.NewSourceVectors(vectorFields)
 	next, err := dmi.Next()
 	for err == nil && next != nil {
 		id, indexName, timestamp = "", "", time.Time{}
 		sourceData, fieldsData, highlightData = nil, nil, nil
 		rawSource, storedSource, hasSource = rawSource[:0], storedSource[:0], false
+		storedValues, storedFields = storedValues[:0], storedFields[:0]
 		vectors.Reset()
 		if query.Highlight != nil {
 			highlightData = make(map[string]interface{})
@@ -161,18 +187,20 @@ func searchV2(shardNum, readerNum int64, dmi search.DocumentMatchIterator, query
 				timestamp, _ = riot.DecodeDateTime(value)
 			case "_source":
 				storedSource, hasSource = append(storedSource, value...), true
-				if len(highlightAnalyzers) > 0 {
+				if highlightOn {
 					rawSource = append(rawSource, value...)
 				}
 			default:
 				if vectors.Visit(field, value) {
 					return true
 				}
-				// highlight
-				if len(highlightAnalyzers) > 0 {
-					if fragments := highlightField(next, field, value, false); fragments != nil {
-						highlightData[field] = fragments
+				if _, ok := next.Locations[field]; ok && highlightOn {
+					if _, ok := query.Highlight.Fields[field]; !ok {
+						return true
 					}
+					start := len(storedValues)
+					storedValues = append(storedValues, value...)
+					storedFields = append(storedFields, storedField{name: field, start: start, end: len(storedValues)})
 				}
 			}
 
@@ -190,14 +218,28 @@ func searchV2(shardNum, readerNum int64, dmi search.DocumentMatchIterator, query
 			}
 			sourceData = source.Response(query.Source.(*meta.Source), value)
 			if query.Fields != nil {
-				fieldsData = fields.Response(query.Fields.([]*meta.Field), value, mappings)
+				m := mappings
+				if index, ok := indexes[indexName]; ok {
+					m = index.GetMappings()
+				}
+				fieldsData = fields.Response(query.Fields.([]*meta.Field), value, m)
 			}
 		}
-		// as Elasticsearch, fields without a stored value are highlighted from _source
-		if len(rawSource) > 0 && len(highlightData) < len(highlightAnalyzers) {
-			highlightFromSource(rawSource, highlightAnalyzers, next.Locations, highlightData, func(field string, value []byte) []string {
-				return highlightField(next, field, value, true)
-			})
+		if highlightOn {
+			h := highlightFor(indexName)
+			// an array stores one value per element, each highlighted on its own
+			for _, f := range storedFields {
+				if fragments := highlightField(next, h.analyzers[f.name], f.name, storedValues[f.start:f.end]); len(fragments) > 0 {
+					prev, _ := highlightData[f.name].([]string)
+					highlightData[f.name] = append(prev, fragments...)
+				}
+			}
+			// as Elasticsearch, fields without a stored value are highlighted from _source
+			if len(rawSource) > 0 && len(highlightData) < len(h.analyzers) {
+				highlightFromSource(rawSource, h, next.Locations, highlightData, func(field string, value []byte) []string {
+					return highlightField(next, h.analyzers[field], field, value)
+				})
+			}
 		}
 
 		// documents of an index with _source disabled have no _source
@@ -239,12 +281,24 @@ func searchV2(shardNum, readerNum int64, dmi search.DocumentMatchIterator, query
 	return resp, nil
 }
 
-// highlightFromSource highlights each matched field of fields missing in data
+// highlightIndex holds the highlight settings of the index of hits.
+type highlightIndex struct {
+	mappings  *meta.Mappings
+	analyzers map[string]*analysis.Analyzer // by highlighted field
+}
+
+// storedField locates the stored value of field name in a shared buffer.
+type storedField struct {
+	name       string
+	start, end int
+}
+
+// highlightFromSource highlights each matched field of h missing in data
 // with the string values of the field in the _source document raw.
-func highlightFromSource(raw []byte, fields map[string]*analysis.Analyzer, matched search.FieldTermLocationMap,
+func highlightFromSource(raw []byte, h *highlightIndex, matched search.FieldTermLocationMap,
 	data map[string]interface{}, highlightField func(field string, value []byte) []string) {
 	missing := false
-	for field := range fields {
+	for field := range h.analyzers {
 		if _, ok := data[field]; !ok && matched[field] != nil {
 			missing = true
 			break
@@ -258,12 +312,12 @@ func highlightFromSource(raw []byte, fields map[string]*analysis.Analyzer, match
 		log.Printf("core.SearchV2: error decoding _source for highlight: %s", err.Error())
 		return
 	}
-	for field := range fields {
-		if _, ok := data[field]; ok {
+	for field := range h.analyzers {
+		if _, ok := data[field]; ok || matched[field] == nil {
 			continue
 		}
 		var fragments []string
-		for _, value := range sourceStrings(doc, field) {
+		for _, value := range sourceStrings(doc, sourceField(h.mappings, field)) {
 			fragments = append(fragments, highlightField(field, []byte(value))...)
 		}
 		if len(fragments) > 0 {
@@ -272,33 +326,70 @@ func highlightFromSource(raw []byte, fields map[string]*analysis.Analyzer, match
 	}
 }
 
+// sourceField returns the _source path of field: a multi-field such as
+// "body.raw" indexes the value of its parent "body".
+func sourceField(mappings *meta.Mappings, field string) string {
+	i := strings.LastIndexByte(field, '.')
+	if i <= 0 {
+		return field
+	}
+	if parent, ok := mappings.GetProperty(field[:i]); ok {
+		if _, ok := parent.Fields[field[i+1:]]; ok {
+			return field[:i]
+		}
+	}
+	return field
+}
+
 // sourceStrings returns the string values of the dotted field path in doc,
 // either a string or the strings of an array.
 func sourceStrings(doc map[string]interface{}, field string) []string {
-	if v, ok := doc[field]; ok {
-		switch v := v.(type) {
-		case string:
-			return []string{v}
-		case []interface{}:
-			values := make([]string, 0, len(v))
-			for _, e := range v {
-				if s, ok := e.(string); ok {
-					values = append(values, s)
-				}
+	v, _ := sourceValue(doc, field)
+	switch v := v.(type) {
+	case string:
+		return []string{v}
+	case []interface{}:
+		values := make([]string, 0, len(v))
+		for _, e := range v {
+			if s, ok := e.(string); ok {
+				values = append(values, s)
 			}
-			return values
 		}
-		return nil
-	}
-	for i := len(field) - 1; i > 0; i-- {
-		if field[i] != '.' {
-			continue
-		}
-		if sub, ok := doc[field[:i]].(map[string]interface{}); ok {
-			return sourceStrings(sub, field[i+1:])
-		}
+		return values
 	}
 	return nil
+}
+
+// sourceValue returns the value at the dotted field path in v. As flatten
+// names them, objects are descended by key and arrays by numeric index.
+func sourceValue(v interface{}, field string) (interface{}, bool) {
+	switch v := v.(type) {
+	case map[string]interface{}:
+		if e, ok := v[field]; ok {
+			return e, true
+		}
+		for i := len(field) - 1; i > 0; i-- {
+			if field[i] != '.' {
+				continue
+			}
+			if sub, ok := v[field[:i]]; ok {
+				if e, ok := sourceValue(sub, field[i+1:]); ok {
+					return e, true
+				}
+			}
+		}
+	case []interface{}:
+		key, rest, nested := strings.Cut(field, ".")
+		n, err := strconv.Atoi(key)
+		if err != nil || n < 0 || n >= len(v) {
+			return nil, false
+		}
+		if !nested {
+			return v[n], true
+		}
+		return sourceValue(v[n], rest)
+	}
+	return nil, false
 }
 
 // highlightFieldAnalyzers returns the index analyzer of each highlighted

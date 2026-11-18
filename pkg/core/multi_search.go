@@ -44,6 +44,7 @@ func MultiSearch(indexNames []string, query *meta.ZedQuery) (*meta.SearchRespons
 	var analyzers map[string]*analysis.Analyzer
 	var readers []*riot.Reader
 	var shardNum int64
+	indexes := make(map[string]*Index)
 
 	timeMin, timeMax := timerange.Query(query.Query)
 	isMatched := false
@@ -72,7 +73,7 @@ func MultiSearch(indexNames []string, query *meta.ZedQuery) (*meta.SearchRespons
 			mappings = index.GetMappings()
 			analyzers = index.GetAnalyzers()
 		}
-
+		indexes[index.GetName()] = index
 	}
 
 	if len(readers) == 0 {
@@ -120,7 +121,7 @@ func MultiSearch(indexNames []string, query *meta.ZedQuery) (*meta.SearchRespons
 		return nil, err
 	}
 
-	return searchV2(shardNum, int64(len(readers)), dmi, query, mappings, analyzers)
+	return searchV2(shardNum, int64(len(readers)), dmi, query, mappings, analyzers, indexes)
 }
 
 // isMatchIndex("abc", "a")  false
