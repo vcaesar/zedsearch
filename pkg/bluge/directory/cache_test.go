@@ -281,3 +281,32 @@ func TestFileCachePutError(t *testing.T) {
 	_, err = newFileCache(filepath.Join(root, "blocked", "sub"), 100)
 	assert.Error(t, err)
 }
+
+func TestFileCachePutFile(t *testing.T) {
+	c, err := newFileCache(t.TempDir(), 100)
+	assert.NoError(t, err)
+	tmp := filepath.Join(c.TempDir(), "spool"+cacheTempExt)
+	assert.NoError(t, os.WriteFile(tmp, []byte("data"), 0o644))
+	assert.NoError(t, c.PutFile("idx/1.seg", tmp, 4))
+	got, ok := readCached(t, c, "idx/1.seg")
+	assert.True(t, ok)
+	assert.Equal(t, "data", got)
+	_, err = os.Stat(tmp)
+	assert.True(t, os.IsNotExist(err), "the file is moved, not copied")
+
+	other := filepath.Join(c.TempDir(), "other"+cacheTempExt)
+	assert.NoError(t, os.WriteFile(other, []byte("zzzz"), 0o644))
+	assert.NoError(t, c.PutFile("idx/1.seg", other, 4), "cached items are immutable")
+	got, _ = readCached(t, c, "idx/1.seg")
+	assert.Equal(t, "data", got)
+	assert.Error(t, c.PutFile("../x.seg", other, 4))
+}
+
+func TestOpenFileCache(t *testing.T) {
+	root := t.TempDir()
+	assert.Nil(t, openFileCache(root, 0), "size 0 disables the cache")
+	assert.NotNil(t, openFileCache(filepath.Join(root, "objcache"), 100))
+	blocked := filepath.Join(root, "file")
+	assert.NoError(t, os.WriteFile(blocked, []byte("x"), 0o644))
+	assert.Nil(t, openFileCache(filepath.Join(blocked, "objcache"), 100), "an unusable cache falls back to uncached loads")
+}

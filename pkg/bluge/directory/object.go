@@ -11,7 +11,14 @@
 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 * See the License for the specific language governing permissions and
 * limitations under the License.
- */
+*
+Part of this work fall under the AtomAI Enterprise Edition (EE)
+and are licensed under the Business Source License 1.1,
+if you are the Cloud companies or your companies with revenue greater than $1M,
+please refer to [AGPL-3.0](./LICENSE-EE)) and LICENSE-EE for details,
+or production use of the Licensed Work requires a commercial license agreement with Zedsearch.
+Contact info@atomai.cc for licensing.
+*/
 
 package directory
 
@@ -25,6 +32,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -45,7 +53,8 @@ type objectInfo struct {
 type objectStore interface {
 	List(ctx context.Context, prefix string) ([]objectInfo, error)
 	Get(ctx context.Context, key string) (io.ReadCloser, error)
-	Put(ctx context.Context, key string, data []byte) error
+	// Put stores size bytes read from r under key.
+	Put(ctx context.Context, key string, r io.Reader, size int64) error
 	Delete(ctx context.Context, key string) error
 }
 
@@ -115,10 +124,14 @@ func (m *MemoryObjectStore) Get(_ context.Context, key string) (io.ReadCloser, e
 	return io.NopCloser(bytes.NewReader(v)), nil
 }
 
-func (m *MemoryObjectStore) Put(_ context.Context, key string, data []byte) error {
+func (m *MemoryObjectStore) Put(_ context.Context, key string, r io.Reader, _ int64) error {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.objs[key] = append([]byte(nil), data...)
+	m.objs[key] = data
 	return nil
 }
 
@@ -209,7 +222,7 @@ func CopyDiskToObject(storageType, rootPath, indexName string) error {
 		return err
 	}
 	ctx := context.Background()
-	if err := store.Put(ctx, indexName+"/"+directoryMarker, nil); err != nil {
+	if err := store.Put(ctx, indexName+"/"+directoryMarker, bytes.NewReader(nil), 0); err != nil {
 		return err
 	}
 	dir := filepath.Join(rootPath, filepath.FromSlash(indexName))
@@ -224,15 +237,24 @@ func CopyDiskToObject(storageType, rootPath, indexName string) error {
 		if entry.IsDir() || !isIndexItem(entry.Name()) {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
-		if err != nil {
-			return err
-		}
-		if err := store.Put(ctx, indexName+"/"+entry.Name(), data); err != nil {
+		if err := copyFileToObject(ctx, store, filepath.Join(dir, entry.Name()), indexName+"/"+entry.Name()); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// copyFileToObject streams src to key without loading it into memory.
+func copyFileToObject(ctx context.Context, store objectStore, src, key string) error {
+	f, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	info, err := f.Stat()
+	if err == nil {
+		err = store.Put(ctx, key, f, info.Size())
+	}
+	return errors.Join(err, f.Close())
 }
 
 // CopyObjectToDisk downloads every index item of indexName from the object
@@ -260,7 +282,20 @@ func CopyObjectToDisk(storageType, rootPath, indexName string) error {
 			return err
 		}
 	}
-	return nil
+	// the bucket copy may be dropped right after, so the renames must be durable
+	return syncDir(dir)
+}
+
+// syncDir commits the directory entries of dir. Windows cannot fsync a directory.
+func syncDir(dir string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	f, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	return errors.Join(f.Sync(), f.Close())
 }
 
 func copyObjectToFile(ctx context.Context, store objectStore, key, dst string) error {
@@ -278,13 +313,9 @@ func copyObjectToFile(ctx context.Context, store objectStore, key, dst string) e
 		return err
 	}
 	tmp := f.Name()
-	defer func() {
-		if err := os.Remove(tmp); err != nil && !os.IsNotExist(err) {
-			log.Warn().Err(err).Str("path", tmp).Msg("object copy: temp cleanup failed")
-		}
-	}()
+	defer removeTemp(tmp)
 	_, copyErr := io.Copy(f, rc)
-	if err := errors.Join(copyErr, f.Close()); err != nil {
+	if err := errors.Join(copyErr, f.Sync(), f.Close()); err != nil {
 		return err
 	}
 	return os.Rename(tmp, dst)
@@ -334,10 +365,7 @@ func getObjectConfig(b *backend, indexName string, timeRange []int64) (riot.Conf
 	if err != nil {
 		return riot.Config{}, err
 	}
-	cache, err := defaultFileCache()
-	if err != nil {
-		return riot.Config{}, fmt.Errorf("object cache: %w", err)
-	}
+	cache := defaultFileCache()
 	cfg := index.DefaultConfigWithDirectory(func() index.Directory {
 		return NewObjectDirectory(store, cache, indexName)
 	})
@@ -356,20 +384,13 @@ func removeObjectIndex(b *backend, indexName string) error {
 	if err != nil {
 		return err
 	}
-	cache, err := defaultFileCache()
-	if err != nil {
-		return fmt.Errorf("object cache: %w", err)
-	}
-	return removeObjectPrefix(store, cache, indexName)
+	return removeObjectPrefix(store, defaultFileCache(), indexName)
 }
 
+// removeObjectPrefix deletes the objects first: a local cache problem must not
+// leave the bucket data orphaned.
 func removeObjectPrefix(store objectStore, cache *fileCache, prefix string) error {
 	ctx := context.Background()
-	if cache != nil {
-		if err := cache.RemovePrefix(prefix + "/"); err != nil {
-			return err
-		}
-	}
 	objs, err := store.List(ctx, prefix+"/")
 	if err != nil {
 		return err
@@ -379,16 +400,26 @@ func removeObjectPrefix(store objectStore, cache *fileCache, prefix string) erro
 			return err
 		}
 	}
-	return nil
+	if cache == nil {
+		return nil
+	}
+	return cache.RemovePrefix(prefix + "/")
 }
 
 // ObjectDirectory implements index.Directory on top of an objectStore.
 // With a cache, items are kept as local files and memory-mapped; without one
 // they are loaded fully into memory on every open.
+//
+// The prefix is listed once and then tracked through Persist and Remove: riot
+// opens one directory per writer or reader, and a writer owns its prefix, so
+// this saves the LIST requests riot would otherwise send on every persist.
 type ObjectDirectory struct {
 	store  objectStore
 	cache  *fileCache // nil disables local caching
 	prefix string
+
+	mu    sync.Mutex
+	items map[string]int64 // item name -> size; nil until listed
 }
 
 func NewObjectDirectory(store objectStore, cache *fileCache, indexName string) *ObjectDirectory {
@@ -399,28 +430,67 @@ func (d *ObjectDirectory) key(kind string, id uint64) string {
 	return d.prefix + fmt.Sprintf("%012x", id) + kind
 }
 
+// listing returns the objects directly under the prefix, listing it on first
+// use. d.mu must be held.
+func (d *ObjectDirectory) listing() (map[string]int64, error) {
+	if d.items != nil {
+		return d.items, nil
+	}
+	objs, err := d.store.List(context.Background(), d.prefix)
+	if err != nil {
+		return nil, err
+	}
+	items := make(map[string]int64, len(objs))
+	for _, obj := range objs {
+		name := strings.TrimPrefix(obj.Key, d.prefix)
+		if strings.Contains(name, "/") {
+			continue // nested keys belong to a deeper prefix
+		}
+		items[name] = obj.Size
+	}
+	d.items = items
+	return items, nil
+}
+
+// track records name as stored with size, or as removed when size < 0.
+func (d *ObjectDirectory) track(name string, size int64) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.items == nil {
+		return // listed on next use
+	}
+	if size < 0 {
+		delete(d.items, name)
+	} else {
+		d.items[name] = size
+	}
+}
+
 func (d *ObjectDirectory) Setup(readOnly bool) error {
 	if !readOnly {
 		return nil
 	}
-	objs, err := d.store.List(context.Background(), d.prefix)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	items, err := d.listing()
 	if err != nil {
 		return err
 	}
-	if len(objs) == 0 {
+	if len(items) == 0 {
 		return fmt.Errorf("readOnly, directory does not exist")
 	}
 	return nil
 }
 
 func (d *ObjectDirectory) List(kind string) ([]uint64, error) {
-	objs, err := d.store.List(context.Background(), d.prefix)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	items, err := d.listing()
 	if err != nil {
 		return nil, err
 	}
 	var rv uint64Slice
-	for _, obj := range objs {
-		name := path.Base(obj.Key)
+	for name := range items {
 		if !strings.HasSuffix(name, kind) {
 			continue
 		}
@@ -483,21 +553,58 @@ func (d *ObjectDirectory) fetchToCache(key string) (getErr, cacheErr error) {
 	return nil, d.cache.Put(key, rc)
 }
 
+// Persist spools the item to a temporary file and streams it to the store, so
+// large merged segments are never held in memory. With a cache the spooled file
+// becomes the cached copy. Closing closeCh aborts the upload.
 func (d *ObjectDirectory) Persist(kind string, id uint64, w index.WriterTo, closeCh chan struct{}) error {
-	var buf bytes.Buffer
-	if _, err := w.WriteTo(&buf, closeCh); err != nil {
-		return err
-	}
-	key := d.key(kind, id)
-	if err := d.store.Put(context.Background(), key, buf.Bytes()); err != nil {
-		return err
-	}
+	ctx, cancel := closeContext(closeCh)
+	defer cancel()
+	tempDir := "" // os.TempDir
 	if d.cache != nil {
-		if err := d.cache.Put(key, bytes.NewReader(buf.Bytes())); err != nil {
+		tempDir = d.cache.TempDir()
+	}
+	f, err := os.CreateTemp(tempDir, "persist-*"+cacheTempExt)
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer removeTemp(tmp)
+	key := d.key(kind, id)
+	size, err := w.WriteTo(f, closeCh)
+	if err == nil && d.cache != nil {
+		err = f.Sync() // the file is kept as the cached copy
+	}
+	if err == nil {
+		_, err = f.Seek(0, io.SeekStart)
+	}
+	if err == nil {
+		err = d.store.Put(ctx, key, f, size)
+	}
+	if err := errors.Join(err, f.Close()); err != nil {
+		return err
+	}
+	d.track(path.Base(key), size)
+	if d.cache != nil {
+		if err := d.cache.PutFile(key, tmp, size); err != nil {
 			log.Warn().Err(err).Str("key", key).Msg("object cache: persist not cached")
 		}
 	}
 	return nil
+}
+
+// closeContext returns a context cancelled once closeCh is closed.
+func closeContext(closeCh chan struct{}) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.Background())
+	if closeCh != nil {
+		go func() {
+			select {
+			case <-closeCh:
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+	}
+	return ctx, cancel
 }
 
 func (d *ObjectDirectory) Remove(kind string, id uint64) error {
@@ -507,18 +614,24 @@ func (d *ObjectDirectory) Remove(kind string, id uint64) error {
 			return err
 		}
 	}
-	return d.store.Delete(context.Background(), key)
+	if err := d.store.Delete(context.Background(), key); err != nil {
+		return err
+	}
+	d.track(path.Base(key), -1)
+	return nil
 }
 
 func (d *ObjectDirectory) Stats() (numItems uint64, numBytes uint64) {
-	objs, err := d.store.List(context.Background(), d.prefix)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	items, err := d.listing()
 	if err != nil {
 		log.Error().Err(err).Str("prefix", d.prefix).Msg("object directory stats")
 		return 0, 0
 	}
-	for _, obj := range objs {
+	for _, size := range items {
 		numItems++
-		numBytes += uint64(obj.Size)
+		numBytes += uint64(size)
 	}
 	return numItems, numBytes
 }
@@ -539,7 +652,7 @@ func PutObject(storageType, key string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	return store.Put(context.Background(), key, data)
+	return store.Put(context.Background(), key, bytes.NewReader(data), int64(len(data)))
 }
 
 // GetObject reads the object stored under key.

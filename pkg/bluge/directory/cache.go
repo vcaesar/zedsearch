@@ -11,7 +11,14 @@
 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 * See the License for the specific language governing permissions and
 * limitations under the License.
- */
+*
+Part of this work fall under the AtomAI Enterprise Edition (EE)
+and are licensed under the Business Source License 1.1,
+if you are the Cloud companies or your companies with revenue greater than $1M,
+please refer to [AGPL-3.0](./LICENSE-EE)) and LICENSE-EE for details,
+or production use of the Licensed Work requires a commercial license agreement with Zedsearch.
+Contact info@atomai.cc for licensing.
+*/
 
 package directory
 
@@ -60,18 +67,28 @@ type cacheItem struct {
 var (
 	cacheOnce sync.Once
 	cacheInst *fileCache
-	cacheErr  error
 )
 
-// defaultFileCache returns the shared cache, or nil when ZED_OBJECT_CACHE_SIZE is 0.
-func defaultFileCache() (*fileCache, error) {
+// defaultFileCache returns the shared cache, or nil when ZED_OBJECT_CACHE_SIZE is 0
+// or the cache cannot be opened: the cache is optional, so a broken cache
+// directory degrades to uncached loads instead of failing every object index.
+func defaultFileCache() *fileCache {
 	cacheOnce.Do(func() {
-		if config.Global.ObjectCacheSize <= 0 {
-			return
-		}
-		cacheInst, cacheErr = newFileCache(path.Join(config.Global.DataPath, "objcache"), config.Global.ObjectCacheSize)
+		cacheInst = openFileCache(path.Join(config.Global.DataPath, "objcache"), config.Global.ObjectCacheSize)
 	})
-	return cacheInst, cacheErr
+	return cacheInst
+}
+
+func openFileCache(root string, maxSize int64) *fileCache {
+	if maxSize <= 0 {
+		return nil
+	}
+	c, err := newFileCache(root, maxSize)
+	if err != nil {
+		log.Error().Err(err).Msg("object cache: disabled, items are loaded into memory")
+		return nil
+	}
+	return c
 }
 
 // newFileCache opens root, drops leftover temp files and registers existing
@@ -166,6 +183,8 @@ func (c *fileCache) Get(key string) (*segment.Data, io.Closer, bool) {
 	}
 	data, unmap, err := mmapFile(f)
 	if err != nil {
+		// forget the entry so the next Put replaces the file instead of failing again
+		c.drop(el)
 		log.Warn().Err(errors.Join(err, f.Close())).Str("key", key).Msg("object cache: mmap failed")
 		return nil, nil, false
 	}
@@ -199,26 +218,49 @@ func (c *fileCache) Put(key string, r io.Reader) error {
 		return err
 	}
 	tmp := f.Name()
-	defer func() {
-		if err := os.Remove(tmp); err != nil && !os.IsNotExist(err) {
-			log.Warn().Err(err).Str("key", key).Msg("object cache: temp cleanup failed")
-		}
-	}()
+	defer removeTemp(tmp)
 	n, copyErr := io.Copy(f, r)
-	if err := errors.Join(copyErr, f.Close()); err != nil {
+	if err := errors.Join(copyErr, f.Sync(), f.Close()); err != nil {
 		return err
 	}
+	return c.adopt(key, p, tmp, n)
+}
+
+// PutFile moves the complete, synced file tmp into the cache as key. tmp must
+// live on the cache file system; it is left in place when not adopted.
+func (c *fileCache) PutFile(key, tmp string, size int64) error {
+	p, err := c.path(key)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return err
+	}
+	return c.adopt(key, p, tmp, size)
+}
+
+// adopt renames tmp to p and registers key, unless a concurrent Put won.
+func (c *fileCache) adopt(key, p, tmp string, size int64) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if _, exists := c.items[key]; exists { // concurrent Put of the same key
+	if _, exists := c.items[key]; exists {
 		return nil
 	}
 	if err := os.Rename(tmp, p); err != nil {
 		return err
 	}
-	c.add(key, n)
+	c.add(key, size)
 	c.evict()
 	return nil
+}
+
+// TempDir is where files later handed to PutFile are written.
+func (c *fileCache) TempDir() string { return c.root }
+
+func removeTemp(tmp string) {
+	if err := os.Remove(tmp); err != nil && !os.IsNotExist(err) {
+		log.Warn().Err(err).Str("path", tmp).Msg("temp cleanup failed")
+	}
 }
 
 // Remove forgets key and deletes its file.

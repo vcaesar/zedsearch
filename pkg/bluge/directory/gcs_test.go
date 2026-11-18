@@ -40,8 +40,11 @@ func TestNewGCSStore(t *testing.T) {
 	assert.Error(t, err, "minio rejects non-storage googleapis hosts")
 }
 
+// TestGetGCSConfigUnconfigured uses a local, unconfigured backend so it never
+// touches a real bucket configured through the environment.
 func TestGetGCSConfigUnconfigured(t *testing.T) {
-	_, err := GetGCSConfig("idx")
+	b := &backend{newStore: func() (objectStore, error) { return newGCSStore(config.GCSConfig{}) }}
+	_, err := getObjectConfig(b, "idx", nil)
 	assert.Error(t, err)
-	assert.Error(t, RemoveGCSIndex("idx"))
+	assert.Error(t, removeObjectIndex(b, "idx"))
 }

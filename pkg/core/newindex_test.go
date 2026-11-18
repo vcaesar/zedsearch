@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/vcaesar/riot"
 
 	"github.com/vcaesar/zedsearch/pkg/config"
 )
@@ -186,6 +187,10 @@ func TestCheckIndexName(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{name: "dot", args: args{name: "."}, wantErr: true},
+		{name: "dot dot", args: args{name: ".."}, wantErr: true},
+		{name: "dots", args: args{name: "..."}, wantErr: true},
+		{name: "dot prefix", args: args{name: ".TestCheckIndexName.index_2"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -248,4 +253,19 @@ func TestGetOpenConfig(t *testing.T) {
 		_, err = getOpenConfig("TestGetOpenConfig.index_4", StorageTypeOSS, nil)
 		assert.Error(t, err)
 	})
+}
+
+func TestGetOpenConfigVectorStorage(t *testing.T) {
+	prev := config.Global.VectorStorage
+	t.Cleanup(func() { config.Global.VectorStorage = prev })
+	for storage, want := range map[string]riot.VectorStorage{
+		"disk": riot.VectorStorageDisk, "": riot.VectorStorageDisk, "memory": riot.VectorStorageMemory, "MEMORY": riot.VectorStorageMemory,
+	} {
+		t.Run(storage, func(t *testing.T) {
+			config.Global.VectorStorage = storage
+			assert.Equal(t, want, vectorStorage())
+			_, err := getOpenConfig("TestGetOpenConfigVectorStorage.index_1", StorageTypeDisk, nil)
+			assert.NoError(t, err)
+		})
+	}
 }
