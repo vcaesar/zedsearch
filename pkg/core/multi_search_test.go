@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/vcaesar/zedsearch/pkg/meta"
 )
@@ -134,4 +135,71 @@ func TestIsMatchIndex(t *testing.T) {
 	assert.False(t, ret)
 	ret = isMatchIndex("abc", "abc") // true
 	assert.True(t, ret)
+}
+
+// A search over several indexes expands default fields and restores top_hits
+// vectors with the mappings of every index, not of the first one listed.
+func TestMultiSearch_UsesEveryIndexMappings(t *testing.T) {
+	exclude := true
+	names := []string{"TestMultiSearch_UsesEveryIndexMappings.index_a", "TestMultiSearch_UsesEveryIndexMappings.index_b"}
+	docs := []map[string]interface{}{
+		{"title": "quick fox"},
+		{"summary": "lazy fox", "emb": []interface{}{1.0, 2.0}},
+	}
+	for i, name := range names {
+		index, err := NewIndex(name, "disk", 1)
+		require.NoError(t, err)
+		require.NoError(t, index.SetSettings(&meta.IndexSettings{ExcludeSourceVectors: &exclude}))
+		require.NoError(t, StoreIndex(index))
+		t.Cleanup(func() { assert.NoError(t, DeleteIndex(name)) })
+		index.GetMappings().SetAllEnabled(false)
+		if i == 1 {
+			index.GetMappings().SetProperty("emb", meta.NewProperty("vector"))
+		}
+		require.NoError(t, index.CreateDocument("1", docs[i], false))
+		waitForDocs(t, index, 1)
+	}
+
+	resp, err := MultiSearch([]string{"TestMultiSearch_UsesEveryIndexMappings.*"}, &meta.ZedQuery{
+		Query:        &meta.Query{QueryString: &meta.QueryStringQuery{Query: "fox"}},
+		Size:         10,
+		Aggregations: map[string]meta.Aggregations{"top": {TopHits: &meta.AggregationTopHits{Size: 10}}},
+	})
+	require.NoError(t, err)
+	found := map[string]interface{}{}
+	for _, hit := range resp.Hits.Hits {
+		found[hit.Index] = hit.Source
+	}
+	require.Len(t, found, 2, "fox is in a field only one of the indexes maps")
+	assert.Equal(t, []interface{}{1.0, 2.0}, found[names[1]].(map[string]interface{})["emb"])
+
+	top := resp.Aggregations["top"].Hits
+	require.NotNil(t, top)
+	require.Len(t, top.Hits, 2)
+	for _, hit := range top.Hits {
+		if hit.Index == names[1] {
+			assert.Equal(t, []interface{}{1.0, 2.0}, hit.Source.(map[string]interface{})["emb"])
+		}
+	}
+}
+
+func TestUnionMappings(t *testing.T) {
+	a, b := &Index{ref: &meta.Index{Name: "a", Mappings: meta.NewMappings()}}, &Index{ref: &meta.Index{Name: "b", Mappings: meta.NewMappings()}}
+	a.ref.Mappings.SetProperty("body", meta.Property{Type: "text", Index: true})
+	a.ref.Mappings.SetAllEnabled(true)
+	b.ref.Mappings.SetProperty("body", meta.Property{Type: "keyword", Index: true})
+	b.ref.Mappings.SetProperty("emb", meta.NewProperty("vector"))
+	b.ref.Mappings.SetAllEnabled(false)
+
+	t.Run("one index keeps its own", func(t *testing.T) {
+		m, _ := unionMappings(map[string]*Index{"a": a})
+		assert.Same(t, a.ref.Mappings, m)
+	})
+	t.Run("union", func(t *testing.T) {
+		m, _ := unionMappings(map[string]*Index{"b": b, "a": a})
+		body, _ := m.GetProperty("body")
+		assert.Equal(t, "text", body.Type, "the first index by name wins")
+		assert.Equal(t, []string{"emb"}, m.VectorFields())
+		assert.False(t, m.AllEnabled(), "_all is searched only when every index has it")
+	})
 }

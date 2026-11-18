@@ -1,4 +1,4 @@
-/* Copyright 2026 AtomAI
+/* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -220,20 +220,55 @@ func TestIndexRefresh(t *testing.T) {
 	require.NoError(t, StoreIndex(index))
 	t.Cleanup(func() { _ = DeleteIndex(name) })
 
-	// nothing written: no WAL is open, nothing to wait for
-	require.NoError(t, index.Refresh())
+	t.Run("nothing written", func(t *testing.T) {
+		// no WAL is open, nothing to wait for
+		require.NoError(t, index.Refresh())
+	})
+	t.Run("pending writes", func(t *testing.T) {
+		const docs = 300
+		for i := range docs {
+			require.NoError(t, index.CreateDocument(strconv.Itoa(i), map[string]interface{}{"name": "refreshed"}, false))
+		}
+		require.NoError(t, index.Refresh())
+		n, err := countDocs(index)
+		require.NoError(t, err)
+		assert.Equal(t, uint64(docs), n, "documents are searchable when Refresh returns")
+		for _, shard := range index.shards {
+			assert.Equal(t, uint64(1), atomic.LoadUint64(&shard.open), "Refresh closed shard %s", shard.GetID())
+		}
+	})
+}
 
-	const docs = 300
-	for i := range docs {
-		require.NoError(t, index.CreateDocument(strconv.Itoa(i), map[string]interface{}{"name": "refreshed"}, false))
-	}
-	require.NoError(t, index.Refresh())
-	n, err := countDocs(index)
+// A wait neither succeeds nor panics once the WAL it waits on is closed.
+func TestIndexWaitApplied(t *testing.T) {
+	name := "TestIndexWaitApplied.index_1"
+	index, err := NewIndex(name, StorageTypeDisk, 1)
 	require.NoError(t, err)
-	assert.Equal(t, uint64(docs), n, "documents are searchable when Refresh returns")
-	for _, shard := range index.shards {
-		assert.Equal(t, uint64(1), atomic.LoadUint64(&shard.open), "Refresh closed shard %s", shard.GetID())
-	}
+	require.NoError(t, StoreIndex(index))
+	t.Cleanup(func() { _ = DeleteIndex(name) })
+
+	shard := anyShard(index)
+	require.NoError(t, shard.OpenWAL())
+	// nothing applies the WAL once the consumer is gone
+	ZED_INDEX_SHARD_WAL_LIST.Remove(shard.GetShardName())
+	time.Sleep(2 * config.Global.WalSyncInterval)
+	require.NoError(t, index.CreateDocument("1", map[string]interface{}{"name": "pending"}, false))
+
+	t.Run("pending", func(t *testing.T) {
+		last, err := shard.wal.LastIndex()
+		require.NoError(t, err)
+		committed, err := shard.committedIndex()
+		require.NoError(t, err)
+		assert.Less(t, committed, last)
+		assert.ErrorContains(t, index.WaitApplied(50*time.Millisecond), "not applied within")
+	})
+	t.Run("closed", func(t *testing.T) {
+		go func() { <-shard.close }() // the consumer takes the close signal
+		require.NoError(t, index.Close())
+		_, err := shard.committedIndex()
+		assert.ErrorContains(t, err, "WAL closed")
+		assert.NoError(t, index.WaitApplied(time.Second), "no open WAL, nothing to wait for")
+	})
 }
 
 func TestStoreGuard(t *testing.T) {

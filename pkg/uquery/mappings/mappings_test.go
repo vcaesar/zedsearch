@@ -1,4 +1,4 @@
-/* Copyright 2026 AtomAI
+/* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -97,6 +97,8 @@ func TestRequest_VectorIndexOptions(t *testing.T) {
 		{name: "mode on_disk with 1x", props: `{"emb": {"type": "knn_vector", "mode": "on_disk", "compression_level": "1x"}}`, want: &meta.VectorIndexOptions{Type: "hnsw"}},
 		{name: "es index_options matching compression", props: `{"emb": {"type": "dense_vector", "compression_level": "4x", "index_options": {"type": "int8_hnsw"}}}`, want: &meta.VectorIndexOptions{Type: "int8_hnsw"}},
 		{name: "es index_options conflicting compression", props: `{"emb": {"type": "dense_vector", "compression_level": "1x", "index_options": {"type": "int8_hnsw"}}}`, wantErr: true},
+		{name: "es index_options without type take the compression", props: `{"emb": {"type": "dense_vector", "compression_level": "1x", "index_options": {"m": 8}}}`, want: &meta.VectorIndexOptions{Type: "hnsw", M: 8}},
+		{name: "index_options and method", props: `{"emb": {"type": "knn_vector", "compression_level": "4x", "method": {"name": "hnsw"}, "index_options": {"type": "flat"}}}`, wantErr: true},
 		{name: "compression on flat", props: `{"emb": {"type": "dense_vector", "compression_level": "4x", "index_options": {"type": "flat"}}}`, wantErr: true},
 		{name: "compression 32x unsupported", props: `{"emb": {"type": "knn_vector", "compression_level": "32x"}}`, wantErr: true},
 		{name: "compression invalid", props: `{"emb": {"type": "knn_vector", "compression_level": "3x"}}`, wantErr: true},
@@ -298,6 +300,8 @@ func TestRequest_Source(t *testing.T) {
 		{name: "not an object", data: `{"_source": false, "properties": {}}`, wantErr: true},
 		{name: "unsupported option", data: `{"_source": {"excludes": ["a"]}, "properties": {}}`, wantErr: true},
 		{name: "enabled not bool", data: `{"_source": {"enabled": "maybe"}, "properties": {}}`, wantErr: true},
+		{name: "enabled string", data: `{"_source": {"enabled": "false"}, "properties": {}}`, want: &meta.SourceMapping{Enabled: false}},
+		{name: "enabled fractional", data: `{"_source": {"enabled": 0.5}, "properties": {}}`, wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -326,6 +330,7 @@ func TestRequest_All(t *testing.T) {
 		{name: "only _all and _source", data: `{"_all": {"enabled": false}, "_source": {"enabled": true}}`, want: &meta.SourceMapping{Enabled: false}},
 		{name: "not an object", data: `{"_all": true, "properties": {}}`, wantErr: "_all should be an object"},
 		{name: "unsupported option", data: `{"_all": {"analyzer": "x"}, "properties": {}}`, wantErr: "_all does not support [analyzer]"},
+		{name: "enabled fractional", data: `{"_all": {"enabled": 0.5}, "properties": {}}`, wantErr: "_all.enabled should be a boolean"},
 		{name: "only _all plus unknown", data: `{"_all": {"enabled": true}, "dynamic": true}`, wantErr: "properties should be defined"},
 	}
 	for _, tt := range tests {

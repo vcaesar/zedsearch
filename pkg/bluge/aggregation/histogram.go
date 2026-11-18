@@ -1,5 +1,5 @@
 /* Copyright 2022 Zinc Labs Inc. and Contributors
-* Copyright 2026 AtomAI
+* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -166,6 +166,9 @@ func (a *HistogramCalculator) Merge(other search.Calculator) {
 	if other, ok := other.(*HistogramCalculator); ok {
 		// first sum to the totals and others
 		a.total += other.total
+		// gaps are filled over the values of both
+		a.minValue = min(a.minValue, other.minValue)
+		a.maxValue = max(a.maxValue, other.maxValue)
 		// now, walk all of the other buckets
 		// if we have a local match, merge otherwise append
 		for i := range other.bucketsList {
@@ -206,10 +209,17 @@ func (a *HistogramCalculator) Finish() {
 	}
 	// check bucket
 	if a.minDocCount == 0 {
+		// the list tells which buckets exist: merged buckets and the gaps
+		// of an earlier Finish are not in bucketsMap
+		names := make(map[string]struct{}, len(a.bucketsList))
+		for _, bucket := range a.bucketsList {
+			names[bucket.Name()] = struct{}{}
+		}
 		for value := a.minValue; value < a.maxValue; value += a.interval {
-			start := a.bucketStart(value)
-			if _, ok := a.bucketsMap[start]; !ok {
-				a.bucketsList = append(a.bucketsList, search.NewBucket(bucketName(start), a.aggregations))
+			name := bucketName(a.bucketStart(value))
+			if _, ok := names[name]; !ok {
+				names[name] = struct{}{}
+				a.bucketsList = append(a.bucketsList, search.NewBucket(name, a.aggregations))
 			}
 		}
 	} else {

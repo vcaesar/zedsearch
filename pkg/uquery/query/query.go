@@ -1,5 +1,5 @@
 /* Copyright 2022 Zinc Labs Inc. and Contributors
-* Copyright 2026 AtomAI
+* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -215,5 +215,6 @@ func Query(query interface{}, mappings *meta.Mappings, analyzers map[string]*ana
 		return subq, nil
 	}
 	// without _all, queries on _all or without a field search every field
-	return withDefaultFields(subq, lazyDefaultFields(mappings, analyzers, nil)), nil
+	// a query on a field without mapping, as _all, is parsed with the index default analyzer
+	return withDefaultFields(subq, lazyDefaultFields(mappings, analyzers, nil, analyzers["default"])), nil
 }

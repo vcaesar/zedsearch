@@ -1,4 +1,5 @@
 /* Copyright 2022 Zinc Labs Inc. and Contributors
+* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -90,9 +91,12 @@ func (t *IndexShardWALList) ConsumeWAL() {
 	eg.SetLimit(config.Global.Shard.GoroutineNum)
 	tick := time.NewTicker(config.Global.WalSyncInterval)
 	for range tick.C {
-		shardClosed := make(chan string, t.Len())
-		indexUpdated := make(chan string, t.Len())
-		for _, shard := range t.List() {
+		// one snapshot sizes the channels and starts the workers: a shard
+		// registered in between would block its worker on a full channel
+		shards := t.List()
+		shardClosed := make(chan string, len(shards))
+		indexUpdated := make(chan string, len(shards))
+		for _, shard := range shards {
 			shard := shard
 			indexes[shard.GetIndexName()] = shard.root
 			eg.Go(func() error {

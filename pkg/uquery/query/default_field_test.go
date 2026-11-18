@@ -1,4 +1,4 @@
-/* Copyright 2026 AtomAI. and Contributors
+/* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -98,7 +98,9 @@ func TestQueryStringDefaultFields(t *testing.T) {
 		assert.Equal(t, uint64(0), countHits(t, r, q), "the docs have no _all field")
 	})
 	t.Run("no default fields", func(t *testing.T) {
-		q, err := QueryStringQuery(map[string]interface{}{"query": "fox"}, meta.NewMappings(), nil)
+		empty := meta.NewMappings()
+		empty.SetAllEnabled(false) // not left to zed_all_field
+		q, err := QueryStringQuery(map[string]interface{}{"query": "fox"}, empty, nil)
 		require.NoError(t, err)
 		assert.Equal(t, uint64(0), countHits(t, r, q))
 	})
@@ -129,4 +131,44 @@ func TestQueryAllFieldFallback(t *testing.T) {
 			assert.Equal(t, tt.want, countHits(t, r, q))
 		})
 	}
+}
+
+// An analyzer the query names is kept on the clauses of the default fields;
+// without one each field is searched with its mapped analyzer.
+func TestQueryAllFieldFallback_Analyzer(t *testing.T) {
+	r := defaultFieldReader(t)
+	mappings := defaultFieldMappings(false)
+	title := meta.NewProperty("text")
+	title.Analyzer = "standard"
+	mappings.SetProperty("title", title)
+	tests := []struct {
+		name  string
+		match map[string]interface{}
+		want  uint64
+	}{
+		{name: "mapped analyzer", match: map[string]interface{}{"query": "lazy fox"}, want: 2},
+		{name: "requested analyzer", match: map[string]interface{}{"query": "lazy fox", "analyzer": "keyword"}, want: 0},
+		{name: "requested analyzer matches a whole value", match: map[string]interface{}{"query": "Red Fox", "analyzer": "keyword"}, want: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			q, err := Query(map[string]interface{}{"match": map[string]interface{}{"_all": tt.match}}, mappings, nil)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, countHits(t, r, q))
+		})
+	}
+}
+
+// A field named twice is searched once: the repeat must not boost it.
+func TestQueryStringDefaultFields_DuplicateField(t *testing.T) {
+	r := defaultFieldReader(t)
+	score := func(fields ...interface{}) float64 {
+		q, err := QueryStringQuery(map[string]interface{}{"query": "fox", "fields": fields}, defaultFieldMappings(false), nil)
+		require.NoError(t, err)
+		dmi, err := r.Search(context.Background(), riot.NewTopNSearch(10, q).WithStandardAggregations())
+		require.NoError(t, err)
+		return dmi.Aggregations().Metric("max_score")
+	}
+	assert.Positive(t, score("title"))
+	assert.Equal(t, score("title"), score("title", "title"))
 }

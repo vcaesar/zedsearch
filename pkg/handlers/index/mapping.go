@@ -1,5 +1,5 @@
 /* Copyright 2022 Zinc Labs Inc. and Contributors
-* Copyright 2026 AtomAI
+* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -112,11 +112,13 @@ func SetMapping(c zhttp.Context) {
 				}
 			}
 		}
-		// add mappings
+		// add mappings to a copy: an update SetMappings rejects must leave
+		// the live mappings unchanged
+		candidate := indexMappings.DeepClone()
 		for field, prop := range mappings.ListProperty() {
-			indexMappings.SetProperty(field, prop)
+			candidate.SetProperty(field, prop)
 		}
-		mappings = indexMappings
+		mappings = candidate
 	}
 
 	// update mappings

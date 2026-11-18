@@ -1,3 +1,18 @@
+/* Copyright 2026 AtomAI.
+*
+* Licensed under the Apache License, Version 2.0 (the "License");
+* you may not use this file except in compliance with the License.
+* You may obtain a copy of the License at
+*
+*     http://www.apache.org/licenses/LICENSE-2.0
+*
+* Unless required by applicable law or agreed to in writing, software
+* distributed under the License is distributed on an "AS IS" BASIS,
+* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+* See the License for the specific language governing permissions and
+* limitations under the License.
+ */
+
 package meta
 
 import (
@@ -62,6 +77,7 @@ func TestMappings_Source(t *testing.T) {
 	assert.JSONEq(t, `{"properties":{},"_source":{"enabled":false}}`, string(got))
 
 	clone := m.DeepClone()
+	assert.NotSame(t, m.Source, clone.Source)
 	assert.False(t, clone.SourceEnabled())
 	clone.SetSourceEnabled(true)
 	assert.False(t, m.SourceEnabled(), "clone shares no state")
@@ -77,6 +93,7 @@ func TestMappings_All(t *testing.T) {
 	assert.JSONEq(t, `{"properties":{},"_all":{"enabled":true}}`, string(got))
 
 	clone := m.DeepClone()
+	assert.NotSame(t, m.All, clone.All)
 	assert.True(t, clone.AllEnabled())
 	clone.SetAllEnabled(false)
 	assert.True(t, m.AllEnabled(), "clone shares no state")

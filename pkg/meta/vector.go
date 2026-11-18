@@ -1,4 +1,4 @@
-/* Copyright 2026 AtomAI
+/* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -90,65 +90,87 @@ func ParseVector(v interface{}, dims int) ([]float32, error) {
 	return vec, nil
 }
 
-// SourceVectorsField is the stored field listing, one per line, the vector
-// fields excluded from a document's _source. Reads restore them from the
-// stored vector fields, so documents written with and without exclusion mix.
+// SourceVectorsField is the stored field listing the vectors excluded from a
+// document's _source: a JSON array of their key paths, ["a","b"] for a nested
+// vector and ["a.b"] for a literal key. Joined by dots a path is the name of
+// the stored vector field reads restore it from, so documents written with
+// and without exclusion mix. Documents cannot index a field of this name.
 const SourceVectorsField = "_source_vectors"
 
-// ExcludeSourceVectors returns source without the values at fields and the
-// fields it removed. Maps on the way are copied, source is not modified.
-func ExcludeSourceVectors(source map[string]interface{}, fields []string) (map[string]interface{}, []string) {
-	var excluded []string
+// ExcludeSourceVectors returns source without the values of fields and the
+// SourceVectorsField value listing the ones removed, nil when there is none.
+// Each map on the way is copied once, source is not modified.
+func ExcludeSourceVectors(source map[string]interface{}, fields []string) (map[string]interface{}, []byte, error) {
+	paths := make([][]string, 0, len(fields))
 	for _, field := range fields {
-		var ok bool
-		if source, ok = withoutPath(source, field); ok {
-			excluded = append(excluded, field)
+		if path := keyPath(source, field); path != nil {
+			paths = append(paths, path)
 		}
 	}
-	return source, excluded
+	if len(paths) == 0 {
+		return source, nil, nil
+	}
+	marker, err := json.Marshal(paths)
+	if err != nil {
+		return nil, nil, err
+	}
+	return withoutPaths(source, paths), marker, nil
 }
 
-// withoutPath removes a dotted path, matching literal "a.b" keys as well as
-// nested objects.
-func withoutPath(m map[string]interface{}, path string) (map[string]interface{}, bool) {
+// keyPath returns the keys leading to a dotted path, matching literal "a.b"
+// keys as well as nested objects, nil when m has no such value.
+func keyPath(m map[string]interface{}, path string) []string {
 	if _, ok := m[path]; ok {
-		c := maps.Clone(m)
-		delete(c, path)
-		return c, true
+		return []string{path}
 	}
-	for i := 0; i < len(path); i++ {
-		if path[i] != '.' {
-			continue
-		}
-		sub, ok := m[path[:i]].(map[string]interface{})
-		if !ok {
-			continue
-		}
-		if sub, ok = withoutPath(sub, path[i+1:]); ok {
-			c := maps.Clone(m)
-			c[path[:i]] = sub
-			return c, true
-		}
-	}
-	return m, false
-}
-
-// setPath sets a dotted path below the deepest existing object, which
-// withoutPath keeps, else as a literal key.
-func setPath(m map[string]interface{}, path string, value interface{}) {
 	for i := 0; i < len(path); i++ {
 		if path[i] != '.' {
 			continue
 		}
 		if sub, ok := m[path[:i]].(map[string]interface{}); ok {
-			setPath(sub, path[i+1:], value)
-			return
+			if rest := keyPath(sub, path[i+1:]); rest != nil {
+				return append([]string{path[:i]}, rest...)
+			}
 		}
 	}
-	m[path] = value
+	return nil
 }
 
-// LookupPath returns the value at a dotted path, as withoutPath matches it.
+// withoutPaths returns a copy of m without the values at paths, which
+// keyPath found in m.
+func withoutPaths(m map[string]interface{}, paths [][]string) map[string]interface{} {
+	c := maps.Clone(m)
+	var nested map[string][][]string
+	for _, path := range paths {
+		if len(path) == 1 {
+			delete(c, path[0])
+			continue
+		}
+		if nested == nil {
+			nested = make(map[string][][]string)
+		}
+		nested[path[0]] = append(nested[path[0]], path[1:])
+	}
+	for key, paths := range nested {
+		c[key] = withoutPaths(m[key].(map[string]interface{}), paths)
+	}
+	return c
+}
+
+// setPath sets value at the keys of path, the objects withoutPaths keeps.
+func setPath(m map[string]interface{}, path []string, value interface{}) {
+	for _, key := range path[:len(path)-1] {
+		sub, ok := m[key].(map[string]interface{})
+		if !ok {
+			sub = make(map[string]interface{})
+			m[key] = sub
+		}
+		m = sub
+	}
+	m[path[len(path)-1]] = value
+}
+
+// LookupPath returns the value at a dotted path, as keyPath matches it.
 func LookupPath(m map[string]interface{}, path string) (interface{}, bool) {
 	if v, ok := m[path]; ok {
 		return v, true
@@ -171,8 +193,9 @@ func LookupPath(m map[string]interface{}, path string) (interface{}, bool) {
 // A nil SourceVectors, for mappings without vector fields, restores nothing.
 type SourceVectors struct {
 	fields   map[string]struct{}
-	excluded []string
+	excluded [][]string
 	values   map[string][]byte
+	err      error
 }
 
 // NewSourceVectors returns a SourceVectors for the vector fields, nil when
@@ -205,7 +228,7 @@ func (v *SourceVectors) Reset() {
 	if v == nil {
 		return
 	}
-	v.excluded = v.excluded[:0]
+	v.excluded, v.err = v.excluded[:0], nil
 	for field, value := range v.values {
 		v.values[field] = value[:0] // Visit copies into it again
 	}
@@ -218,7 +241,7 @@ func (v *SourceVectors) Visit(field string, value []byte) bool {
 		return false
 	}
 	if field == SourceVectorsField {
-		v.excluded = append(v.excluded, strings.Split(string(value), "\n")...)
+		v.excluded, v.err = decodeSourceVectors(value)
 		return true
 	}
 	if _, ok := v.fields[field]; !ok {
@@ -231,23 +254,58 @@ func (v *SourceVectors) Visit(field string, value []byte) bool {
 // Restore returns source with the excluded vectors of the visited document,
 // unchanged when it had none.
 func (v *SourceVectors) Restore(source []byte) ([]byte, error) {
-	if v == nil || len(v.excluded) == 0 {
+	if v == nil {
+		return source, nil
+	}
+	if v.err != nil {
+		return nil, v.err
+	}
+	return restoreSourceVectors(source, v.excluded, v.values)
+}
+
+// RestoreSourceVectors returns source with the vectors excluded from it,
+// given the stored fields of its document by name.
+func RestoreSourceVectors(source []byte, stored map[string][]byte) ([]byte, error) {
+	marker, ok := stored[SourceVectorsField]
+	if !ok {
+		return source, nil
+	}
+	excluded, err := decodeSourceVectors(marker)
+	if err != nil {
+		return nil, err
+	}
+	return restoreSourceVectors(source, excluded, stored)
+}
+
+func decodeSourceVectors(marker []byte) ([][]string, error) {
+	var excluded [][]string
+	if err := json.Unmarshal(marker, &excluded); err != nil {
+		return nil, fmt.Errorf("decode %s: %w", SourceVectorsField, err)
+	}
+	return excluded, nil
+}
+
+// restoreSourceVectors sets the vectors at the excluded key paths of source,
+// decoded from the stored values of their fields.
+func restoreSourceVectors(source []byte, excluded [][]string, values map[string][]byte) ([]byte, error) {
+	if len(excluded) == 0 {
 		return source, nil
 	}
 	var doc map[string]interface{}
 	if err := json.Unmarshal(source, &doc); err != nil {
 		return nil, fmt.Errorf("decode _source: %w", err)
 	}
-	for _, field := range v.excluded {
-		raw := v.values[field]
+	for _, path := range excluded {
+		field := strings.Join(path, ".")
+		raw := values[field]
 		if len(raw) == 0 {
 			continue // the vector field is no longer mapped
 		}
-		values, err := vec.Decode(raw)
+		vector, err := vec.Decode(raw)
 		if err != nil {
 			return nil, fmt.Errorf("decode vector field [%s]: %w", field, err)
 		}
-		setPath(doc, field, values)
+		setPath(doc, path, vector)
 	}
 	return json.Marshal(doc)
 }

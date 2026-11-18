@@ -270,6 +270,9 @@ func (s *IndexShard) writeWALDocs(docs walMergeDocs, batch *blugeindex.Batch, st
 		log.Error().Err(err).Str("index", s.GetIndexName()).Str("shard", s.GetID()).Msg("consume wal.docs.WriteTo()")
 		return false
 	}
+	// before the entries count as applied: a search with a time range picks
+	// shards by this range, and Refresh returns once they are applied
+	s.root.publishDocTime(s)
 	if err := s.writeRedoLog(RedoActionWrite, startID, endID); err != nil {
 		log.Error().Err(err).Str("index", s.GetIndexName()).Str("shard", s.GetID()).Str("stage", "write").Msg("consume wal.redolog.Write()")
 		return false

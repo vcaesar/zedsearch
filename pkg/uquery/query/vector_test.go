@@ -1,4 +1,4 @@
-/* Copyright 2026 AtomAI
+/* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/vcaesar/riot"
 	"github.com/vcaesar/riot/hnsw"
 
@@ -112,18 +113,28 @@ func TestKnnQuery(t *testing.T) {
 	})
 
 	t.Run("index type selects quantization", func(t *testing.T) {
-		for typ, want := range map[string]hnsw.Quantization{
-			meta.VectorIndexHNSW:     hnsw.QuantizationNone,
-			meta.VectorIndexInt8HNSW: hnsw.QuantizationInt8,
-			"":                       hnsw.QuantizationInt8, // persisted before types
-		} {
-			m := vectorMappings()
-			p, _ := m.GetProperty("hnsw")
-			p.IndexOptions = &meta.VectorIndexOptions{Type: typ}
-			m.SetProperty("hnsw", p)
-			got, err := KnnQuery(geoQuery(t, `{"field": "hnsw", "query_vector": [1, 2, 3], "k": 3}`), m, nil)
-			assert.NoError(t, err)
-			assert.Equal(t, want, got.(*riot.KNNQuery).ANN().Quantization, typ)
+		tests := []struct {
+			name string
+			typ  string
+			want hnsw.Quantization
+		}{
+			{name: "hnsw", typ: meta.VectorIndexHNSW, want: hnsw.QuantizationNone},
+			{name: "int8_hnsw", typ: meta.VectorIndexInt8HNSW, want: hnsw.QuantizationInt8},
+			{name: "persisted before types", typ: "", want: hnsw.QuantizationInt8},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				m := vectorMappings()
+				p, _ := m.GetProperty("hnsw")
+				p.IndexOptions = &meta.VectorIndexOptions{Type: tt.typ}
+				m.SetProperty("hnsw", p)
+				got, err := KnnQuery(geoQuery(t, `{"field": "hnsw", "query_vector": [1, 2, 3], "k": 3}`), m, nil)
+				require.NoError(t, err)
+				q, ok := got.(*riot.KNNQuery)
+				require.True(t, ok)
+				require.NotNil(t, q.ANN())
+				assert.Equal(t, tt.want, q.ANN().Quantization)
+			})
 		}
 	})
 

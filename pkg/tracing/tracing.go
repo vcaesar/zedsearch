@@ -1,4 +1,4 @@
-/* Copyright 2026 AtomAI
+/* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -29,11 +29,18 @@ package tracing
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"strconv"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -56,7 +63,8 @@ const (
 var (
 	propagator = propagation.TraceContext{}
 	// the default records nothing but still hands out trace ids
-	tracer = sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.NeverSample())).Tracer(instrumentation)
+	tracer   = sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.NeverSample())).Tracer(instrumentation)
+	hookOnce sync.Once
 )
 
 // Config selects where spans go.
@@ -74,16 +82,30 @@ type Config struct {
 // Start sets up tracing, it must run before the server serves requests.
 // The returned function flushes buffered spans on shutdown.
 func Start(ctx context.Context, cfg Config) (func(context.Context) error, error) {
-	log.Logger = log.Logger.Hook(Hook{})
+	hookOnce.Do(func() { log.Logger = log.Logger.Hook(Hook{}) })
 	if !cfg.Enable {
 		return func(context.Context) error { return nil }, nil
 	}
 
-	var opts []otlptracehttp.Option
+	var scheme string
 	if cfg.Endpoint != "" {
-		if _, err := url.ParseRequestURI(cfg.Endpoint); err != nil {
-			return nil, fmt.Errorf("tracing: invalid endpoint: %w", err)
+		// the error must not echo the endpoint, it may hold credentials
+		u, err := url.Parse(cfg.Endpoint)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+			return nil, errors.New("tracing: invalid endpoint, want an http or https URL with a host")
 		}
+		scheme = u.Scheme
+	}
+	if otlpEnv("HEADERS") != "" && plainHTTP(scheme) {
+		return nil, errors.New("tracing: OTEL_EXPORTER_OTLP_HEADERS need an https endpoint")
+	}
+	client, err := exportClient()
+	if err != nil {
+		return nil, err
+	}
+
+	opts := []otlptracehttp.Option{otlptracehttp.WithHTTPClient(client)}
+	if cfg.Endpoint != "" {
 		opts = append(opts, otlptracehttp.WithEndpointURL(cfg.Endpoint))
 	}
 	exporter, err := otlptracehttp.New(ctx, opts...)
@@ -100,7 +122,9 @@ func Start(ctx context.Context, cfg Config) (func(context.Context) error, error)
 	}
 	// OTEL_SERVICE_NAME and OTEL_RESOURCE_ATTRIBUTES override the defaults
 	res, err := resource.New(ctx, resource.WithAttributes(attrs...), resource.WithHost(), resource.WithFromEnv())
-	if err != nil {
+	if errors.Is(err, resource.ErrPartialResource) || errors.Is(err, resource.ErrSchemaURLConflict) {
+		log.Warn().Err(err).Msg("tracing: incomplete resource")
+	} else if err != nil {
 		return nil, fmt.Errorf("tracing: resource: %w", err)
 	}
 
@@ -108,6 +132,79 @@ func Start(ctx context.Context, cfg Config) (func(context.Context) error, error)
 	provider := sdktrace.NewTracerProvider(sdktrace.WithBatcher(exporter), sdktrace.WithResource(res))
 	tracer = provider.Tracer(instrumentation)
 	return provider.Shutdown, nil
+}
+
+// otlpEnv reads OTEL_EXPORTER_OTLP_TRACES_<key>, then OTEL_EXPORTER_OTLP_<key>.
+func otlpEnv(key string) string {
+	if v := strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_TRACES_" + key)); v != "" {
+		return v
+	}
+	return strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_" + key))
+}
+
+// plainHTTP reports whether spans are sent without TLS, following the
+// precedence of otlptracehttp: the scheme of Config.Endpoint, then the
+// insecure flag, then the endpoint of the environment, then https.
+func plainHTTP(scheme string) bool {
+	if scheme != "" {
+		return scheme != "https"
+	}
+	if v := otlpEnv("INSECURE"); v != "" {
+		return strings.EqualFold(v, "true")
+	}
+	if v := otlpEnv("ENDPOINT"); v != "" {
+		u, err := url.Parse(v)
+		return err != nil || u.Scheme == "http" || u.Scheme == "unix"
+	}
+	return false
+}
+
+// exportClient never follows redirects, so the export headers only reach
+// the collector. otlptracehttp ignores its own TLS and timeout settings
+// once given a client, so they are read from the environment here.
+func exportClient() (*http.Client, error) {
+	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
+	if file := otlpEnv("CERTIFICATE"); file != "" {
+		pem, err := os.ReadFile(file)
+		if err != nil {
+			return nil, fmt.Errorf("tracing: OTEL_EXPORTER_OTLP_CERTIFICATE: %w", err)
+		}
+		tlsCfg.RootCAs = x509.NewCertPool()
+		if !tlsCfg.RootCAs.AppendCertsFromPEM(pem) {
+			return nil, errors.New("tracing: OTEL_EXPORTER_OTLP_CERTIFICATE: no PEM certificate")
+		}
+	}
+	for _, prefix := range []string{"OTEL_EXPORTER_OTLP_TRACES_", "OTEL_EXPORTER_OTLP_"} {
+		cert, key := strings.TrimSpace(os.Getenv(prefix+"CLIENT_CERTIFICATE")), strings.TrimSpace(os.Getenv(prefix+"CLIENT_KEY"))
+		if cert == "" || key == "" {
+			continue
+		}
+		pair, err := tls.LoadX509KeyPair(cert, key)
+		if err != nil {
+			return nil, fmt.Errorf("tracing: %sCLIENT_CERTIFICATE: %w", prefix, err)
+		}
+		tlsCfg.Certificates = []tls.Certificate{pair}
+		break
+	}
+
+	timeout := 10 * time.Second
+	if v := otlpEnv("TIMEOUT"); v != "" {
+		if ms, err := strconv.Atoi(v); err != nil {
+			log.Warn().Err(err).Msg("tracing: OTEL_EXPORTER_OTLP_TIMEOUT is not in milliseconds, using 10s")
+		} else {
+			timeout = time.Duration(ms) * time.Millisecond
+		}
+	}
+
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = tlsCfg
+	return &http.Client{
+		Transport: transport,
+		Timeout:   timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}, nil
 }
 
 // Tracer creates the spans of this process.
@@ -180,6 +277,11 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 	SetStatus(span, resp.StatusCode)
+	// http.Client replaces a nil body with http.NoBody, keep it visible
+	if resp.Body == nil {
+		span.End()
+		return resp, nil
+	}
 	resp.Body = &spanBody{ReadCloser: resp.Body, span: span}
 	return resp, nil
 }

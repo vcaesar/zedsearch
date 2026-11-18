@@ -1,4 +1,4 @@
-/* Copyright 2026 AtomAI
+/* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -292,14 +292,19 @@ func TestSearchVectorExcludeSource(t *testing.T) {
 			waitForDocument(t, index, "1")
 
 			want := map[string]interface{}{"emb": []interface{}{0.5, 0.25}, "tag": "t"}
-			getSource := func() map[string]interface{} {
+			// ok is false for a response without a readable _source
+			getSource := func() (source map[string]interface{}, ok bool) {
 				resp := request("GET", "/api/"+index+"/_doc/1", nil)
-				assert.Equal(t, http.StatusOK, resp.Code, resp.Body.String())
 				hit := new(meta.Hit)
-				assert.NoError(t, json.Unmarshal(resp.Body.Bytes(), hit))
-				return hit.Source.(map[string]interface{})
+				if resp.Code != http.StatusOK || json.Unmarshal(resp.Body.Bytes(), hit) != nil {
+					return nil, false
+				}
+				source, ok = hit.Source.(map[string]interface{})
+				return source, ok
 			}
-			assert.Equal(t, want, getSource()["meta"])
+			if source, ok := getSource(); assert.True(t, ok, "document has no _source") {
+				assert.Equal(t, want, source["meta"])
+			}
 
 			t.Run("search restores vectors", func(t *testing.T) {
 				resp := request("POST", "/es/"+index+"/_search", bytes.NewBufferString(
@@ -308,7 +313,9 @@ func TestSearchVectorExcludeSource(t *testing.T) {
 				data := new(meta.SearchResponse)
 				assert.NoError(t, json.Unmarshal(resp.Body.Bytes(), data))
 				if assert.Len(t, data.Hits.Hits, 1) {
-					assert.Equal(t, want, data.Hits.Hits[0].Source.(map[string]interface{})["meta"])
+					source, ok := data.Hits.Hits[0].Source.(map[string]interface{})
+					assert.True(t, ok, "hit has no _source")
+					assert.Equal(t, want, source["meta"])
 				}
 			})
 
@@ -322,8 +329,13 @@ func TestSearchVectorExcludeSource(t *testing.T) {
 			t.Run("update restores the new vector", func(t *testing.T) {
 				resp := request("POST", "/api/"+index+"/_update/1", bytes.NewBufferString(`{"name": "y", "meta": {"emb": [0.125, 1]}}`))
 				assert.Equal(t, http.StatusOK, resp.Code, resp.Body.String())
-				assert.Eventually(t, func() bool { return getSource()["name"] == "y" }, 10*time.Second, 20*time.Millisecond)
-				assert.Equal(t, map[string]interface{}{"emb": []interface{}{0.125, 1.0}}, getSource()["meta"])
+				assert.Eventually(t, func() bool {
+					source, ok := getSource()
+					return ok && source["name"] == "y"
+				}, 10*time.Second, 20*time.Millisecond)
+				if source, ok := getSource(); assert.True(t, ok, "document has no _source") {
+					assert.Equal(t, map[string]interface{}{"emb": []interface{}{0.125, 1.0}}, source["meta"])
+				}
 			})
 		})
 	}

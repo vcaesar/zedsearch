@@ -1,5 +1,5 @@
 /* Copyright 2022 Zinc Labs Inc. and Contributors
-* Copyright 2026 AtomAI
+* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -398,11 +398,17 @@ func TestIndex_Search_HighlightStoredValues(t *testing.T) {
 	waitForDocs(t, index, 1)
 
 	tests := []struct {
-		name  string
-		query *meta.Query
-		field string
-		want  []string
+		name      string
+		query     *meta.Query
+		field     string
+		fragments int // number_of_fragments of tags, 0 takes the default
+		want      []string
 	}{
+		{
+			name:  "number_of_fragments counts over the array",
+			query: &meta.Query{Match: map[string]*meta.MatchQuery{"tags": {Query: "brown"}}},
+			field: "tags", fragments: 1, want: []string{"<b>brown</b> dog"},
+		},
 		{
 			name:  "first element of an array",
 			query: &meta.Query{Match: map[string]*meta.MatchQuery{"tags": {Query: "dog"}}},
@@ -422,7 +428,8 @@ func TestIndex_Search_HighlightStoredValues(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			resp, err := index.Search(&meta.ZedQuery{Query: tt.query, Size: 10, Highlight: &meta.Highlight{
-				PreTags: []string{"<b>"}, PostTags: []string{"</b>"}, Fields: map[string]*meta.Highlight{"tags": {}, "color": {}},
+				PreTags: []string{"<b>"}, PostTags: []string{"</b>"},
+				Fields: map[string]*meta.Highlight{"tags": {NumberOfFragments: tt.fragments}, "color": {}},
 			}})
 			require.NoError(t, err)
 			require.Len(t, resp.Hits.Hits, 1)
@@ -438,11 +445,12 @@ func TestIndex_Search_HighlightFromSource(t *testing.T) {
 	require.NoError(t, StoreIndex(index))
 	defer func() { assert.NoError(t, DeleteIndex(indexName)) }()
 	// as Elasticsearch, no field is highlightable or stored
-	for _, f := range []string{"body", "tags", "meta.note", "items.0.text"} {
+	for _, f := range []string{"body", "tags", "meta.note", "items.0.text", "code"} {
 		index.GetMappings().SetProperty(f, meta.Property{Type: "text", Index: true})
 	}
 
 	require.NoError(t, index.CreateDocument("1", map[string]interface{}{
+		"code":  123.0,
 		"body":  "Quick fox, quick brown fox",
 		"tags":  []interface{}{"red fox", "brown dog"},
 		"meta":  map[string]interface{}{"note": "a brown note"},
@@ -472,6 +480,58 @@ func TestIndex_Search_HighlightFromSource(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, resp.Hits.Hits, 1)
 	assert.Empty(t, resp.Hits.Hits[0].Highlight, "tags did not match")
+
+	// a number in a text field is indexed, and highlighted, as its string
+	resp, err = index.Search(&meta.ZedQuery{
+		Query: &meta.Query{Match: map[string]*meta.MatchQuery{"code": {Query: "123"}}},
+		Size:  10, Highlight: &meta.Highlight{PreTags: []string{"<b>"}, PostTags: []string{"</b>"}, Fields: map[string]*meta.Highlight{"code": {}}},
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.Hits.Hits, 1)
+	assert.Equal(t, []string{"<b>123</b>"}, resp.Hits.Hits[0].Highlight["code"])
+
+	// number_of_fragments counts over the values of the field
+	resp, err = index.Search(&meta.ZedQuery{
+		Query: &meta.Query{QueryString: &meta.QueryStringQuery{Query: "tags:fox tags:dog"}},
+		Size:  10, Highlight: &meta.Highlight{PreTags: []string{"<b>"}, PostTags: []string{"</b>"}, Fields: map[string]*meta.Highlight{"tags": {NumberOfFragments: 1}}},
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.Hits.Hits, 1)
+	assert.Equal(t, []string{"red <b>fox</b>"}, resp.Hits.Hits[0].Highlight["tags"])
+}
+
+// A stored text field that another searched index maps as a vector is still
+// highlighted: collecting vectors must not take the value away.
+func TestSearchV2_HighlightFieldMappedAsVectorElsewhere(t *testing.T) {
+	a := &Index{ref: &meta.Index{Name: "a", Mappings: meta.NewMappings()}}
+	a.ref.Mappings.SetProperty("body", meta.NewProperty("vector"))
+	b := &Index{ref: &meta.Index{Name: "b", Mappings: meta.NewMappings()}}
+	b.ref.Mappings.SetProperty("body", meta.Property{Type: "text", Index: true, Highlightable: true})
+	b.ref.Mappings.SetSourceEnabled(false)
+
+	w, err := riot.OpenWriter(riot.InMemoryOnlyConfig())
+	require.NoError(t, err)
+	defer func() { assert.NoError(t, w.Close()) }()
+	batch := riot.NewBatch()
+	doc := riot.NewDocument("1").
+		AddField(riot.NewTextField("body", "brown fox").SearchTermPositions().StoreValue()).
+		AddField(riot.NewStoredOnlyField("_index", []byte("b")))
+	batch.Update(doc.ID(), doc)
+	require.NoError(t, w.Batch(batch))
+	r, err := w.Reader()
+	require.NoError(t, err)
+	defer func() { assert.NoError(t, r.Close()) }()
+	req := riot.NewTopNSearch(10, riot.NewTermQuery("fox").SetField("body")).IncludeLocations().WithStandardAggregations()
+	dmi, err := r.Search(context.Background(), req)
+	require.NoError(t, err)
+
+	query := &meta.ZedQuery{Source: &meta.Source{Enable: true}, Highlight: &meta.Highlight{
+		PreTags: []string{"<b>"}, PostTags: []string{"</b>"}, Fields: map[string]*meta.Highlight{"body": {NumberOfFragments: 1}},
+	}}
+	resp, err := searchV2(1, 1, dmi, query, a.GetMappings(), nil, map[string]*Index{"a": a, "b": b})
+	require.NoError(t, err)
+	require.Len(t, resp.Hits.Hits, 1)
+	assert.Equal(t, []string{"brown <b>fox</b>"}, resp.Hits.Hits[0].Highlight["body"])
 }
 
 func TestSourceStrings(t *testing.T) {
@@ -509,7 +569,24 @@ func TestSourceStrings(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.field, func(t *testing.T) {
-			assert.Equal(t, tt.want, sourceStrings(doc, tt.field))
+			assert.Equal(t, tt.want, sourceStrings(doc, tt.field, false))
+		})
+	}
+
+	// a text or keyword field indexes numbers and booleans as strings
+	doc["flag"] = true
+	terms := []struct {
+		field string
+		want  []string
+	}{
+		{"n", []string{"1"}},
+		{"b", []string{"y", "1", "z"}},
+		{"flag", []string{"true"}},
+		{"c", nil},
+	}
+	for _, tt := range terms {
+		t.Run("terms "+tt.field, func(t *testing.T) {
+			assert.Equal(t, tt.want, sourceStrings(doc, tt.field, true))
 		})
 	}
 }

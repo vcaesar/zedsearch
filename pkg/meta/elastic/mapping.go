@@ -1,4 +1,5 @@
 /* Copyright 2022 Zinc Labs Inc. and Contributors
+* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -26,6 +27,7 @@ import (
 	"bytes"
 	"sync"
 
+	"github.com/vcaesar/zedsearch/pkg/meta"
 	"github.com/vcaesar/zedsearch/pkg/zutils/json"
 )
 
@@ -147,6 +149,10 @@ type Property struct {
 	SearchAnalyzer string `json:"search_analyzer,omitempty"`
 	// Format holds the property format.
 	Format string `json:"format,omitempty"`
+	// Dims, IndexOptions and Similarity are the options of a vector field.
+	Dims         int                      `json:"dims,omitempty"`
+	IndexOptions *meta.VectorIndexOptions `json:"index_options,omitempty"`
+	Similarity   string                   `json:"similarity,omitempty"`
 }
 
 // NewProperty returns a new Property object.

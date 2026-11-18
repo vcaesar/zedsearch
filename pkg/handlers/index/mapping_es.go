@@ -1,5 +1,5 @@
 /*
-* Copyright 2026 AtomAI
+* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -168,6 +168,11 @@ func convertToESProperty(p meta.Property) elastic.Property {
 	prop.Analyzer = p.Analyzer
 	prop.SearchAnalyzer = p.SearchAnalyzer
 	prop.Format = p.Format
+	// a client recreating the index from this response keeps the dimension
+	// check and the ANN configuration
+	prop.Dims = p.Dims
+	prop.IndexOptions = p.IndexOptions
+	prop.Similarity = string(p.Similarity)
 
 	if p.Fields != nil {
 		for k, v := range p.Fields {

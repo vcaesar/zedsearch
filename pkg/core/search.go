@@ -1,5 +1,5 @@
 /* Copyright 2022 Zinc Labs Inc. and Contributors
-* Copyright 2026 AtomAI
+* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -129,12 +129,15 @@ func searchV2(shardNum, readerNum int64, dmi search.DocumentMatchIterator, query
 		highlightIndexes[indexName] = h
 		return h
 	}
-	// highlightField returns the fragments of value, nil when it has no matched term.
-	highlightField := func(next *search.DocumentMatch, zer *analysis.Analyzer, field string, value []byte) []string {
+	// highlightField returns the fragments of value, nil when it has no matched
+	// term. number_of_fragments counts over all values of the field, have of
+	// them are found already.
+	highlightField := func(next *search.DocumentMatch, zer *analysis.Analyzer, field string, value []byte, have int) []string {
 		options, ok := query.Highlight.Fields[field]
-		if !ok {
+		if !ok || have >= options.NumberOfFragments {
 			return nil
 		}
+		num := options.NumberOfFragments - have
 		v, ok := next.Locations[field]
 		if !ok {
 			return nil
@@ -144,9 +147,9 @@ func searchV2(shardNum, readerNum int64, dmi search.DocumentMatchIterator, query
 			return nil
 		}
 		if len(options.PreTags) > 0 && len(options.PostTags) > 0 {
-			return highlight.NewHTMLHighlighterTags(options.PreTags[0], options.PostTags[0]).BestFragments(v, value, options.NumberOfFragments)
+			return highlight.NewHTMLHighlighterTags(options.PreTags[0], options.PostTags[0]).BestFragments(v, value, num)
 		}
-		return highlighter.BestFragments(v, value, options.NumberOfFragments)
+		return highlighter.BestFragments(v, value, num)
 	}
 
 	Hits := make([]meta.Hit, 0)
@@ -164,7 +167,9 @@ func searchV2(shardNum, readerNum int64, dmi search.DocumentMatchIterator, query
 	// vector fields of all indexes are safe for each hit
 	vectorFields := mappings.VectorFields()
 	for _, index := range indexes {
-		vectorFields = append(vectorFields, index.GetMappings().VectorFields()...)
+		if m := index.GetMappings(); m != mappings {
+			vectorFields = append(vectorFields, m.VectorFields()...)
+		}
 	}
 	vectors := meta.NewSourceVectors(vectorFields)
 	next, err := dmi.Next()
@@ -191,9 +196,9 @@ func searchV2(shardNum, readerNum int64, dmi search.DocumentMatchIterator, query
 					rawSource = append(rawSource, value...)
 				}
 			default:
-				if vectors.Visit(field, value) {
-					return true
-				}
+				// not either or: a field another index maps as a vector may
+				// be the stored text of this hit
+				vectors.Visit(field, value)
 				if _, ok := next.Locations[field]; ok && highlightOn {
 					if _, ok := query.Highlight.Fields[field]; !ok {
 						return true
@@ -229,15 +234,15 @@ func searchV2(shardNum, readerNum int64, dmi search.DocumentMatchIterator, query
 			h := highlightFor(indexName)
 			// an array stores one value per element, each highlighted on its own
 			for _, f := range storedFields {
-				if fragments := highlightField(next, h.analyzers[f.name], f.name, storedValues[f.start:f.end]); len(fragments) > 0 {
-					prev, _ := highlightData[f.name].([]string)
+				prev, _ := highlightData[f.name].([]string)
+				if fragments := highlightField(next, h.analyzers[f.name], f.name, storedValues[f.start:f.end], len(prev)); len(fragments) > 0 {
 					highlightData[f.name] = append(prev, fragments...)
 				}
 			}
 			// as Elasticsearch, fields without a stored value are highlighted from _source
 			if len(rawSource) > 0 && len(highlightData) < len(h.analyzers) {
-				highlightFromSource(rawSource, h, next.Locations, highlightData, func(field string, value []byte) []string {
-					return highlightField(next, h.analyzers[field], field, value)
+				highlightFromSource(rawSource, h, next.Locations, highlightData, func(field string, value []byte, have int) []string {
+					return highlightField(next, h.analyzers[field], field, value, have)
 				})
 			}
 		}
@@ -294,9 +299,10 @@ type storedField struct {
 }
 
 // highlightFromSource highlights each matched field of h missing in data
-// with the string values of the field in the _source document raw.
+// with the values of the field in the _source document raw. highlightField
+// is given the number of fragments the field has already.
 func highlightFromSource(raw []byte, h *highlightIndex, matched search.FieldTermLocationMap,
-	data map[string]interface{}, highlightField func(field string, value []byte) []string) {
+	data map[string]interface{}, highlightField func(field string, value []byte, have int) []string) {
 	missing := false
 	for field := range h.analyzers {
 		if _, ok := data[field]; !ok && matched[field] != nil {
@@ -316,9 +322,11 @@ func highlightFromSource(raw []byte, h *highlightIndex, matched search.FieldTerm
 		if _, ok := data[field]; ok || matched[field] == nil {
 			continue
 		}
+		prop, _ := h.mappings.GetProperty(field)
+		terms := prop.Type == "text" || prop.Type == "keyword"
 		var fragments []string
-		for _, value := range sourceStrings(doc, sourceField(h.mappings, field)) {
-			fragments = append(fragments, highlightField(field, []byte(value))...)
+		for _, value := range sourceStrings(doc, sourceField(h.mappings, field), terms) {
+			fragments = append(fragments, highlightField(field, []byte(value), len(fragments))...)
 		}
 		if len(fragments) > 0 {
 			data[field] = fragments
@@ -342,20 +350,32 @@ func sourceField(mappings *meta.Mappings, field string) string {
 }
 
 // sourceStrings returns the string values of the dotted field path in doc,
-// either a string or the strings of an array.
-func sourceStrings(doc map[string]interface{}, field string) []string {
+// either a string or the strings of an array. For terms, a text or keyword
+// field, numbers and booleans count too, as the string the writer indexes.
+func sourceStrings(doc map[string]interface{}, field string, terms bool) []string {
+	indexed := func(v interface{}) (string, bool) {
+		switch v := v.(type) {
+		case string:
+			return v, true
+		case float64:
+			return strconv.FormatFloat(v, 'f', -1, 64), terms
+		case bool:
+			return strconv.FormatBool(v), terms
+		}
+		return "", false
+	}
 	v, _ := sourceValue(doc, field)
-	switch v := v.(type) {
-	case string:
-		return []string{v}
-	case []interface{}:
-		values := make([]string, 0, len(v))
-		for _, e := range v {
-			if s, ok := e.(string); ok {
+	if array, ok := v.([]interface{}); ok {
+		values := make([]string, 0, len(array))
+		for _, e := range array {
+			if s, ok := indexed(e); ok {
 				values = append(values, s)
 			}
 		}
 		return values
+	}
+	if s, ok := indexed(v); ok {
+		return []string{s}
 	}
 	return nil
 }

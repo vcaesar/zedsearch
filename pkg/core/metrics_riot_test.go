@@ -1,4 +1,4 @@
-/* Copyright 2026 AtomAI
+/* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -16,15 +16,57 @@
 package core
 
 import (
-	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/vcaesar/zedsearch/pkg/config"
 )
+
+// riotSample is one zed_riot_* sample of an index.
+type riotSample struct {
+	shard   string // empty on the per index gauges
+	counter bool
+	value   float64
+}
+
+// riotSamples gathers the samples of index by metric name; other indexes of
+// the process are open too and are left out.
+func riotSamples(reg *prometheus.Registry, index string) (map[string][]riotSample, error) {
+	mfs, err := reg.Gather()
+	if err != nil {
+		return nil, err
+	}
+	samples := map[string][]riotSample{}
+	for _, mf := range mfs {
+		for _, m := range mf.GetMetric() {
+			var s riotSample
+			match := false
+			for _, l := range m.GetLabel() {
+				switch l.GetName() {
+				case "index":
+					match = l.GetValue() == index
+				case "shard":
+					s.shard = l.GetValue()
+				}
+			}
+			if !match {
+				continue
+			}
+			if c := m.GetCounter(); c != nil {
+				s.counter, s.value = true, c.GetValue()
+			} else {
+				s.value = m.GetGauge().GetValue()
+			}
+			samples[mf.GetName()] = append(samples[mf.GetName()], s)
+		}
+	}
+	return samples, nil
+}
 
 func TestRiotCollector(t *testing.T) {
 	name := "TestRiotCollector.index_1"
@@ -38,34 +80,34 @@ func TestRiotCollector(t *testing.T) {
 
 	reg := prometheus.NewPedanticRegistry()
 	require.NoError(t, reg.Register(RiotCollector))
-	require.NoError(t, testutil.GatherAndCompare(reg, strings.NewReader(`
-# HELP zed_riot_open_writers Shard writers currently open.
-# TYPE zed_riot_open_writers gauge
-zed_riot_open_writers{index="TestRiotCollector.index_1"} 1
-`), "zed_riot_open_writers"))
 
-	counters := func() map[string]float64 {
-		mfs, err := reg.Gather()
-		require.NoError(t, err)
-		values := map[string]float64{}
-		for _, mf := range mfs {
-			for _, m := range mf.GetMetric() {
-				if m.GetLabel()[0].GetValue() != name {
-					continue
-				}
-				if c := m.GetCounter(); c != nil {
-					values[mf.GetName()] = c.GetValue()
-				}
-			}
-		}
-		return values
-	}
 	// riot bumps its batch counters just after the segment becomes searchable.
+	var samples map[string][]riotSample
 	assert.Eventually(t, func() bool {
-		v := counters()
-		return v["zed_riot_updates_total"] >= 1 && v["zed_riot_batches_total"] >= 1
+		var err error
+		samples, err = riotSamples(reg, name)
+		return err == nil && len(samples["zed_riot_updates_total"]) == 1 &&
+			samples["zed_riot_updates_total"][0].value >= 1 && samples["zed_riot_batches_total"][0].value >= 1
 	}, 10*time.Second, 20*time.Millisecond)
-	assert.Contains(t, counters(), "zed_riot_file_merge_seconds_total")
+
+	tests := []struct {
+		metric  string
+		counter bool
+		shard   string
+	}{
+		{metric: "zed_riot_open_writers"},
+		{metric: "zed_riot_file_segments"},
+		{metric: "zed_riot_updates_total", counter: true, shard: anyShard(index).GetID() + "/000000"},
+		{metric: "zed_riot_file_merge_seconds_total", counter: true, shard: anyShard(index).GetID() + "/000000"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.metric, func(t *testing.T) {
+			require.Len(t, samples[tt.metric], 1)
+			assert.Equal(t, tt.counter, samples[tt.metric][0].counter)
+			assert.Equal(t, tt.shard, samples[tt.metric][0].shard, "counters are per writer, gauges per index")
+		})
+	}
+	assert.Equal(t, 1.0, samples["zed_riot_open_writers"][0].value)
 }
 
 // TestRiotCollector_ConcurrentRollover scrapes while second shards are added
@@ -79,23 +121,62 @@ func TestRiotCollector_ConcurrentRollover(t *testing.T) {
 	require.NoError(t, index.CreateDocument("1", map[string]interface{}{"name": "riot"}, false))
 	waitForDocs(t, index, 1)
 
+	// roll over by hand only: the WAL consumer reads the shard list as well,
+	// let a pass in flight finish
+	shard := index.GetShardByDocID("1")
+	ZED_INDEX_SHARD_WAL_LIST.Remove(shard.GetShardName())
+	time.Sleep(2 * config.Global.WalSyncInterval)
+
 	reg := prometheus.NewPedanticRegistry()
 	require.NoError(t, reg.Register(RiotCollector))
-	done := make(chan struct{})
+	var scrapes atomic.Int64
+	stop, done := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(done)
-		for i := 0; i < 50; i++ {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
 			_, err := reg.Gather()
 			assert.NoError(t, err)
+			scrapes.Add(1)
 		}
 	}()
-	shard := index.GetShardByDocID("1")
-	for i := 0; i < 3; i++ {
-		require.NoError(t, shard.NewShard())
+	// joined before the fixture is deleted, also when a step below fails
+	t.Cleanup(func() { close(stop); <-done })
+	// scraping means a scrape started after before and ended during the step
+	scraping := func(t *testing.T, step func()) {
+		before := scrapes.Load()
+		step()
+		assert.Eventually(t, func() bool { return scrapes.Load() > before+1 }, 10*time.Second, time.Millisecond)
 	}
-	<-done
 
-	assert.Len(t, index.openWriterStats(), 4)
-	require.NoError(t, shard.Close())
-	assert.Empty(t, index.openWriterStats())
+	t.Run("rollover", func(t *testing.T) {
+		scraping(t, func() {
+			for i := 0; i < 3; i++ {
+				require.NoError(t, shard.NewShard())
+			}
+		})
+		assert.Len(t, index.openWriterStats(), 4)
+		samples, err := riotSamples(reg, name)
+		require.NoError(t, err)
+		require.Len(t, samples["zed_riot_open_writers"], 1)
+		assert.Equal(t, 4.0, samples["zed_riot_open_writers"][0].value)
+		shards := map[string]bool{}
+		for _, s := range samples["zed_riot_updates_total"] {
+			shards[s.shard] = true
+		}
+		assert.Len(t, shards, 4, "one counter series per writer")
+	})
+	t.Run("close", func(t *testing.T) {
+		// closing hands the shard back to the WAL consumer
+		ZED_INDEX_SHARD_WAL_LIST.Add(shard)
+		scraping(t, func() { require.NoError(t, shard.Close()) })
+		assert.Empty(t, index.openWriterStats())
+		samples, err := riotSamples(reg, name)
+		require.NoError(t, err)
+		assert.Empty(t, samples)
+	})
 }

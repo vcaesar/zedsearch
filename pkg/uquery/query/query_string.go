@@ -1,5 +1,5 @@
 /* Copyright 2022 Zinc Labs Inc. and Contributors
-* Copyright 2026 AtomAI
+* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -25,6 +25,7 @@ package query
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -115,7 +116,11 @@ func QueryStringQuery(query map[string]interface{}, mappings *meta.Mappings, ana
 	if value.DefaultField != "" && value.DefaultField != "*" {
 		fields = []string{value.DefaultField}
 	}
-	return withDefaultFields(q, lazyDefaultFields(mappings, analyzers, fields)), nil
+	implicit := zer
+	if value.Analyzer != "" {
+		implicit = nil // the analyzer of the clauses was requested
+	}
+	return withDefaultFields(q, lazyDefaultFields(mappings, analyzers, fields, implicit)), nil
 }
 
 // defaultFieldSet holds the fields a query without a field searches, by type,
@@ -124,15 +129,19 @@ type defaultFieldSet struct {
 	terms, numbers, dates []string
 	keywords              map[string]bool
 	analyzers             map[string]*analysis.Analyzer
+	// implicit is the analyzer a query without a field gets when the request
+	// names none; any other analyzer was requested and is kept.
+	implicit *analysis.Analyzer
 }
 
 // lazyDefaultFields returns the default fields of mappings, or of fields when
 // set, built on first use.
-func lazyDefaultFields(mappings *meta.Mappings, analyzers map[string]*analysis.Analyzer, fields []string) func() *defaultFieldSet {
+func lazyDefaultFields(mappings *meta.Mappings, analyzers map[string]*analysis.Analyzer, fields []string, implicit *analysis.Analyzer) func() *defaultFieldSet {
 	var set *defaultFieldSet
 	return func() *defaultFieldSet {
 		if set == nil {
 			set = defaultFields(mappings, analyzers, fields)
+			set.implicit = implicit
 		}
 		return set
 	}
@@ -148,7 +157,8 @@ func defaultFields(mappings *meta.Mappings, analyzers map[string]*analysis.Analy
 		}
 	}
 	sort.Strings(fields)
-	for _, field := range fields {
+	// a field named twice would score twice
+	for _, field := range slices.Compact(fields) {
 		prop, ok := mappings.GetProperty(field)
 		switch {
 		case !ok || !prop.Index || strings.HasPrefix(field, "_"):
@@ -177,7 +187,8 @@ func defaultFields(mappings *meta.Mappings, analyzers map[string]*analysis.Analy
 // withDefaultFields replaces the queries of q without a field, or on _all,
 // with a disjunction of the query on each default field.
 func withDefaultFields(q riot.Query, set func() *defaultFieldSet) riot.Query {
-	expand := func(field string, fields func(*defaultFieldSet) []string, build func(string, *analysis.Analyzer) riot.Query) riot.Query {
+	// requested is the analyzer of the query, nil for queries without one
+	expand := func(field string, requested *analysis.Analyzer, fields func(*defaultFieldSet) []string, build func(string, *analysis.Analyzer) riot.Query) riot.Query {
 		if field != "" && field != "_all" {
 			return q
 		}
@@ -187,7 +198,11 @@ func withDefaultFields(q riot.Query, set func() *defaultFieldSet) riot.Query {
 		}
 		out := riot.NewBooleanQuery().SetMinShould(1)
 		for _, f := range fields(s) {
-			out.AddShould(build(f, s.analyzers[f]))
+			zer := s.analyzers[f]
+			if requested != nil && requested != s.implicit {
+				zer = requested
+			}
+			out.AddShould(build(f, zer))
 		}
 		return out
 	}
@@ -201,7 +216,7 @@ func withDefaultFields(q riot.Query, set func() *defaultFieldSet) riot.Query {
 		}
 		return v
 	case *riot.MatchQuery:
-		return expand(v.Field(), terms, func(f string, zer *analysis.Analyzer) riot.Query {
+		return expand(v.Field(), v.Analyzer(), terms, func(f string, zer *analysis.Analyzer) riot.Query {
 			c := *v
 			if zer != nil {
 				c.SetAnalyzer(zer)
@@ -209,7 +224,7 @@ func withDefaultFields(q riot.Query, set func() *defaultFieldSet) riot.Query {
 			return c.SetField(f)
 		})
 	case *riot.MatchPhraseQuery:
-		return expand(v.Field(), terms, func(f string, zer *analysis.Analyzer) riot.Query {
+		return expand(v.Field(), v.Analyzer(), terms, func(f string, zer *analysis.Analyzer) riot.Query {
 			if s := set(); s.keywords[f] {
 				// keywords keep no positions, the whole value is one term
 				return riot.NewMatchQuery(v.Phrase()).SetField(f).SetAnalyzer(zer).SetBoost(v.Boost())
@@ -221,20 +236,20 @@ func withDefaultFields(q riot.Query, set func() *defaultFieldSet) riot.Query {
 			return c.SetField(f)
 		})
 	case *riot.TermQuery:
-		return expand(v.Field(), terms, func(f string, _ *analysis.Analyzer) riot.Query { c := *v; return c.SetField(f) })
+		return expand(v.Field(), nil, terms, func(f string, _ *analysis.Analyzer) riot.Query { c := *v; return c.SetField(f) })
 	case *riot.PrefixQuery:
-		return expand(v.Field(), terms, func(f string, _ *analysis.Analyzer) riot.Query { c := *v; return c.SetField(f) })
+		return expand(v.Field(), nil, terms, func(f string, _ *analysis.Analyzer) riot.Query { c := *v; return c.SetField(f) })
 	case *riot.FuzzyQuery:
-		return expand(v.Field(), terms, func(f string, _ *analysis.Analyzer) riot.Query { c := *v; return c.SetField(f) })
+		return expand(v.Field(), nil, terms, func(f string, _ *analysis.Analyzer) riot.Query { c := *v; return c.SetField(f) })
 	case *riot.WildcardQuery:
-		return expand(v.Field(), terms, func(f string, _ *analysis.Analyzer) riot.Query { c := *v; return c.SetField(f) })
+		return expand(v.Field(), nil, terms, func(f string, _ *analysis.Analyzer) riot.Query { c := *v; return c.SetField(f) })
 	case *riot.RegexpQuery:
-		return expand(v.Field(), terms, func(f string, _ *analysis.Analyzer) riot.Query { c := *v; return c.SetField(f) })
+		return expand(v.Field(), nil, terms, func(f string, _ *analysis.Analyzer) riot.Query { c := *v; return c.SetField(f) })
 	case *riot.NumericRangeQuery:
-		return expand(v.Field(), func(s *defaultFieldSet) []string { return s.numbers },
+		return expand(v.Field(), nil, func(s *defaultFieldSet) []string { return s.numbers },
 			func(f string, _ *analysis.Analyzer) riot.Query { c := *v; return c.SetField(f) })
 	case *riot.DateRangeQuery:
-		return expand(v.Field(), func(s *defaultFieldSet) []string { return s.dates },
+		return expand(v.Field(), nil, func(s *defaultFieldSet) []string { return s.dates },
 			func(f string, _ *analysis.Analyzer) riot.Query { c := *v; return c.SetField(f) })
 	}
 	return q

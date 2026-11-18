@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	segment "github.com/vcaesar/bluge_segment_api"
+	"github.com/vcaesar/ice/vec"
 	"github.com/vcaesar/riot/search"
 
 	zedaggregation "github.com/vcaesar/zedsearch/pkg/bluge/aggregation"
@@ -422,6 +423,51 @@ func TestResponseBucketAggregations(t *testing.T) {
 			TopHits: &meta.AggregationTopHits{Size: 1, Source: false},
 		}}, docs)
 		require.Len(t, resp["best"].Hits.Hits, 1)
+		assert.Empty(t, resp["best"].Hits.Hits[0].Source)
+	})
+
+	t.Run("top_hits restores excluded vectors per hit", func(t *testing.T) {
+		vector, err := vec.Encode([]float32{1, 2})
+		require.NoError(t, err)
+		mappings := advancedMappings()
+		mappings.SetProperty("emb", meta.NewProperty("vector"))
+		match := func(n uint64, id, emb string) *search.DocumentMatch {
+			d := &search.DocumentMatch{Number: n, Score: float64(10 - n)}
+			d.SetReader(&storedStubReader{stored: map[string]string{
+				"_id": id, "_index": "idx", "_source": `{"city":"sf"}`,
+				"emb": emb, meta.SourceVectorsField: `[["emb"]]`,
+			}})
+			return d
+		}
+		docs := []*search.DocumentMatch{match(1, "ok", string(vector)), match(2, "bad", "not a vector")}
+
+		run := func(source interface{}) (*zedaggregation.TopHitsCalculator, map[string]meta.AggregationResponse) {
+			req := newTestSearchAggregation()
+			require.NoError(t, Request(req, map[string]meta.Aggregations{
+				"best":  {TopHits: &meta.AggregationTopHits{Size: 2, Source: source}},
+				"total": {Count: &meta.AggregationMetric{}},
+			}, mappings))
+			bucket := search.NewBucket("test", req.aggs)
+			for _, d := range docs {
+				bucket.Consume(d)
+			}
+			bucket.Finish()
+			resp, err := Response(bucket)
+			require.NoError(t, err, "an unreadable vector must not drop the aggregations")
+			return bucket.Aggregation("best").(*zedaggregation.TopHitsCalculator), resp
+		}
+
+		_, resp := run(nil)
+		hits := resp["best"].Hits.Hits
+		require.Len(t, hits, 2)
+		assert.Equal(t, map[string]interface{}{"city": "sf", "emb": []interface{}{1.0, 2.0}}, hits[0].Source)
+		assert.Equal(t, map[string]interface{}{"city": "sf"}, hits[1].Source, "falls back to the stored _source")
+		assert.Contains(t, resp, "total")
+
+		calc, resp := run(false)
+		for _, hit := range calc.Hits() {
+			assert.Empty(t, hit.Stored, "vectors are not copied without _source")
+		}
 		assert.Empty(t, resp["best"].Hits.Hits[0].Source)
 	})
 

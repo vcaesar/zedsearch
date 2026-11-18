@@ -1,5 +1,5 @@
 /* Copyright 2022 Zinc Labs Inc. and Contributors
-* Copyright 2026 AtomAI
+* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -129,7 +129,8 @@ func (s *IndexSettings) UnmarshalJSON(data []byte) error {
 			continue
 		}
 		b, err := zutils.ToBool(v)
-		if err != nil {
+		// ToBool takes any nonzero number for true
+		if _, number := v.(float64); err != nil || number {
 			return fmt.Errorf("setting [%s] must be a boolean", key)
 		}
 		s.ExcludeSourceVectors = &b

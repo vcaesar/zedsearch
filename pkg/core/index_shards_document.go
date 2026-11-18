@@ -1,5 +1,5 @@
 /* Copyright 2022 Zinc Labs Inc. and Contributors
-* Copyright 2026 AtomAI
+* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -60,6 +60,9 @@ func (s *IndexShard) BuildBlugeDocumentFromJSON(docID string, doc map[string]int
 	for key, value := range doc {
 		if value == nil || key == meta.TimeFieldName || key == meta.SourceFieldName {
 			continue
+		}
+		if key == meta.SourceVectorsField {
+			continue // reserved: a stored value would be read as the list of excluded vectors
 		}
 
 		prop, ok := mappings.GetProperty(key)
@@ -122,9 +125,13 @@ func (s *IndexShard) BuildBlugeDocumentFromJSON(docID string, doc map[string]int
 			delete(doc, meta.SourceFieldName)
 		}
 		if m, ok := source.(map[string]interface{}); ok && len(vectorFields) > 0 && s.root.ExcludeSourceVectors() {
-			var excluded []string
-			if source, excluded = meta.ExcludeSourceVectors(m, vectorFields); len(excluded) > 0 {
-				bdoc.AddField(riot.NewStoredOnlyField(meta.SourceVectorsField, []byte(strings.Join(excluded, "\n"))))
+			stripped, excluded, err := meta.ExcludeSourceVectors(m, vectorFields)
+			if err != nil {
+				return nil, err
+			}
+			if excluded != nil {
+				source = stripped
+				bdoc.AddField(riot.NewStoredOnlyField(meta.SourceVectorsField, excluded))
 			}
 		}
 		sourceByteVal, _ := json.Marshal(source)

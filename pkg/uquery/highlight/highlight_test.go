@@ -1,5 +1,5 @@
 /* Copyright 2022 Zinc Labs Inc. and Contributors
-* Copyright 2026 AtomAI
+* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/vcaesar/riot/analysis"
 	"github.com/vcaesar/riot/analysis/analyzer"
+	"github.com/vcaesar/riot/analysis/char"
 	"github.com/vcaesar/riot/search"
 	"github.com/vcaesar/riot/search/highlight"
 
@@ -62,6 +63,8 @@ func TestRequest(t *testing.T) {
 
 func TestLocations(t *testing.T) {
 	std := analyzer.NewStandardAnalyzer()
+	html := analyzer.NewStandardAnalyzer()
+	html.CharFilters = []analysis.CharFilter{char.NewHTMLCharFilter()}
 	value := []byte("Quick fox, quick brown fox")
 	tests := []struct {
 		name    string
@@ -86,6 +89,27 @@ func TestLocations(t *testing.T) {
 			value:   value,
 			matched: search.TermLocationMap{"fox": {{Pos: 102}}},
 			want:    search.TermLocationMap{"fox": {{Pos: 2, Start: 6, End: 9}, {Pos: 5, Start: 23, End: 26}}},
+		},
+		{
+			name:    "position of another matched term",
+			zer:     std,
+			value:   []byte("red x red"),
+			matched: search.TermLocationMap{"red": {{Pos: 1}}, "blue": {{Pos: 3}}},
+			want:    search.TermLocationMap{"red": {{Pos: 1, Start: 0, End: 3}}},
+		},
+		{
+			name:    "char filter resizing the value gives no offsets",
+			zer:     html,
+			value:   []byte("<i>fox</i>"),
+			matched: search.TermLocationMap{"fox": {{Pos: 1}}},
+			want:    nil,
+		},
+		{
+			name:    "char filter keeping the size",
+			zer:     html,
+			value:   []byte("big fox"),
+			matched: search.TermLocationMap{"fox": {{Pos: 2}}},
+			want:    search.TermLocationMap{"fox": {{Pos: 2, Start: 4, End: 7}}},
 		},
 		{
 			name:    "no match",

@@ -1,4 +1,4 @@
-/* Copyright 2026 AtomAI. and Contributors
+/* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -73,22 +73,55 @@ func TestHistogramCalculator(t *testing.T) {
 			}
 			calc.Finish()
 			assert.Equal(t, tt.want, histogramBuckets(calc))
+			assert.Len(t, calc.Buckets(), len(tt.want), "a bucket name is listed twice")
 		})
 	}
 }
 
 func TestHistogramCalculatorMerge(t *testing.T) {
-	agg := NewHistogramAggregation(search.Field("age"), 10, 0, nil, nil, 1, 100)
-	a := agg.Calculator().(*HistogramCalculator)
-	b := agg.Calculator().(*HistogramCalculator)
-	for _, d := range numericDocs(t, []float64{1, 12}) {
-		a.Consume(d)
+	tests := []struct {
+		name        string
+		a, b        []float64
+		minDocCount int
+		size        int
+		want        map[string]uint64
+	}{
+		{
+			name: "counts",
+			a:    []float64{1, 12}, b: []float64{5, 25},
+			minDocCount: 1, size: 100,
+			want: map[string]uint64{"0": 2, "10": 1, "20": 1},
+		},
+		{
+			// the gaps of both are filled once, not again on the merge
+			name: "min_doc_count 0 keeps one bucket per gap",
+			a:    []float64{1, 35}, b: []float64{1, 35},
+			size: 4,
+			want: map[string]uint64{"0": 2, "10": 0, "20": 0, "30": 2},
+		},
+		{
+			name: "min_doc_count 0 fills the gap between both",
+			a:    []float64{1, 5}, b: []float64{41, 45},
+			size: 100,
+			want: map[string]uint64{"0": 2, "10": 0, "20": 0, "30": 0, "40": 2},
+		},
 	}
-	for _, d := range numericDocs(t, []float64{5, 25}) {
-		b.Consume(d)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			agg := NewHistogramAggregation(search.Field("age"), 10, 0, nil, nil, tt.minDocCount, tt.size)
+			a := agg.Calculator().(*HistogramCalculator)
+			b := agg.Calculator().(*HistogramCalculator)
+			for _, d := range numericDocs(t, tt.a) {
+				a.Consume(d)
+			}
+			for _, d := range numericDocs(t, tt.b) {
+				b.Consume(d)
+			}
+			a.Finish()
+			b.Finish()
+			a.Merge(b)
+			assert.Equal(t, tt.want, histogramBuckets(a))
+			assert.Len(t, a.Buckets(), len(tt.want), "a bucket name is listed twice")
+		})
 	}
-	a.Finish()
-	b.Finish()
-	a.Merge(b)
-	assert.Equal(t, map[string]uint64{"0": 2, "10": 1, "20": 1}, histogramBuckets(a))
 }

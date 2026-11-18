@@ -1,5 +1,5 @@
 /* Copyright 2022 Zinc Labs Inc. and Contributors
-* Copyright 2026 AtomAI
+* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	segment "github.com/vcaesar/bluge_segment_api"
 	"github.com/vcaesar/ice/vec"
 	"github.com/vcaesar/riot"
@@ -447,6 +448,8 @@ func TestIndex_BuildBlugeDocumentFromJSON_AllFieldPositions(t *testing.T) {
 			w, err := riot.OpenWriter(riot.InMemoryOnlyConfig())
 			assert.NoError(t, err)
 			defer func() { assert.NoError(t, w.Close()) }()
+			// Insert analyzes again, _all would count the terms above twice
+			bdoc.ReleaseAnalysis()
 			assert.NoError(t, w.Insert(bdoc))
 			r, err := w.Reader()
 			assert.NoError(t, err)
@@ -607,7 +610,7 @@ func TestIndex_BuildBlugeDocumentFromJSON_ExcludeSourceVectors(t *testing.T) {
 			})
 			if exclude {
 				assert.JSONEq(t, `{"name":"x"}`, stored["_source"])
-				assert.Equal(t, "emb", stored[meta.SourceVectorsField])
+				assert.JSONEq(t, `[["emb"]]`, stored[meta.SourceVectorsField])
 			} else {
 				assert.JSONEq(t, `{"name":"x","emb":[1,2]}`, stored["_source"])
 				assert.NotContains(t, stored, meta.SourceVectorsField)
@@ -616,17 +619,61 @@ func TestIndex_BuildBlugeDocumentFromJSON_ExcludeSourceVectors(t *testing.T) {
 	}
 }
 
-func TestIndex_SetSettings_ExcludeSourceVectorsImmutable(t *testing.T) {
-	indexName := "TestIndex_SetSettings_ExcludeSourceVectorsImmutable.index_1"
+// A document field named like the marker is not indexed: its stored value
+// would be read back as the list of excluded vectors.
+func TestIndex_BuildBlugeDocumentFromJSON_ReservedSourceVectorsField(t *testing.T) {
+	indexName := "TestIndex_BuildBlugeDocumentFromJSON_ReservedSourceVectorsField.index_1"
 	index, err := NewIndex(indexName, "disk", 1)
-	assert.NoError(t, err)
-	assert.NoError(t, StoreIndex(index))
+	require.NoError(t, err)
+	exclude := true
+	require.NoError(t, index.SetSettings(&meta.IndexSettings{ExcludeSourceVectors: &exclude}))
+	require.NoError(t, StoreIndex(index))
 	defer func() { assert.NoError(t, DeleteIndex(indexName)) }()
-	assert.Equal(t, config.Global.ExcludeSourceVectors, index.ExcludeSourceVectors())
-	no, yes := false, true
-	assert.NoError(t, index.SetSettings(&meta.IndexSettings{ExcludeSourceVectors: &no}))
-	assert.NoError(t, index.SetSettings(&meta.IndexSettings{ExcludeSourceVectors: &yes}))
-	assert.False(t, index.ExcludeSourceVectors())
+	index.GetMappings().SetProperty(meta.SourceVectorsField, meta.NewProperty("vector"))
+	index.GetMappings().SetProperty("emb", meta.NewProperty("vector"))
+
+	shard := index.GetShardByDocID("1")
+	got, err := shard.CheckDocument("1", map[string]interface{}{
+		meta.SourceVectorsField: []interface{}{3.0, 4.0}, "emb": []interface{}{1.0, 2.0},
+	}, false, 0)
+	require.NoError(t, err)
+	var doc map[string]interface{}
+	require.NoError(t, json.Unmarshal(got, &doc))
+	bdoc, err := shard.BuildBlugeDocumentFromJSON("1", doc)
+	require.NoError(t, err)
+
+	stored := map[string][]string{}
+	bdoc.EachField(func(f segment.Field) {
+		if f.Name() == "_source" || f.Name() == meta.SourceVectorsField {
+			stored[f.Name()] = append(stored[f.Name()], string(f.Value()))
+		}
+	})
+	require.Len(t, stored[meta.SourceVectorsField], 1, "only the marker is stored under the reserved name")
+	assert.JSONEq(t, `[["emb"]]`, stored[meta.SourceVectorsField][0])
+	require.Len(t, stored["_source"], 1)
+	assert.JSONEq(t, `{"_source_vectors":[3,4]}`, stored["_source"][0])
+}
+
+// The first value set wins, whichever it is: later settings do not change it.
+func TestIndex_SetSettings_ExcludeSourceVectorsImmutable(t *testing.T) {
+	for _, first := range []bool{true, false} {
+		t.Run(strconv.FormatBool(first), func(t *testing.T) {
+			indexName := "TestIndex_SetSettings_ExcludeSourceVectorsImmutable.index_" + strconv.FormatBool(first)
+			index, err := NewIndex(indexName, "disk", 1)
+			require.NoError(t, err)
+			require.NoError(t, StoreIndex(index))
+			defer func() { assert.NoError(t, DeleteIndex(indexName)) }()
+			assert.Equal(t, config.Global.ExcludeSourceVectors, index.ExcludeSourceVectors(), "inherited until set")
+
+			other := !first
+			require.NoError(t, index.SetSettings(&meta.IndexSettings{ExcludeSourceVectors: &first}))
+			assert.Equal(t, first, index.ExcludeSourceVectors())
+			require.NoError(t, index.SetSettings(&meta.IndexSettings{ExcludeSourceVectors: &other}))
+			assert.Equal(t, first, index.ExcludeSourceVectors())
+			require.NoError(t, index.SetSettings(&meta.IndexSettings{NumberOfReplicas: 1}))
+			assert.Equal(t, first, index.ExcludeSourceVectors())
+		})
+	}
 }
 
 func TestIndex_BuildBlugeDocumentFromJSON_OptionalFields(t *testing.T) {
@@ -651,9 +698,7 @@ func TestIndex_BuildBlugeDocumentFromJSON_OptionalFields(t *testing.T) {
 			assert.NoError(t, err)
 			assert.NoError(t, StoreIndex(index))
 			defer func() { assert.NoError(t, DeleteIndex(indexName)) }()
-			if tt.all {
-				index.GetMappings().SetAllEnabled(true)
-			}
+			index.GetMappings().SetAllEnabled(tt.all) // not left to zed_all_field
 			config.Global.AutoTimestamp = tt.autoTimestamp
 
 			shard := index.GetShardByDocID("1")

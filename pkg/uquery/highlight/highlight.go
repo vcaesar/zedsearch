@@ -1,4 +1,5 @@
 /* Copyright 2022 Zinc Labs Inc. and Contributors
+* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -23,6 +24,8 @@ Contact info@atomai.cc for licensing.
 package highlight
 
 import (
+	"slices"
+
 	"github.com/vcaesar/riot/analysis"
 	"github.com/vcaesar/riot/search"
 
@@ -53,20 +56,27 @@ func Request(highlight *meta.Highlight) error {
 // value of a field analyzed by zer (nil for a keyword). The index keeps only
 // term positions, so value is analyzed again and its tokens are matched by
 // term and position; a value whose positions are shifted, such as a later
-// element of an array, is matched by term alone.
+// element of an array, is matched by term alone. A value its char filters
+// resize has no usable offsets and returns nil.
 func Locations(zer *analysis.Analyzer, value []byte, matched search.TermLocationMap) search.TermLocationMap {
 	var tokens analysis.TokenStream
 	if zer == nil {
 		tokens = analysis.TokenStream{{Term: value, Start: 0, End: len(value), PositionIncr: 1}}
 	} else {
-		// analyzers may rewrite their input, such as lowercasing in place
-		tokens = zer.Analyze(append([]byte(nil), value...))
-	}
-
-	positions := make(map[int]struct{})
-	for _, locs := range matched {
-		for _, loc := range locs {
-			positions[loc.Pos] = struct{}{}
+		// zer.Analyze in one char filter pass. Analyzers may rewrite their
+		// input, such as lowercasing in place, so value is copied.
+		input := append([]byte(nil), value...)
+		for _, cf := range zer.CharFilters {
+			input = cf.Filter(input)
+		}
+		// token offsets are of the char filtered text: a value the filters
+		// resize, as html_strip does, would have the wrong bytes marked
+		if len(input) != len(value) {
+			return nil
+		}
+		tokens = zer.Tokenizer.Tokenize(input)
+		for _, tf := range zer.TokenFilters {
+			tokens = tf.Filter(tokens)
 		}
 	}
 
@@ -76,12 +86,14 @@ func Locations(zer *analysis.Analyzer, value []byte, matched search.TermLocation
 	for _, token := range tokens {
 		pos += token.PositionIncr
 		term := string(token.Term)
-		if _, ok := matched[term]; !ok {
+		locs, ok := matched[term]
+		if !ok {
 			continue
 		}
 		loc := &search.Location{Pos: pos, Start: token.Start, End: token.End}
 		byTerm.AddLocation(term, loc)
-		if _, ok := positions[pos]; ok {
+		// the position of this term, not of another matched one
+		if slices.ContainsFunc(locs, func(l *search.Location) bool { return l.Pos == pos }) {
 			byPos.AddLocation(term, loc)
 		}
 	}

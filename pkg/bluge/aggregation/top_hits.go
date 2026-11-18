@@ -1,4 +1,4 @@
-/* Copyright 2026 AtomAI
+/* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -192,14 +192,14 @@ func (c *TopHitsCalculator) less(i, j int) bool {
 	return cmp < 0
 }
 
-// StoredFields returns the names set by SetStoredFields.
-func (c *TopHitsCalculator) StoredFields() []string {
-	fields := make([]string, 0, len(c.storedFields))
-	for f := range c.storedFields {
-		fields = append(fields, f)
-	}
-	return fields
-}
+// // StoredFields returns the names set by SetStoredFields.
+// func (c *TopHitsCalculator) StoredFields() []string {
+//     fields := make([]string, 0, len(c.storedFields))
+//     for f := range c.storedFields {
+//         fields = append(fields, f)
+//     }
+//     return fields
+// }
 
 // Err reports the first stored field error seen while collecting.
 func (c *TopHitsCalculator) Err() error { return c.err }

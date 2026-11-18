@@ -21,8 +21,10 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/vcaesar/zedsearch/pkg/core"
+	"github.com/vcaesar/zedsearch/pkg/meta"
 	"github.com/vcaesar/zedsearch/test/utils"
 )
 
@@ -208,5 +210,44 @@ func TestMapping(t *testing.T) {
 		for i := 0; i < 10; i++ {
 			_ = core.DeleteIndex(fmt.Sprintf("TestMapping.index_%d", i))
 		}
+	})
+}
+
+// An update the index rejects leaves its mappings as they were.
+func TestSetMapping_RejectedUpdateKeepsMappings(t *testing.T) {
+	name := "TestSetMapping_RejectedUpdateKeepsMappings.index_1"
+	index, err := core.NewIndex(name, "disk", 1)
+	require.NoError(t, err)
+	mappings := meta.NewMappings()
+	mappings.SetSourceEnabled(false)
+	mappings.SetProperty("title", meta.NewProperty("text"))
+	require.NoError(t, index.SetMappings(mappings))
+	require.NoError(t, core.StoreIndex(index))
+	t.Cleanup(func() { assert.NoError(t, core.DeleteIndex(name)) })
+
+	put := func(data map[string]interface{}) (int, string) {
+		c, w := utils.NewContext()
+		utils.SetRequestData(c, data)
+		utils.SetRequestParams(c, map[string]string{"target": name})
+		SetMapping(c)
+		return w.Code, w.Body.String()
+	}
+	nested := map[string]interface{}{"properties": map[string]interface{}{"items": map[string]interface{}{"type": "nested"}}}
+	for _, attempt := range []string{"first", "retry"} {
+		t.Run(attempt, func(t *testing.T) {
+			code, body := put(nested)
+			assert.Equal(t, http.StatusBadRequest, code)
+			assert.Contains(t, body, "requires _source", "not the duplicate field error of a half applied update")
+			_, ok := index.GetMappings().GetProperty("items")
+			assert.False(t, ok)
+		})
+	}
+	t.Run("valid update applies", func(t *testing.T) {
+		code, body := put(map[string]interface{}{"properties": map[string]interface{}{"tag": map[string]interface{}{"type": "keyword"}}})
+		assert.Equal(t, http.StatusOK, code, body)
+		_, ok := index.GetMappings().GetProperty("tag")
+		assert.True(t, ok)
+		_, ok = index.GetMappings().GetProperty("title")
+		assert.True(t, ok)
 	})
 }

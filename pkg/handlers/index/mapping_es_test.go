@@ -6,9 +6,13 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/vcaesar/zedsearch/pkg/config"
 	"github.com/vcaesar/zedsearch/pkg/core"
+	"github.com/vcaesar/zedsearch/pkg/meta"
+	"github.com/vcaesar/zedsearch/pkg/zhttp"
+	"github.com/vcaesar/zedsearch/pkg/zutils/json"
 	"github.com/vcaesar/zedsearch/test/utils"
 )
 
@@ -164,4 +168,50 @@ func TestESMapping_GetConverted(t *testing.T) {
 	})
 
 	config.Global.EnableTextKeywordMapping = false
+}
+
+// Both mapping endpoints return the options a vector field was created with.
+func TestMapping_VectorOptions(t *testing.T) {
+	name := "TestMapping_VectorOptions.index_1"
+	c, w := utils.NewContext()
+	utils.SetRequestData(c, map[string]interface{}{"properties": map[string]interface{}{"emb": map[string]interface{}{
+		"type": "dense_vector", "dims": 3, "similarity": "l2_norm",
+		"index_options": map[string]interface{}{"type": "hnsw", "m": 8, "ef_construction": 64},
+	}}})
+	utils.SetRequestParams(c, map[string]string{"target": name})
+	SetMapping(c)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	t.Cleanup(func() { assert.NoError(t, core.DeleteIndex(name)) })
+
+	tests := []struct {
+		name string
+		get  func(zhttp.Context)
+	}{
+		{name: "es", get: GetESMapping},
+		{name: "native", get: GetMapping},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, w := utils.NewContext()
+			utils.SetRequestParams(c, map[string]string{"target": name})
+			tt.get(c)
+			require.Equal(t, http.StatusOK, w.Code)
+			var resp map[string]struct {
+				Mappings struct {
+					Properties map[string]struct {
+						Type         string                   `json:"type"`
+						Dims         int                      `json:"dims"`
+						Similarity   string                   `json:"similarity"`
+						IndexOptions *meta.VectorIndexOptions `json:"index_options"`
+					} `json:"properties"`
+				} `json:"mappings"`
+			}
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+			emb := resp[name].Mappings.Properties["emb"]
+			assert.Equal(t, "vector", emb.Type)
+			assert.Equal(t, 3, emb.Dims)
+			assert.Equal(t, "l2", emb.Similarity)
+			assert.Equal(t, &meta.VectorIndexOptions{Type: "hnsw", M: 8, EfConstruction: 64}, emb.IndexOptions)
+		})
+	}
 }

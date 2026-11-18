@@ -1,4 +1,4 @@
-/* Copyright 2026 AtomAI
+/* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -131,20 +131,29 @@ func idempotentEntry(entry []byte) ([]byte, error) {
 // applied to the writers.
 func (index *Index) WaitApplied(timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
+	// the targets of all shards are taken first: entries written while one
+	// shard catches up are not waited for
+	targets := make(map[*IndexShard]uint64, len(index.shards))
 	for _, shard := range index.shards {
 		shard.lock.RLock()
 		w := shard.wal
-		shard.lock.RUnlock()
-		if w == nil {
-			continue
+		var last uint64
+		var err error
+		if w != nil {
+			last, err = w.LastIndex()
 		}
-		last, err := w.LastIndex()
+		shard.lock.RUnlock()
 		if err != nil {
 			return err
 		}
+		if w != nil {
+			targets[shard] = last
+		}
+	}
+	for shard, last := range targets {
 		for {
-			_, committed, err := shard.readRedoLog(RedoActionWrite)
-			if err != nil && err.Error() != errors.ErrNotFound.Error() {
+			committed, err := shard.committedIndex()
+			if err != nil {
 				return err
 			}
 			if committed >= last {
@@ -157,6 +166,22 @@ func (index *Index) WaitApplied(timeout time.Duration) error {
 		}
 	}
 	return nil
+}
+
+// committedIndex returns the last WAL entry applied to the writers. It fails
+// once the WAL is closed, by a flush, tier move or delete: what was left to
+// apply is unknown then. A WAL opened again continues the same redo log.
+func (s *IndexShard) committedIndex() (uint64, error) {
+	s.lock.RLock()
+	defer s.lock.RUnlock()
+	if s.wal == nil {
+		return 0, fmt.Errorf("shard [%s]: WAL closed while waiting for it to be applied", s.GetShardName())
+	}
+	_, committed, err := s.readRedoLog(RedoActionWrite)
+	if err != nil && err.Error() != errors.ErrNotFound.Error() {
+		return 0, err
+	}
+	return committed, nil
 }
 
 // Refresh waits until the documents written so far are searchable. The WAL

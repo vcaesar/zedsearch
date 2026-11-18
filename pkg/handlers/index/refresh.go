@@ -1,4 +1,5 @@
 /* Copyright 2022 Zinc Labs Inc. and Contributors
+* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -38,6 +39,7 @@ import (
 // @Param   index  path  string  true  "Index"
 // @Success 200 {object} meta.HTTPResponse
 // @Failure 400 {object} meta.HTTPResponseError
+// @Failure 500 {object} meta.HTTPResponseError
 // @Router /api/index/{index}/refresh [post]
 func Refresh(c zhttp.Context) {
 	indexName := c.Param("target")
@@ -46,8 +48,9 @@ func Refresh(c zhttp.Context) {
 		c.JSON(http.StatusBadRequest, meta.HTTPResponseError{Error: "index " + indexName + " does not exists"})
 		return
 	}
+	// the request is valid: the WAL was not applied in time or storage failed
 	if err := index.Refresh(); err != nil {
-		c.JSON(http.StatusBadRequest, meta.HTTPResponseError{Error: err.Error()})
+		c.JSON(http.StatusInternalServerError, meta.HTTPResponseError{Error: err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, meta.HTTPResponse{Message: "ok"})

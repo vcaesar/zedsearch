@@ -1,5 +1,5 @@
 /* Copyright 2022 Zinc Labs Inc. and Contributors
-* Copyright 2026 AtomAI
+* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -117,8 +117,15 @@ func (index *Index) GetSettings() *meta.IndexSettings {
 // ExcludeSourceVectors reports whether new documents keep their vector
 // fields out of the stored _source.
 func (index *Index) ExcludeSourceVectors() bool {
-	if s := index.GetSettings(); s != nil && s.ExcludeSourceVectors != nil {
-		return *s.ExcludeSourceVectors
+	// SetSettings sets the pointer once, under the lock; its value never changes
+	index.lock.RLock()
+	var exclude *bool
+	if s := index.ref.Settings; s != nil {
+		exclude = s.ExcludeSourceVectors
+	}
+	index.lock.RUnlock()
+	if exclude != nil {
+		return *exclude
 	}
 	return config.Global.ExcludeSourceVectors
 }
@@ -409,8 +416,14 @@ func (index *Index) UpdateMetadataByShard(id string) {
 	}
 
 	// update latest shard docTime
-	secondShard := shard.shards[shard.GetLatestShardID()]
+	index.publishDocTime(shard)
+}
+
+// publishDocTime copies the time range of the documents written to shard to
+// its latest second layer shard, where GetReaders reads it.
+func (index *Index) publishDocTime(shard *IndexShard) {
 	index.lock.Lock()
+	secondShard := shard.shards[shard.GetLatestShardID()]
 	atomic.StoreInt64(&secondShard.ref.Stats.DocTimeMin, atomic.LoadInt64(&shard.ref.Stats.DocTimeMin))
 	atomic.StoreInt64(&secondShard.ref.Stats.DocTimeMax, atomic.LoadInt64(&shard.ref.Stats.DocTimeMax))
 	index.lock.Unlock()

@@ -1,4 +1,4 @@
-/* Copyright 2026 AtomAI
+/* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/vcaesar/zedsearch/pkg/core"
 	"github.com/vcaesar/zedsearch/pkg/meta"
@@ -59,14 +60,10 @@ func TestFlush(t *testing.T) {
 		},
 	}
 
-	t.Run("prepare", func(t *testing.T) {
-		index, err := core.NewIndex("TestFlush.index_1", "disk", 2)
-		assert.NoError(t, err)
-		assert.NotNil(t, index)
-
-		err = core.StoreIndex(index)
-		assert.NoError(t, err)
-	})
+	index, err := core.NewIndex("TestFlush.index_1", "disk", 2)
+	require.NoError(t, err)
+	require.NoError(t, core.StoreIndex(index))
+	t.Cleanup(func() { assert.NoError(t, core.DeleteIndex("TestFlush.index_1")) })
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -86,8 +83,9 @@ func TestFlush(t *testing.T) {
 // Writers and WAL reopen on the next request after a flush.
 func TestFlushThenWrite(t *testing.T) {
 	index, err := core.NewIndex("TestFlushThenWrite.index_1", "disk", 2)
-	assert.NoError(t, err)
-	assert.NoError(t, core.StoreIndex(index))
+	require.NoError(t, err)
+	require.NoError(t, core.StoreIndex(index))
+	t.Cleanup(func() { assert.NoError(t, core.DeleteIndex("TestFlushThenWrite.index_1")) })
 	for _, id := range []string{"1", "2", "3"} {
 		assert.NoError(t, index.CreateDocument(id, map[string]interface{}{"name": "zed"}, false))
 	}
