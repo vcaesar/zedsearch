@@ -156,6 +156,23 @@ func TestEngineRequest(t *testing.T) {
 	}
 }
 
+func TestEngineCatchAll(t *testing.T) {
+	e := New()
+	e.GET("/files/*filepath", func(c Context) {
+		c.Data(http.StatusOK, "text/plain", []byte(c.Param("filepath")))
+	})
+	for _, tt := range []struct{ target, want string }{
+		{"/files/a/b.js", "/a/b.js"},
+		{"/files/", "/"},
+	} {
+		t.Run(tt.target, func(t *testing.T) {
+			w := do(e, http.MethodGet, tt.target, nil)
+			assert.Equal(t, http.StatusOK, w.Code)
+			assert.Equal(t, tt.want, w.Body.String())
+		})
+	}
+}
+
 func TestEngineCaseSensitive(t *testing.T) {
 	e := New()
 	e.GET("/api/index", func(c Context) { c.Status(http.StatusOK) })

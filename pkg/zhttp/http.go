@@ -103,6 +103,8 @@ func (c *HTTPContext) SetBody(body []byte) {
 
 func (c *HTTPContext) Context() context.Context { return c.Request.Context() }
 
+func (c *HTTPContext) SetContext(ctx context.Context) { c.Request = c.Request.WithContext(ctx) }
+
 func (c *HTTPContext) Header(key, value string) { c.writer.Header().Set(key, value) }
 
 func (c *HTTPContext) Status(code int) { c.writer.WriteHeader(code) }

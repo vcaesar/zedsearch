@@ -64,14 +64,19 @@ func newBackend(e *Engine) backend {
 
 func (b *fiberBackend) handle(method, path string, handlers []HandlerFunc) {
 	// gin names its catch-all (`*any`), fiber does not
+	var catchAll string
 	if i := strings.IndexByte(path, '*'); i >= 0 {
-		path = path[:i+1]
+		path, catchAll = path[:i+1], path[i+1:]
 	}
 	b.app.Add([]string{method}, path, func(fc fiber.Ctx) error {
 		route := fc.Route()
 		params := make([]Param, len(route.Params))
 		for i, key := range route.Params {
 			params[i] = Param{Key: key, Value: fc.Params(key)}
+			if catchAll != "" && strings.HasPrefix(key, "*") {
+				// like gin: the catch-all value keeps its leading slash
+				params[i] = Param{Key: catchAll, Value: "/" + params[i].Value}
+			}
 		}
 		newFiberContext(fc, handlers, params, route.Path).run()
 		return nil
@@ -170,6 +175,8 @@ func (c *fiberContext) Body() io.ReadCloser { return io.NopCloser(bytes.NewReade
 func (c *fiberContext) SetBody(body []byte) { c.fc.Request().SetBody(body) }
 
 func (c *fiberContext) Context() context.Context { return c.fc.Context() }
+
+func (c *fiberContext) SetContext(ctx context.Context) { c.fc.SetContext(ctx) }
 
 func (c *fiberContext) Header(key, value string) { c.fc.Set(key, value) }
 
