@@ -185,8 +185,17 @@ func (s *IndexShard) committedIndex() (uint64, error) {
 }
 
 // Refresh waits until the documents written so far are searchable. The WAL
-// consumer applies them, so writers and WAL stay open.
+// consumer applies them, so writers and WAL stay open. After a restart a shard
+// WAL stays closed until its first write and may still hold entries, so every
+// shard WAL of a writable index is opened first, handing them to the consumer.
 func (index *Index) Refresh() error {
+	if index.checkWritable() == nil {
+		for _, shard := range index.shards {
+			if err := shard.OpenWAL(); err != nil {
+				return err
+			}
+		}
+	}
 	return index.WaitApplied(walFlushTimeout)
 }
 

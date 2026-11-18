@@ -568,6 +568,23 @@ func TestIndex_Settings(t *testing.T) {
 		assert.NoError(t, err)
 	})
 
+	t.Run("indexed vector mapping is kept", func(t *testing.T) {
+		require.NoError(t, index.SetMappings(&meta.Mappings{
+			Properties: map[string]meta.Property{"emb": meta.NewProperty("vector")},
+		}))
+		unindexed := meta.NewProperty("vector")
+		unindexed.Index = false
+		for name, prop := range map[string]meta.Property{"disable index": unindexed, "change type": meta.NewProperty("text")} {
+			t.Run(name, func(t *testing.T) {
+				assert.Error(t, index.SetMappings(&meta.Mappings{Properties: map[string]meta.Property{"emb": prop}}))
+				assert.Equal(t, []string{"emb"}, index.GetMappings().VectorFields())
+			})
+		}
+		assert.NoError(t, index.SetMappings(&meta.Mappings{
+			Properties: map[string]meta.Property{"emb": meta.NewProperty("vector")},
+		}), "an unchanged vector mapping is accepted")
+	})
+
 	t.Run("analyzer", func(t *testing.T) {
 		err := index.SetAnalyzers(map[string]*analysis.Analyzer{
 			"standard": analyzer.NewStandardAnalyzer(),

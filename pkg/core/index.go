@@ -337,6 +337,15 @@ func (index *Index) SetMappings(mappings *meta.Mappings) error {
 			return fmt.Errorf("[mappings] nested fields require _source")
 		}
 	}
+	// vectors excluded from _source are restored from the stored values of
+	// indexed vector fields, so an indexed vector field must stay one
+	for field, prop := range mappings.ListProperty() {
+		old, ok := index.ref.Mappings.GetProperty(field)
+		if ok && old.Type == "vector" && old.Index && (prop.Type != "vector" || !prop.Index) {
+			index.lock.Unlock()
+			return fmt.Errorf("[mappings] indexed vector field [%s] cannot change its type or disable index", field)
+		}
+	}
 	if mappings.Source != nil {
 		index.ref.Mappings.SetSourceEnabled(mappings.Source.Enabled)
 	}

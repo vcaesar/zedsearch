@@ -30,6 +30,7 @@ import (
 	"github.com/vcaesar/zedsearch/pkg/config"
 	"github.com/vcaesar/zedsearch/pkg/meta"
 	"github.com/vcaesar/zedsearch/pkg/metadata"
+	"github.com/vcaesar/zedsearch/pkg/wal"
 	"github.com/vcaesar/zedsearch/pkg/zutils/json"
 )
 
@@ -236,6 +237,25 @@ func TestIndexRefresh(t *testing.T) {
 		for _, shard := range index.shards {
 			assert.Equal(t, uint64(1), atomic.LoadUint64(&shard.open), "Refresh closed shard %s", shard.GetID())
 		}
+	})
+	t.Run("entries left in a closed WAL", func(t *testing.T) {
+		// a restart leaves the WAL closed until the next write
+		require.NoError(t, index.Close())
+		shard := anyShard(index)
+		require.Equal(t, uint64(0), atomic.LoadUint64(&shard.open))
+		entry, err := idempotentEntry([]byte(`{"@_id":"restart","@_action":"insert","name":"pending"}`))
+		require.NoError(t, err)
+		w, err := wal.Open(shard.GetShardName())
+		require.NoError(t, err)
+		require.NoError(t, w.Write(entry))
+		require.NoError(t, w.Close())
+
+		before, err := countDocs(index)
+		require.NoError(t, err)
+		require.NoError(t, index.Refresh())
+		n, err := countDocs(index)
+		require.NoError(t, err)
+		assert.Equal(t, before+1, n, "Refresh applies entries persisted before the restart")
 	})
 }
 

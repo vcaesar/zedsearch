@@ -39,8 +39,11 @@ type Mappings struct {
 	// Source is the Elasticsearch `_source` mapping; nil stores _source.
 	Source *SourceMapping `json:"_source,omitempty"`
 	// All is the `_all` mapping; nil follows zed_all_field.
-	All  *SourceMapping `json:"_all,omitempty"`
-	lock sync.RWMutex
+	All *SourceMapping `json:"_all,omitempty"`
+	// vectors are vector fields of other indexes searched together, whose
+	// name these mappings define as another type; see AddVectorFields.
+	vectors []string
+	lock    sync.RWMutex
 }
 
 // SourceMapping set to {"enabled": false} does not store the original
@@ -258,7 +261,8 @@ func (t *Mappings) ListProperty() map[string]Property {
 	return m
 }
 
-// VectorFields returns the indexed vector fields, whose values are stored.
+// VectorFields returns the indexed vector fields, whose values are stored,
+// and the fields added by AddVectorFields.
 func (t *Mappings) VectorFields() []string {
 	var fields []string
 	t.RangeProperty(func(field string, prop Property) bool {
@@ -267,7 +271,19 @@ func (t *Mappings) VectorFields() []string {
 		}
 		return true
 	})
+	t.lock.RLock()
+	fields = append(fields, t.vectors...)
+	t.lock.RUnlock()
 	return fields
+}
+
+// AddVectorFields adds vector fields VectorFields returns without mapping
+// them: a search over several indexes restores the vectors of every index,
+// while its query keeps the property one index defines for the name.
+func (t *Mappings) AddVectorFields(fields ...string) {
+	t.lock.Lock()
+	t.vectors = append(t.vectors, fields...)
+	t.lock.Unlock()
 }
 
 // RangeProperty calls fn for each property until fn returns false. Unlike

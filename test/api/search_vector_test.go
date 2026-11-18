@@ -329,13 +329,12 @@ func TestSearchVectorExcludeSource(t *testing.T) {
 			t.Run("update restores the new vector", func(t *testing.T) {
 				resp := request("POST", "/api/"+index+"/_update/1", bytes.NewBufferString(`{"name": "y", "meta": {"emb": [0.125, 1]}}`))
 				assert.Equal(t, http.StatusOK, resp.Code, resp.Body.String())
+				// one read checks name and meta: a second read may see another snapshot
+				wantMeta := map[string]interface{}{"emb": []interface{}{0.125, 1.0}}
 				assert.Eventually(t, func() bool {
 					source, ok := getSource()
-					return ok && source["name"] == "y"
+					return ok && source["name"] == "y" && assert.ObjectsAreEqual(wantMeta, source["meta"])
 				}, 10*time.Second, 20*time.Millisecond)
-				if source, ok := getSource(); assert.True(t, ok, "document has no _source") {
-					assert.Equal(t, map[string]interface{}{"emb": []interface{}{0.125, 1.0}}, source["meta"])
-				}
 			})
 		})
 	}

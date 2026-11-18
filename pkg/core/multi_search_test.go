@@ -153,7 +153,10 @@ func TestMultiSearch_UsesEveryIndexMappings(t *testing.T) {
 		require.NoError(t, StoreIndex(index))
 		t.Cleanup(func() { assert.NoError(t, DeleteIndex(name)) })
 		index.GetMappings().SetAllEnabled(false)
-		if i == 1 {
+		// the first index by name maps emb as text, hiding the vector of the second
+		if i == 0 {
+			index.GetMappings().SetProperty("emb", meta.NewProperty("text"))
+		} else {
 			index.GetMappings().SetProperty("emb", meta.NewProperty("vector"))
 		}
 		require.NoError(t, index.CreateDocument("1", docs[i], false))
@@ -176,11 +179,12 @@ func TestMultiSearch_UsesEveryIndexMappings(t *testing.T) {
 	top := resp.Aggregations["top"].Hits
 	require.NotNil(t, top)
 	require.Len(t, top.Hits, 2)
+	topByIndex := map[string]interface{}{}
 	for _, hit := range top.Hits {
-		if hit.Index == names[1] {
-			assert.Equal(t, []interface{}{1.0, 2.0}, hit.Source.(map[string]interface{})["emb"])
-		}
+		topByIndex[hit.Index] = hit.Source
 	}
+	require.Contains(t, topByIndex, names[1], "top_hits holds the hit of the vector index")
+	assert.Equal(t, []interface{}{1.0, 2.0}, topByIndex[names[1]].(map[string]interface{})["emb"])
 }
 
 func TestUnionMappings(t *testing.T) {
@@ -201,5 +205,13 @@ func TestUnionMappings(t *testing.T) {
 		assert.Equal(t, "text", body.Type, "the first index by name wins")
 		assert.Equal(t, []string{"emb"}, m.VectorFields())
 		assert.False(t, m.AllEnabled(), "_all is searched only when every index has it")
+	})
+	t.Run("vector hidden by an earlier mapping", func(t *testing.T) {
+		text := &Index{ref: &meta.Index{Name: "a_text", Mappings: meta.NewMappings()}}
+		text.ref.Mappings.SetProperty("emb", meta.NewProperty("text"))
+		m, _ := unionMappings(map[string]*Index{"b": b, "a_text": text})
+		emb, _ := m.GetProperty("emb")
+		assert.Equal(t, "text", emb.Type, "the query keeps the first index by name")
+		assert.Equal(t, []string{"emb"}, m.VectorFields(), "the vector of b is still restored")
 	})
 }

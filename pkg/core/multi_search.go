@@ -26,6 +26,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -139,12 +140,16 @@ func unionMappings(indexes map[string]*Index) (*meta.Mappings, map[string]*analy
 	mappings := meta.NewMappings()
 	analyzers := make(map[string]*analysis.Analyzer)
 	all := true
+	var shadowed []string // vector fields a name defined earlier hides
 	for _, name := range names {
 		m := indexes[name].GetMappings()
 		all = all && m.AllEnabled()
 		m.RangeProperty(func(field string, prop meta.Property) bool {
-			if _, ok := mappings.Properties[field]; !ok {
+			first, ok := mappings.Properties[field]
+			if !ok {
 				mappings.Properties[field] = prop
+			} else if prop.Type == "vector" && prop.Index && (first.Type != "vector" || !first.Index) && !slices.Contains(shadowed, field) {
+				shadowed = append(shadowed, field)
 			}
 			return true
 		})
@@ -155,6 +160,7 @@ func unionMappings(indexes map[string]*Index) (*meta.Mappings, map[string]*analy
 		}
 	}
 	mappings.SetAllEnabled(all)
+	mappings.AddVectorFields(shadowed...)
 	return mappings, analyzers
 }
 
