@@ -70,7 +70,7 @@ func TestConfig(t *testing.T) {
 		assert.Equal(t, false, c.PrometheusEnable)
 		assert.Equal(t, 1000000, c.MaxDocumentSize)
 
-		assert.Equal(t, 1024, c.BatchSize)
+		assert.Equal(t, 4096, c.BatchSize)
 		assert.Equal(t, 10000, c.MaxResults)
 		assert.Equal(t, 1000, c.AggregationTermsSize)
 
@@ -164,9 +164,16 @@ func TestTOMLDefaults(t *testing.T) {
 	assert.False(t, c.TelemetryEnable)
 	assert.False(t, c.ProfilerEnable)
 	assert.False(t, c.PrometheusEnable)
+	assert.False(t, c.PrometheusAuth)
+	assert.False(t, c.AccessLogEnable)
 	assert.False(t, c.EnableTextKeywordMapping)
 	assert.True(t, c.EnableSQLMappings)
-	assert.Equal(t, 1024, c.BatchSize)
+	assert.False(t, c.AllField)
+	assert.True(t, c.AllFieldPositions)
+	assert.True(t, c.AutoTimestamp)
+	assert.True(t, c.ExcludeSourceVectors)
+	assert.Equal(t, "disk", c.VectorStorage)
+	assert.Equal(t, 4096, c.BatchSize)
 	assert.Equal(t, 10000, c.MaxResults)
 	assert.Equal(t, 1000, c.AggregationTermsSize)
 	assert.Equal(t, 1000000, c.MaxDocumentSize)
@@ -185,6 +192,7 @@ func TestTOMLDefaults(t *testing.T) {
 	}, c.Cluster)
 	assert.Equal(t, tier{CheckInterval: 10 * time.Minute, ColdStorageType: "s3"}, c.Tier)
 	assert.Equal(t, shard{GoroutineNum: 3, Num: 3, MaxSize: 1073741824}, c.Shard)
+	assert.Equal(t, logs{}, c.Logs)
 	assert.Equal(t, etcd{Prefix: "/zed"}, c.Etcd)
 	assert.Equal(t, gse{
 		EnableStop: true,
@@ -208,8 +216,9 @@ func TestTOMLEnvironmentOverrides(t *testing.T) {
 			"ZED_SERVER_PORT": "9090", "ZED_NODE_ID": "0",
 			"ZED_SENTRY": "false", "ZED_WAL_SYNC_INTERVAL": "25ms",
 			"ZED_MAX_DOCUMENT_SIZE": "2mb", "ZED_SHARD_MAX_SIZE": "2048",
-			"ZED_ETCD_ENDPOINTS":         "one:2379,two:2379",
-			"ZED_PLUGIN_GSE_ENABLE_STOP": "false",
+			"ZED_ETCD_ENDPOINTS":           "one:2379,two:2379",
+			"ZED_PLUGIN_GSE_ENABLE_STOP":   "false",
+			"ZED_LOGS_INGEST_ALLOWED_UPTO": "5h",
 		}},
 	}
 	for _, tt := range tests {
@@ -231,6 +240,7 @@ func TestTOMLEnvironmentOverrides(t *testing.T) {
 				want.Shard.MaxSize = 2048
 				want.Etcd.Endpoints = []string{"one:2379", "two:2379"}
 				want.Plugin.GSE.EnableStop = false
+				want.Logs.IngestAllowedUpto = 5 * time.Hour
 			}
 			assert.Equal(t, want, mustLoad(t))
 		})

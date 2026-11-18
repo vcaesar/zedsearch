@@ -12,7 +12,14 @@
 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 * See the License for the specific language governing permissions and
 * limitations under the License.
- */
+*
+Part of this work fall under the AtomAI Enterprise Edition (EE)
+and are licensed under the Business Source License 1.1,
+if you are the Cloud companies or your companies with revenue greater than $1M,
+please refer to [AGPL-3.0](./LICENSE-EE)) and LICENSE-EE for details,
+or production use of the Licensed Work requires a commercial license agreement with Zedsearch.
+Contact info@atomai.cc for licensing.
+*/
 
 package config
 
@@ -56,8 +63,17 @@ type config struct {
 	ProfilerFriendlyProfileID string        `toml:"zed_profiler_friendly_profile_id"`
 	TelemetryEnable           bool          `toml:"zed_telemetry"`
 	PrometheusEnable          bool          `toml:"zed_prometheus_enable"`
+	PrometheusAuth            bool          `toml:"zed_prometheus_auth"`  // require basic auth on /metrics
+	AccessLogEnable           bool          `toml:"zed_access_log"`       // log every request, also in release mode
+	TracingEnable             bool          `toml:"zed_tracing_enable"`   // record and export OpenTelemetry spans
+	TracingEndpoint           string        `toml:"zed_tracing_endpoint"` // OTLP/HTTP traces URL, empty uses OTEL_EXPORTER_OTLP_*
 	EnableTextKeywordMapping  bool          `toml:"zed_enable_text_keyword_mapping"`
 	EnableSQLMappings         bool          `toml:"zed_enable_sql_mappings"`
+	AllField                  bool          `toml:"zed_all_field"`              // index the _all catch-all field
+	AllFieldPositions         bool          `toml:"zed_all_field_positions"`    // keep term positions in _all; false shrinks text indexes
+	AutoTimestamp             bool          `toml:"zed_auto_timestamp"`         // index the ingest time as @timestamp when a document has none
+	ExcludeSourceVectors      bool          `toml:"zed_exclude_source_vectors"` // default of index setting exclude_source_vectors
+	VectorStorage             string        `toml:"zed_vector_storage"`         // disk: HNSW graph files keep a copy of the vectors; memory: links only
 	BatchSize                 int           `toml:"zed_batch_size"`
 	MaxResults                int           `toml:"zed_max_results"`
 	AggregationTermsSize      int           `toml:"zed_aggregation_terms_size"`
@@ -70,6 +86,7 @@ type config struct {
 	Cluster                   cluster
 	Tier                      tier
 	Shard                     shard
+	Logs                      logs
 	Etcd                      etcd
 	S3                        S3Config
 	GCS                       GCSConfig
@@ -121,6 +138,14 @@ type shard struct {
 	Num int64 `toml:"zed_shard_num"`
 	// MaxSize is the maximum size limit for one shard, or will create a new shard.
 	MaxSize uint64 `toml:"zed_shard_max_size"`
+}
+
+type logs struct {
+	// IngestAllowedUpto rejects log events older than now minus this on the
+	// OpenObserve-compatible endpoints, 0 disables.
+	IngestAllowedUpto time.Duration `toml:"zed_logs_ingest_allowed_upto"`
+	// IngestAllowedInFuture rejects log events later than now plus this, 0 disables.
+	IngestAllowedInFuture time.Duration `toml:"zed_logs_ingest_allowed_in_future"`
 }
 
 type etcd struct {
