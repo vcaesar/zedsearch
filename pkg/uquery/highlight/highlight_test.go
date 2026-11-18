@@ -20,6 +20,10 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/vcaesar/riot/analysis"
+	"github.com/vcaesar/riot/analysis/analyzer"
+	"github.com/vcaesar/riot/search"
+	"github.com/vcaesar/riot/search/highlight"
 
 	"github.com/vcaesar/zedsearch/pkg/meta"
 )
@@ -54,4 +58,55 @@ func TestRequest(t *testing.T) {
 		assert.Equal(t, 0, h.Fields["f"].FragmentSize)
 		assert.Equal(t, 5, h.Fields["f"].NumberOfFragments)
 	})
+}
+
+func TestLocations(t *testing.T) {
+	std := analyzer.NewStandardAnalyzer()
+	value := []byte("Quick fox, quick brown fox")
+	tests := []struct {
+		name    string
+		zer     *analysis.Analyzer
+		value   []byte
+		matched search.TermLocationMap
+		want    search.TermLocationMap
+	}{
+		{
+			name:    "term and position, offsets zero in the index",
+			zer:     std,
+			value:   value,
+			matched: search.TermLocationMap{"quick": {{Pos: 3}}, "brown": {{Pos: 4}}},
+			want: search.TermLocationMap{
+				"quick": {{Pos: 3, Start: 11, End: 16}},
+				"brown": {{Pos: 4, Start: 17, End: 22}},
+			},
+		},
+		{
+			name:    "shifted positions fall back to terms",
+			zer:     std,
+			value:   value,
+			matched: search.TermLocationMap{"fox": {{Pos: 102}}},
+			want:    search.TermLocationMap{"fox": {{Pos: 2, Start: 6, End: 9}, {Pos: 5, Start: 23, End: 26}}},
+		},
+		{
+			name:    "no match",
+			zer:     std,
+			value:   value,
+			matched: search.TermLocationMap{"slow": {{Pos: 1}}},
+			want:    search.TermLocationMap{},
+		},
+		{
+			name:    "keyword",
+			value:   []byte("New York"),
+			matched: search.TermLocationMap{"New York": {{Pos: 1}}},
+			want:    search.TermLocationMap{"New York": {{Pos: 1, Start: 0, End: 8}}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, Locations(tt.zer, tt.value, tt.matched))
+		})
+	}
+
+	got := highlight.NewHTMLHighlighter().BestFragments(Locations(std, value, tests[0].matched), value, 1)
+	assert.Equal(t, []string{"Quick fox, <mark>quick</mark> <mark>brown</mark> fox"}, got)
 }
