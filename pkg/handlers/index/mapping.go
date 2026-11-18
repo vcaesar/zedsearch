@@ -12,7 +12,14 @@
 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 * See the License for the specific language governing permissions and
 * limitations under the License.
- */
+*
+Part of this work fall under the AtomAI Enterprise Edition (EE)
+and are licensed under the Business Source License 1.1,
+if you are the Cloud companies or your companies with revenue greater than $1M,
+please refer to [AGPL-3.0](./LICENSE-EE)) and LICENSE-EE for details,
+and production use of the Licensed Work requires a commercial license agreement with Zedsearch.
+Contact info@atomai.cc for licensing.
+*/
 
 package index
 
@@ -89,6 +96,14 @@ func SetMapping(c zhttp.Context) {
 	// check if mapping field is exists
 	if exists {
 		indexMappings := index.GetMappings()
+		if mappings.Source != nil && indexMappings != nil && mappings.Source.Enabled != indexMappings.SourceEnabled() {
+			zutils.RenderJSON(c, http.StatusBadRequest, meta.HTTPResponseError{Error: "index [" + indexName + "] cannot change [_source] of an existing index"})
+			return
+		}
+		if mappings.All != nil && indexMappings != nil && mappings.All.Enabled != indexMappings.AllEnabled() {
+			zutils.RenderJSON(c, http.StatusBadRequest, meta.HTTPResponseError{Error: "index [" + indexName + "] cannot change [_all] of an existing index"})
+			return
+		}
 		if indexMappings != nil && indexMappings.Len() > 0 {
 			for field := range mappings.ListProperty() {
 				if _, ok := indexMappings.GetProperty(field); ok {
@@ -105,7 +120,7 @@ func SetMapping(c zhttp.Context) {
 	}
 
 	// update mappings
-	if mappings != nil && mappings.Len() > 0 {
+	if mappings != nil && (mappings.Len() > 0 || mappings.Source != nil || mappings.All != nil) {
 		for k, v := range mappings.Properties {
 			if v.Fields == nil {
 				continue

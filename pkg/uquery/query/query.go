@@ -12,7 +12,14 @@
 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 * See the License for the specific language governing permissions and
 * limitations under the License.
- */
+*
+Part of this work fall under the AtomAI Enterprise Edition (EE)
+and are licensed under the Business Source License 1.1,
+if you are the Cloud companies or your companies with revenue greater than $1M,
+please refer to [AGPL-3.0](./LICENSE-EE)) and LICENSE-EE for details,
+or production use of the Licensed Work requires a commercial license agreement with Zedsearch.
+Contact info@atomai.cc for licensing.
+*/
 
 package query
 
@@ -204,5 +211,9 @@ func Query(query interface{}, mappings *meta.Mappings, analyzers map[string]*ana
 		}
 	}
 
-	return subq, nil
+	if subq == nil || mappings == nil || mappings.AllEnabled() {
+		return subq, nil
+	}
+	// without _all, queries on _all or without a field search every field
+	return withDefaultFields(subq, lazyDefaultFields(mappings, analyzers, nil)), nil
 }

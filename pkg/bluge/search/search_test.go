@@ -104,6 +104,35 @@ func TestMultiSearch(t *testing.T) {
 	}
 }
 
+func TestMultiSearchKeepsQuery(t *testing.T) {
+	readers := shardReaders(t, 3, 5)
+	mappings := meta.NewMappings()
+	mappings.SetProperty("n", meta.NewProperty("numeric"))
+	query := &meta.ZedQuery{
+		Query: map[string]interface{}{"match_all": map[string]interface{}{}},
+		Sort:  "-n",
+		From:  4,
+		Size:  3,
+	}
+	for range 2 {
+		dmi, err := MultiSearch(context.Background(), query, mappings, nil, readers...)
+		require.NoError(t, err)
+		var ids []string
+		for next, err := dmi.Next(); next != nil; next, err = dmi.Next() {
+			require.NoError(t, err)
+			require.NoError(t, next.VisitStoredFields(func(field string, value []byte) bool {
+				if field == "_id" {
+					ids = append(ids, string(value))
+				}
+				return true
+			}))
+		}
+		assert.Equal(t, []string{"2-0", "1-4", "1-3"}, ids)
+		assert.Equal(t, 4, query.From)
+		assert.Equal(t, 3, query.Size)
+	}
+}
+
 func BenchmarkMultiSearch(b *testing.B) {
 	readers := shardReaders(b, 3, 20)
 	mappings := meta.NewMappings()

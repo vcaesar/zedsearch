@@ -78,12 +78,30 @@ func TestRequest_VectorIndexOptions(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "none", props: `{"emb": {"type": "dense_vector", "dims": 3}}`},
-		{name: "es hnsw", props: `{"emb": {"type": "dense_vector", "index_options": {"type": "hnsw", "m": 8, "ef_construction": 64}}}`, want: &meta.VectorIndexOptions{M: 8, EfConstruction: 64}},
-		{name: "es quantized hnsw defaults", props: `{"emb": {"type": "dense_vector", "index_options": {"type": "int8_hnsw"}}}`, want: &meta.VectorIndexOptions{}},
-		{name: "es without type", props: `{"emb": {"type": "dense_vector", "index_options": {"m": 4}}}`, want: &meta.VectorIndexOptions{M: 4}},
+		{name: "es hnsw", props: `{"emb": {"type": "dense_vector", "index_options": {"type": "hnsw", "m": 8, "ef_construction": 64}}}`, want: &meta.VectorIndexOptions{Type: "hnsw", M: 8, EfConstruction: 64}},
+		{name: "es quantized hnsw defaults", props: `{"emb": {"type": "dense_vector", "index_options": {"type": "int8_hnsw"}}}`, want: &meta.VectorIndexOptions{Type: "int8_hnsw"}},
+		{name: "es type case insensitive", props: `{"emb": {"type": "dense_vector", "index_options": {"type": "INT8_HNSW"}}}`, want: &meta.VectorIndexOptions{Type: "int8_hnsw"}},
+		{name: "es without type is int8_hnsw", props: `{"emb": {"type": "dense_vector", "index_options": {"m": 4}}}`, want: &meta.VectorIndexOptions{Type: "int8_hnsw", M: 4}},
 		{name: "es flat stays exact", props: `{"emb": {"type": "dense_vector", "index_options": {"type": "flat"}}}`},
-		{name: "opensearch method", props: `{"emb": {"type": "knn_vector", "dimension": 3, "method": {"name": "hnsw", "engine": "lucene", "parameters": {"m": 24, "ef_construction": 128}}}}`, want: &meta.VectorIndexOptions{M: 24, EfConstruction: 128}},
-		{name: "opensearch method without parameters", props: `{"emb": {"type": "knn_vector", "method": {"name": "hnsw"}}}`, want: &meta.VectorIndexOptions{}},
+		{name: "es int8_flat stays exact", props: `{"emb": {"type": "dense_vector", "index_options": {"type": "int8_flat"}}}`},
+		{name: "es bbq_hnsw unsupported", props: `{"emb": {"type": "dense_vector", "index_options": {"type": "bbq_hnsw"}}}`, wantErr: true},
+		{name: "es int4_flat unsupported", props: `{"emb": {"type": "dense_vector", "index_options": {"type": "int4_flat"}}}`, wantErr: true},
+		{name: "opensearch method", props: `{"emb": {"type": "knn_vector", "dimension": 3, "method": {"name": "hnsw", "engine": "lucene", "parameters": {"m": 24, "ef_construction": 128}}}}`, want: &meta.VectorIndexOptions{Type: "hnsw", M: 24, EfConstruction: 128}},
+		{name: "opensearch method without parameters", props: `{"emb": {"type": "knn_vector", "method": {"name": "hnsw"}}}`, want: &meta.VectorIndexOptions{Type: "hnsw"}},
+		{name: "opensearch method int8_hnsw unsupported", props: `{"emb": {"type": "knn_vector", "method": {"name": "int8_hnsw"}}}`, wantErr: true},
+		{name: "compression 4x", props: `{"emb": {"type": "knn_vector", "compression_level": "4x", "method": {"name": "hnsw", "parameters": {"m": 8}}}}`, want: &meta.VectorIndexOptions{Type: "int8_hnsw", M: 8}},
+		{name: "compression 1x", props: `{"emb": {"type": "knn_vector", "compression_level": "1x"}}`, want: &meta.VectorIndexOptions{Type: "hnsw"}},
+		{name: "compression without method enables hnsw", props: `{"emb": {"type": "knn_vector", "compression_level": "4X"}}`, want: &meta.VectorIndexOptions{Type: "int8_hnsw"}},
+		{name: "mode on_disk is 4x", props: `{"emb": {"type": "knn_vector", "mode": "on_disk"}}`, want: &meta.VectorIndexOptions{Type: "int8_hnsw"}},
+		{name: "mode in_memory is 1x", props: `{"emb": {"type": "knn_vector", "mode": "in_memory"}}`, want: &meta.VectorIndexOptions{Type: "hnsw"}},
+		{name: "mode on_disk with 1x", props: `{"emb": {"type": "knn_vector", "mode": "on_disk", "compression_level": "1x"}}`, want: &meta.VectorIndexOptions{Type: "hnsw"}},
+		{name: "es index_options matching compression", props: `{"emb": {"type": "dense_vector", "compression_level": "4x", "index_options": {"type": "int8_hnsw"}}}`, want: &meta.VectorIndexOptions{Type: "int8_hnsw"}},
+		{name: "es index_options conflicting compression", props: `{"emb": {"type": "dense_vector", "compression_level": "1x", "index_options": {"type": "int8_hnsw"}}}`, wantErr: true},
+		{name: "compression on flat", props: `{"emb": {"type": "dense_vector", "compression_level": "4x", "index_options": {"type": "flat"}}}`, wantErr: true},
+		{name: "compression 32x unsupported", props: `{"emb": {"type": "knn_vector", "compression_level": "32x"}}`, wantErr: true},
+		{name: "compression invalid", props: `{"emb": {"type": "knn_vector", "compression_level": "3x"}}`, wantErr: true},
+		{name: "compression not string", props: `{"emb": {"type": "knn_vector", "compression_level": 4}}`, wantErr: true},
+		{name: "mode invalid", props: `{"emb": {"type": "knn_vector", "mode": "fast"}}`, wantErr: true},
 		{name: "unsupported type", props: `{"emb": {"type": "dense_vector", "index_options": {"type": "ivf"}}}`, wantErr: true},
 		{name: "unsupported method", props: `{"emb": {"type": "knn_vector", "method": {"name": "ivf"}}}`, wantErr: true},
 		{name: "type not string", props: `{"emb": {"type": "dense_vector", "index_options": {"type": 1}}}`, wantErr: true},
@@ -262,6 +280,65 @@ func TestRequest_NestedAndJoin(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := Request(nil, map[string]interface{}{"properties": tt.props})
 			assert.ErrorContains(t, err, tt.wantErr)
+		})
+	}
+}
+
+func TestRequest_Source(t *testing.T) {
+	tests := []struct {
+		name    string
+		data    string
+		want    *meta.SourceMapping
+		wantErr bool
+	}{
+		{name: "absent", data: `{"properties": {"a": {"type": "text"}}}`},
+		{name: "disabled", data: `{"_source": {"enabled": false}, "properties": {"a": {"type": "text"}}}`, want: &meta.SourceMapping{Enabled: false}},
+		{name: "enabled", data: `{"_source": {"enabled": true}, "properties": {}}`, want: &meta.SourceMapping{Enabled: true}},
+		{name: "only _source", data: `{"_source": {"enabled": false}}`, want: &meta.SourceMapping{Enabled: false}},
+		{name: "not an object", data: `{"_source": false, "properties": {}}`, wantErr: true},
+		{name: "unsupported option", data: `{"_source": {"excludes": ["a"]}, "properties": {}}`, wantErr: true},
+		{name: "enabled not bool", data: `{"_source": {"enabled": "maybe"}, "properties": {}}`, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var data map[string]interface{}
+			assert.NoError(t, json.Unmarshal([]byte(tt.data), &data))
+			got, err := Request(nil, data)
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			assert.NoError(t, err)
+			assert.Equal(t, tt.want, got.Source)
+		})
+	}
+}
+
+func TestRequest_All(t *testing.T) {
+	tests := []struct {
+		name    string
+		data    string
+		want    *meta.SourceMapping
+		wantErr string
+	}{
+		{name: "absent", data: `{"properties": {"a": {"type": "text"}}}`},
+		{name: "enabled", data: `{"_all": {"enabled": true}, "properties": {}}`, want: &meta.SourceMapping{Enabled: true}},
+		{name: "only _all and _source", data: `{"_all": {"enabled": false}, "_source": {"enabled": true}}`, want: &meta.SourceMapping{Enabled: false}},
+		{name: "not an object", data: `{"_all": true, "properties": {}}`, wantErr: "_all should be an object"},
+		{name: "unsupported option", data: `{"_all": {"analyzer": "x"}, "properties": {}}`, wantErr: "_all does not support [analyzer]"},
+		{name: "only _all plus unknown", data: `{"_all": {"enabled": true}, "dynamic": true}`, wantErr: "properties should be defined"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var data map[string]interface{}
+			assert.NoError(t, json.Unmarshal([]byte(tt.data), &data))
+			got, err := Request(nil, data)
+			if tt.wantErr != "" {
+				assert.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			assert.NoError(t, err)
+			assert.Equal(t, tt.want, got.All)
 		})
 	}
 }

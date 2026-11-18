@@ -474,6 +474,9 @@ func Request(req zedaggregation.SearchAggregation, aggs map[string]meta.Aggregat
 			if err != nil {
 				return err
 			}
+			if mappings != nil {
+				subreq.SetStoredFields(meta.NewSourceVectors(mappings.VectorFields()).Fields())
+			}
 			req.AddAggregation(name, subreq)
 		case agg.PercentileRanks != nil:
 			prop, _ := mappings.GetProperty(agg.PercentileRanks.Field)
@@ -766,6 +769,7 @@ func topHitsResponse(name string, c *zedaggregation.TopHitsCalculator) (*meta.Ag
 	}
 	enable, fields := c.Source()
 	src := &meta.Source{Enable: enable, Fields: fields}
+	vectors := meta.NewSourceVectors(c.StoredFields())
 
 	hits := c.Hits()
 	rv := &meta.AggregationHits{
@@ -781,7 +785,16 @@ func topHitsResponse(name string, c *zedaggregation.TopHitsCalculator) (*meta.Ag
 			Score: hits[i].Score,
 		}
 		if len(hits[i].Source) > 0 {
-			hit.Source = source.Response(src, hits[i].Source)
+			vectors.Reset()
+			for field, value := range hits[i].Stored {
+				vectors.Visit(field, value)
+			}
+			value, err := vectors.Restore(hits[i].Source)
+			if err != nil {
+				return nil, errors.New(errors.ErrorTypeRuntimeException,
+					fmt.Sprintf("[%s] top_hits aggregation err %s", name, err.Error()))
+			}
+			hit.Source = source.Response(src, value)
 		}
 		rv.Hits = append(rv.Hits, hit)
 	}

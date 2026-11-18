@@ -12,12 +12,20 @@
 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 * See the License for the specific language governing permissions and
 * limitations under the License.
- */
+*
+Part of this work fall under the AtomAI Enterprise Edition (EE)
+and are licensed under the Business Source License 1.1,
+if you are the Cloud companies or your companies with revenue greater than $1M,
+please refer to [AGPL-3.0](./LICENSE-EE)) and LICENSE-EE for details,
+or production use of the Licensed Work requires a commercial license agreement with Zedsearch.
+Contact info@atomai.cc for licensing.
+*/
 
 package query
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	querystr "github.com/vcaesar/query_string"
@@ -71,6 +79,7 @@ func QueryStringQuery(query map[string]interface{}, mappings *meta.Mappings, ana
 	}
 	options.WithDefaultAnalyzer(zer)
 
+	fields := value.Fields
 	if len(value.Fields) == 0 {
 		for field, prop := range mappings.ListProperty() {
 			if prop.Type == "text" || prop.Type == "keyword" {
@@ -97,5 +106,136 @@ func QueryStringQuery(query map[string]interface{}, mappings *meta.Mappings, ana
 		}
 	}
 
-	return querystr.ParseQueryString(value.Query, options)
+	q, err := querystr.ParseQueryString(value.Query, options)
+	if err != nil || mappings.AllEnabled() {
+		return q, err
+	}
+	// without _all, terms without a field search the default fields, as
+	// Elasticsearch index.query.default_field "*"
+	if value.DefaultField != "" && value.DefaultField != "*" {
+		fields = []string{value.DefaultField}
+	}
+	return withDefaultFields(q, lazyDefaultFields(mappings, analyzers, fields)), nil
+}
+
+// defaultFieldSet holds the fields a query without a field searches, by type,
+// and the analyzers of the term fields.
+type defaultFieldSet struct {
+	terms, numbers, dates []string
+	keywords              map[string]bool
+	analyzers             map[string]*analysis.Analyzer
+}
+
+// lazyDefaultFields returns the default fields of mappings, or of fields when
+// set, built on first use.
+func lazyDefaultFields(mappings *meta.Mappings, analyzers map[string]*analysis.Analyzer, fields []string) func() *defaultFieldSet {
+	var set *defaultFieldSet
+	return func() *defaultFieldSet {
+		if set == nil {
+			set = defaultFields(mappings, analyzers, fields)
+		}
+		return set
+	}
+}
+
+// defaultFields sorts the indexed fields by type: queries without a field
+// search the terms (text, keyword), numbers or dates.
+func defaultFields(mappings *meta.Mappings, analyzers map[string]*analysis.Analyzer, fields []string) *defaultFieldSet {
+	set := &defaultFieldSet{keywords: make(map[string]bool), analyzers: make(map[string]*analysis.Analyzer)}
+	if len(fields) == 0 {
+		for field := range mappings.ListProperty() {
+			fields = append(fields, field)
+		}
+	}
+	sort.Strings(fields)
+	for _, field := range fields {
+		prop, ok := mappings.GetProperty(field)
+		switch {
+		case !ok || !prop.Index || strings.HasPrefix(field, "_"):
+		case prop.Type == "keyword":
+			set.terms = append(set.terms, field)
+			set.keywords[field] = true
+			set.analyzers[field] = analyzer.NewKeywordAnalyzer()
+		case prop.Type == "text":
+			set.terms = append(set.terms, field)
+			indexZer, searchZer := zedanalysis.QueryAnalyzerForField(analyzers, mappings, field)
+			if searchZer == nil {
+				searchZer = indexZer
+			}
+			if searchZer != nil {
+				set.analyzers[field] = searchZer
+			}
+		case prop.Type == "numeric":
+			set.numbers = append(set.numbers, field)
+		case prop.Type == "date" || prop.Type == "time":
+			set.dates = append(set.dates, field)
+		}
+	}
+	return set
+}
+
+// withDefaultFields replaces the queries of q without a field, or on _all,
+// with a disjunction of the query on each default field.
+func withDefaultFields(q riot.Query, set func() *defaultFieldSet) riot.Query {
+	expand := func(field string, fields func(*defaultFieldSet) []string, build func(string, *analysis.Analyzer) riot.Query) riot.Query {
+		if field != "" && field != "_all" {
+			return q
+		}
+		s := set()
+		if len(fields(s)) == 0 {
+			return riot.NewMatchNoneQuery()
+		}
+		out := riot.NewBooleanQuery().SetMinShould(1)
+		for _, f := range fields(s) {
+			out.AddShould(build(f, s.analyzers[f]))
+		}
+		return out
+	}
+	terms := func(s *defaultFieldSet) []string { return s.terms }
+	switch v := q.(type) {
+	case *riot.BooleanQuery:
+		for _, clauses := range [][]riot.Query{v.Musts(), v.Shoulds(), v.MustNots()} {
+			for i, c := range clauses {
+				clauses[i] = withDefaultFields(c, set)
+			}
+		}
+		return v
+	case *riot.MatchQuery:
+		return expand(v.Field(), terms, func(f string, zer *analysis.Analyzer) riot.Query {
+			c := *v
+			if zer != nil {
+				c.SetAnalyzer(zer)
+			}
+			return c.SetField(f)
+		})
+	case *riot.MatchPhraseQuery:
+		return expand(v.Field(), terms, func(f string, zer *analysis.Analyzer) riot.Query {
+			if s := set(); s.keywords[f] {
+				// keywords keep no positions, the whole value is one term
+				return riot.NewMatchQuery(v.Phrase()).SetField(f).SetAnalyzer(zer).SetBoost(v.Boost())
+			}
+			c := *v
+			if zer != nil {
+				c.SetAnalyzer(zer)
+			}
+			return c.SetField(f)
+		})
+	case *riot.TermQuery:
+		return expand(v.Field(), terms, func(f string, _ *analysis.Analyzer) riot.Query { c := *v; return c.SetField(f) })
+	case *riot.PrefixQuery:
+		return expand(v.Field(), terms, func(f string, _ *analysis.Analyzer) riot.Query { c := *v; return c.SetField(f) })
+	case *riot.FuzzyQuery:
+		return expand(v.Field(), terms, func(f string, _ *analysis.Analyzer) riot.Query { c := *v; return c.SetField(f) })
+	case *riot.WildcardQuery:
+		return expand(v.Field(), terms, func(f string, _ *analysis.Analyzer) riot.Query { c := *v; return c.SetField(f) })
+	case *riot.RegexpQuery:
+		return expand(v.Field(), terms, func(f string, _ *analysis.Analyzer) riot.Query { c := *v; return c.SetField(f) })
+	case *riot.NumericRangeQuery:
+		return expand(v.Field(), func(s *defaultFieldSet) []string { return s.numbers },
+			func(f string, _ *analysis.Analyzer) riot.Query { c := *v; return c.SetField(f) })
+	case *riot.DateRangeQuery:
+		return expand(v.Field(), func(s *defaultFieldSet) []string { return s.dates },
+			func(f string, _ *analysis.Analyzer) riot.Query { c := *v; return c.SetField(f) })
+	}
+	return q
 }

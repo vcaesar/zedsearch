@@ -55,7 +55,7 @@ func Request(data map[string]interface{}) (*meta.Index, error) {
 		if analyzers, err = zedanalysis.RequestAnalyzer(settings.Analysis); err != nil {
 			return nil, errors.New(errors.ErrorTypeParsingException, fmt.Sprintf("[index] settings.analysis parse error: %s", err.Error()))
 		}
-		if settings.IndexType != "" || settings.NumberOfShards > 0 || settings.NumberOfReplicas > 0 || settings.Analysis != nil {
+		if settings.IndexType != "" || settings.NumberOfShards > 0 || settings.NumberOfReplicas > 0 || settings.Analysis != nil || settings.ExcludeSourceVectors != nil {
 			index.Settings = settings
 		}
 	}

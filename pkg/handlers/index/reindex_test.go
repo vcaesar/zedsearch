@@ -22,6 +22,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	"github.com/vcaesar/zedsearch/pkg/config"
 	"github.com/vcaesar/zedsearch/pkg/core"
 	"github.com/vcaesar/zedsearch/pkg/meta"
 	"github.com/vcaesar/zedsearch/pkg/meta/elastic"
@@ -164,4 +165,53 @@ func TestReindex(t *testing.T) {
 		assert.NoError(t, core.DeleteIndex(destName))
 		assert.NoError(t, core.DeleteIndex(limitedName))
 	})
+}
+
+// A document indexed without @timestamp (zed_auto_timestamp off) is reindexed
+// without one, not with the zero time.
+func TestReindex_NoTimestamp(t *testing.T) {
+	sourceName := "TestReindex_NoTimestamp.index_1"
+	destName := "TestReindex_NoTimestamp.index_2"
+	defer func(v bool) { config.Global.AutoTimestamp = v }(config.Global.AutoTimestamp)
+	config.Global.AutoTimestamp = false
+
+	searchOne := func(index *core.Index) (hit meta.Hit, ok bool) {
+		ok = assert.Eventually(t, func() bool {
+			res, err := index.Search(&meta.ZedQuery{Size: 10})
+			if err != nil || len(res.Hits.Hits) != 1 {
+				return false
+			}
+			hit = res.Hits.Hits[0]
+			return true
+		}, 10*time.Second, 100*time.Millisecond, "document not indexed")
+		return hit, ok
+	}
+
+	source, err := core.NewIndex(sourceName, "disk", 1)
+	assert.NoError(t, err)
+	assert.NoError(t, core.StoreIndex(source))
+	defer func() {
+		assert.NoError(t, core.DeleteIndex(sourceName))
+		if _, exists := core.GetIndex(destName); exists {
+			assert.NoError(t, core.DeleteIndex(destName))
+		}
+	}()
+	assert.NoError(t, source.CreateDocument("1", map[string]interface{}{"name": "zed"}, false))
+	if hit, ok := searchOne(source); !ok || !assert.True(t, hit.Timestamp.IsZero()) {
+		return
+	}
+
+	c, w := utils.NewContext()
+	utils.SetRequestData(c, `{"source":{"index":"`+sourceName+`"},"dest":{"index":"`+destName+`"}}`)
+	Reindex(c)
+	assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	dest, exists := core.GetIndex(destName)
+	if !assert.True(t, exists) {
+		return
+	}
+	if hit, ok := searchOne(dest); ok {
+		assert.True(t, hit.Timestamp.IsZero(), "reindexed @timestamp %s", hit.Timestamp)
+		assert.NotContains(t, hit.Source, meta.TimeFieldName)
+	}
 }

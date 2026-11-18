@@ -20,6 +20,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/vcaesar/riot"
+	"github.com/vcaesar/riot/hnsw"
 
 	"github.com/vcaesar/zedsearch/pkg/meta"
 )
@@ -31,10 +32,10 @@ func vectorMappings() *meta.Mappings {
 	m.SetProperty("embedding", p)
 	m.SetProperty("any", meta.NewProperty("vector"))
 	m.SetProperty("name", meta.NewProperty("text"))
-	hnsw := meta.NewProperty("vector")
-	hnsw.Dims = 3
-	hnsw.IndexOptions = &meta.VectorIndexOptions{M: 8, EfConstruction: 64}
-	m.SetProperty("hnsw", hnsw)
+	hnswProp := meta.NewProperty("vector")
+	hnswProp.Dims = 3
+	hnswProp.IndexOptions = &meta.VectorIndexOptions{M: 8, EfConstruction: 64}
+	m.SetProperty("hnsw", hnswProp)
 	return m
 }
 
@@ -108,6 +109,22 @@ func TestKnnQuery(t *testing.T) {
 		got, err = KnnQuery(geoQuery(t, `{"field": "hnsw", "query_vector": [1, 2, 3], "k": 3, "num_candidates": 40}`), vectorMappings(), nil)
 		assert.NoError(t, err)
 		assert.Equal(t, &riot.ANNParams{M: 8, EfConstruction: 64, EfSearch: 40}, got.(*riot.KNNQuery).ANN())
+	})
+
+	t.Run("index type selects quantization", func(t *testing.T) {
+		for typ, want := range map[string]hnsw.Quantization{
+			meta.VectorIndexHNSW:     hnsw.QuantizationNone,
+			meta.VectorIndexInt8HNSW: hnsw.QuantizationInt8,
+			"":                       hnsw.QuantizationInt8, // persisted before types
+		} {
+			m := vectorMappings()
+			p, _ := m.GetProperty("hnsw")
+			p.IndexOptions = &meta.VectorIndexOptions{Type: typ}
+			m.SetProperty("hnsw", p)
+			got, err := KnnQuery(geoQuery(t, `{"field": "hnsw", "query_vector": [1, 2, 3], "k": 3}`), m, nil)
+			assert.NoError(t, err)
+			assert.Equal(t, want, got.(*riot.KNNQuery).ANN().Quantization, typ)
+		}
 	})
 
 	t.Run("boost", func(t *testing.T) {
