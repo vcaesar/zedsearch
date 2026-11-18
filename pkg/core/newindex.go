@@ -12,7 +12,14 @@
 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 * See the License for the specific language governing permissions and
 * limitations under the License.
- */
+*
+Part of this work fall under the AtomAI Enterprise Edition (EE)
+and are licensed under the Business Source License 1.1,
+if you are the Cloud companies or your companies with revenue greater than $1M,
+please refer to [AGPL-3.0](./LICENSE-EE)) and LICENSE-EE for details,
+or production use of the Licensed Work requires a commercial license agreement with Zedsearch.
+Contact info@atomai.cc for licensing.
+*/
 
 package core
 
@@ -76,6 +83,10 @@ func CheckIndexName(name string) error {
 	}
 	if !indexNameRe.MatchString(name) {
 		return fmt.Errorf("index name [%s] is invalid, just accept [a-zA-Z0-9_.-]", name)
+	}
+	// "." and ".." would resolve to the data directory or its parent on disk
+	if strings.Trim(name, ".") == "" {
+		return fmt.Errorf("index name [%s] cannot consist only of dots", name)
 	}
 	return nil
 }
@@ -199,7 +210,15 @@ func getOpenConfig(name string, storageType string, defaultSearchAnalyzer *analy
 	if defaultSearchAnalyzer != nil {
 		cfg.DefaultSearchAnalyzer = defaultSearchAnalyzer
 	}
-	return cfg, nil
+	return cfg.WithVectorStorage(vectorStorage()), nil
+}
+
+// vectorStorage is the riot vector storage zed_vector_storage selects.
+func vectorStorage() riot.VectorStorage {
+	if strings.EqualFold(config.Global.VectorStorage, "memory") {
+		return riot.VectorStorageMemory
+	}
+	return riot.VectorStorageDisk
 }
 
 // storeIndex stores the index to metadata

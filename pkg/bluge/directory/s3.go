@@ -16,12 +16,12 @@
 package directory
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"strings"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -29,6 +29,8 @@ import (
 
 	"github.com/vcaesar/zedsearch/pkg/config"
 )
+
+const defaultS3Endpoint = "s3.amazonaws.com"
 
 var s3Backend = &backend{newStore: func() (objectStore, error) { return newMinioStore(config.Global.S3) }}
 
@@ -54,8 +56,15 @@ func newMinioStore(cfg config.S3Config) (*minioStore, error) {
 	if cfg.Bucket == "" {
 		return nil, fmt.Errorf("s3 storage is not configured: ZED_S3_BUCKET is empty")
 	}
+	// minio silently signs nothing when only one half of a key pair is set
+	if (cfg.AccessKeyID == "") != (cfg.SecretAccessKey == "") {
+		return nil, fmt.Errorf("s3 storage requires both ZED_S3_ACCESS_KEY_ID and ZED_S3_SECRET_ACCESS_KEY, or neither")
+	}
+	if cfg.Endpoint == "" {
+		cfg.Endpoint = defaultS3Endpoint
+	}
 	var creds *credentials.Credentials
-	if cfg.AccessKeyID != "" || cfg.SecretAccessKey != "" {
+	if cfg.AccessKeyID != "" {
 		creds = credentials.NewStaticV4(cfg.AccessKeyID, cfg.SecretAccessKey, "")
 	} else {
 		creds = credentials.NewChainCredentials([]credentials.Provider{
@@ -64,24 +73,47 @@ func newMinioStore(cfg config.S3Config) (*minioStore, error) {
 			&credentials.IAM{},
 		})
 	}
-	client, err := minio.New(cfg.Endpoint, &minio.Options{
-		Creds:  creds,
-		Secure: cfg.UseSSL,
-		Region: cfg.Region,
+	return openMinioStore("s3", cfg, creds, minio.BucketLookupAuto)
+}
+
+// openMinioStore builds the client. An "http://" or "https://" scheme on the
+// endpoint overrides cfg.UseSSL, since minio rejects a scheme it disagrees with.
+func openMinioStore(name string, cfg config.S3Config, creds *credentials.Credentials, lookup minio.BucketLookupType) (*minioStore, error) {
+	endpoint, secure := splitEndpoint(cfg.Endpoint, cfg.UseSSL)
+	client, err := minio.New(endpoint, &minio.Options{
+		Creds:        creds,
+		Secure:       secure,
+		Region:       cfg.Region,
+		BucketLookup: lookup,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("s3 client: %w", err)
+		return nil, fmt.Errorf("%s client: %w", name, err)
 	}
 	return &minioStore{client: client, bucket: cfg.Bucket}, nil
 }
 
+func splitEndpoint(endpoint string, secure bool) (string, bool) {
+	if rest, ok := strings.CutPrefix(endpoint, "https://"); ok {
+		endpoint, secure = rest, true
+	} else if rest, ok := strings.CutPrefix(endpoint, "http://"); ok {
+		endpoint, secure = rest, false
+	}
+	return strings.TrimSuffix(endpoint, "/"), secure
+}
+
 func (s *minioStore) List(ctx context.Context, prefix string) ([]objectInfo, error) {
+	noOwner := false
 	var objs []objectInfo
-	for obj := range s.client.ListObjects(ctx, s.bucket, minio.ListObjectsOptions{Prefix: prefix, Recursive: true}) {
+	for obj := range s.client.ListObjectsIter(ctx, s.bucket, minio.ListObjectsOptions{Prefix: prefix, Recursive: true, FetchOwner: &noOwner}) {
 		if obj.Err != nil {
-			return nil, obj.Err
+			return nil, fmt.Errorf("list %s: %w", prefix, obj.Err)
 		}
 		objs = append(objs, objectInfo{Key: obj.Key, Size: obj.Size})
+	}
+	// a listing cancelled between pages just stops; a partial result would
+	// hide the newest items and make riot reuse their ids
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("list %s: %w", prefix, err)
 	}
 	return objs, nil
 }
@@ -101,17 +133,27 @@ func (s *minioStore) Get(ctx context.Context, key string) (io.ReadCloser, error)
 // notExist wraps S3 NoSuchKey errors with fs.ErrNotExist, which riot uses to
 // tell a missing optional item (an HNSW graph not built yet) from a failure.
 func notExist(key string, err error) error {
-	if minio.ToErrorResponse(err).Code == minio.NoSuchKey {
+	if isNoSuchKey(err) {
 		return fmt.Errorf("object %s: %w: %w", key, fs.ErrNotExist, err)
 	}
 	return err
 }
 
-func (s *minioStore) Put(ctx context.Context, key string, data []byte) error {
-	_, err := s.client.PutObject(ctx, s.bucket, key, bytes.NewReader(data), int64(len(data)), minio.PutObjectOptions{})
-	return err
+func isNoSuchKey(err error) bool {
+	return minio.ToErrorResponse(err).Code == minio.NoSuchKey
 }
 
+func (s *minioStore) Put(ctx context.Context, key string, r io.Reader, size int64) error {
+	if _, err := s.client.PutObject(ctx, s.bucket, key, r, size, minio.PutObjectOptions{}); err != nil {
+		return fmt.Errorf("put %s: %w", key, err)
+	}
+	return nil
+}
+
+// Delete removes key; a key that is already gone (GCS answers 404) is not an error.
 func (s *minioStore) Delete(ctx context.Context, key string) error {
-	return s.client.RemoveObject(ctx, s.bucket, key, minio.RemoveObjectOptions{})
+	if err := s.client.RemoveObject(ctx, s.bucket, key, minio.RemoveObjectOptions{}); err != nil && !isNoSuchKey(err) {
+		return fmt.Errorf("delete %s: %w", key, err)
+	}
+	return nil
 }

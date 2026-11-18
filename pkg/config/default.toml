@@ -20,11 +20,29 @@ zed_ice_compressor = "zstd"
 # zed_telemetry = true
 # 
 zed_prometheus_enable = false
+# Require basic auth (permission "metrics") on /metrics.
+zed_prometheus_auth = false
+# Log every request; always on unless gin_mode = "release".
+zed_access_log = false
+# Export OpenTelemetry spans over OTLP/HTTP.
+zed_tracing_enable = false
+# Full traces URL, e.g. http://localhost:4318/v1/traces
+zed_tracing_endpoint = ""
 zed_enable_text_keyword_mapping = false
 # Accept MySQL CREATE TABLE schemas in mappings.sql; JSON mappings are always supported.
 zed_enable_sql_mappings = true
-# 
-zed_batch_size = 1024
+# Index the _all field that holds the terms of every field.
+zed_all_field = false
+# Keep term positions in the _all field (with zed_all_field).
+zed_all_field_positions = true
+# Index the ingest time as @timestamp for documents without one.
+zed_auto_timestamp = true
+# Keep vector fields out of the stored _source
+zed_exclude_source_vectors = true
+# Where persisted HNSW graphs keep their vectors.
+zed_vector_storage = "disk"
+# Documents applied from the WAL per index batch;
+zed_batch_size = 4096
 zed_max_results = 10000
 zed_aggregation_terms_size = 1000
 zed_max_document_size = 1000000
@@ -57,6 +75,11 @@ zed_tier_cold_storage_type = "s3"
 zed_shard_goroutine_num = 3
 zed_shard_num = 3
 zed_shard_max_size = 1073741824
+
+[Logs]
+# Event time window for the compatible log endpoints
+zed_logs_ingest_allowed_upto = 0
+zed_logs_ingest_allowed_in_future = 0
 
 [Etcd]
 zed_etcd_prefix = "/zed"

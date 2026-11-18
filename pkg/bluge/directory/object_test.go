@@ -23,6 +23,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"testing/iotest"
@@ -39,6 +40,10 @@ type bytesWriterTo []byte
 func (b bytesWriterTo) WriteTo(w io.Writer, _ chan struct{}) (int64, error) {
 	n, err := w.Write(b)
 	return int64(n), err
+}
+
+func putString(store objectStore, key, s string) error {
+	return store.Put(context.Background(), key, strings.NewReader(s), int64(len(s)))
 }
 
 func readData(t *testing.T, data *segment.Data, closer io.Closer) string {
@@ -138,8 +143,9 @@ func TestObjectDirectory(t *testing.T) {
 			})
 
 			t.Run("bad key", func(t *testing.T) {
-				assert.NoError(t, store.Put(context.Background(), "idx/shard/000000/zz.seg", []byte("x")))
-				_, err := d.List(index.ItemKindSegment)
+				assert.NoError(t, putString(store, "idx/shard/000000/zz.seg", "x"))
+				// the listing is memoized, so a fresh directory sees the foreign key
+				_, err := NewObjectDirectory(store, cache, "idx/shard/000000").List(index.ItemKindSegment)
 				assert.Error(t, err)
 				assert.NoError(t, store.Delete(context.Background(), "idx/shard/000000/zz.seg"))
 			})
@@ -147,10 +153,10 @@ func TestObjectDirectory(t *testing.T) {
 			t.Run("store error", func(t *testing.T) {
 				store.SetErr(errors.New("boom"))
 				defer store.SetErr(nil)
-				_, err := d.List(index.ItemKindSegment)
+				_, err := NewObjectDirectory(store, cache, "idx/shard/000000").List(index.ItemKindSegment)
 				assert.Error(t, err)
-				assert.Error(t, d.Setup(true))
-				items, bytesN := d.Stats()
+				assert.Error(t, NewObjectDirectory(store, cache, "idx/shard/000000").Setup(true))
+				items, bytesN := NewObjectDirectory(store, cache, "idx/shard/000000").Stats()
 				assert.Equal(t, uint64(0), items)
 				assert.Equal(t, uint64(0), bytesN)
 			})
@@ -184,7 +190,7 @@ func TestCopyObjectToDiskRenameFails(t *testing.T) {
 
 	root := t.TempDir()
 	name := "TestCopyObjectToDiskRenameFails.index_1/shard0/000000"
-	assert.NoError(t, store.Put(context.Background(), name+"/000000000001.seg", []byte("seg")))
+	assert.NoError(t, putString(store, name+"/000000000001.seg", "seg"))
 
 	// a directory where the segment file must land makes os.Rename fail
 	dir := filepath.Join(root, filepath.FromSlash(name))
@@ -211,7 +217,7 @@ func TestObjectDirectoryCache(t *testing.T) {
 	})
 
 	t.Run("load fetches once", func(t *testing.T) {
-		assert.NoError(t, store.Put(context.Background(), "idx/000000000002.seg", []byte("two")))
+		assert.NoError(t, putString(store, "idx/000000000002.seg", "two"))
 		for i := 0; i < 3; i++ {
 			data, closer, err := d.Load(index.ItemKindSegment, 2)
 			assert.NoError(t, err)
@@ -240,7 +246,7 @@ func TestObjectDirectoryCache(t *testing.T) {
 
 	t.Run("cache not-exist error is not a missing object", func(t *testing.T) {
 		// mimics Windows, where a broken cache path reports ERROR_PATH_NOT_FOUND
-		assert.NoError(t, store.Put(context.Background(), "idx/000000000005.seg", []byte("five")))
+		assert.NoError(t, putString(store, "idx/000000000005.seg", "five"))
 		nd := NewObjectDirectory(&notExistBodyStore{MemoryObjectStore: store}, cache, "idx")
 		data, closer, err := nd.Load(index.ItemKindSegment, 5)
 		if assert.NoError(t, err) {
@@ -521,4 +527,121 @@ func TestCopyDiskObjectRoundTrip(t *testing.T) {
 		defer store.SetErr(nil)
 		assert.Error(t, CopyObjectToDisk("s3", root, name))
 	})
+}
+
+// countingStore counts List calls and can fail Put.
+type countingStore struct {
+	*MemoryObjectStore
+	mu     sync.Mutex
+	lists  int
+	putErr error
+	putCtx context.Context
+}
+
+func (s *countingStore) List(ctx context.Context, prefix string) ([]objectInfo, error) {
+	s.mu.Lock()
+	s.lists++
+	s.mu.Unlock()
+	return s.MemoryObjectStore.List(ctx, prefix)
+}
+
+func (s *countingStore) Put(ctx context.Context, key string, r io.Reader, size int64) error {
+	s.mu.Lock()
+	err := s.putErr
+	s.putCtx = ctx
+	s.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	return s.MemoryObjectStore.Put(ctx, key, r, size)
+}
+
+func (s *countingStore) Lists() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lists
+}
+
+func TestObjectDirectoryListsOnce(t *testing.T) {
+	store := &countingStore{MemoryObjectStore: NewMemoryObjectStore()}
+	assert.NoError(t, putString(store.MemoryObjectStore, "idx/000000000001.seg", "one"))
+	assert.NoError(t, putString(store.MemoryObjectStore, "idx/nested/000000000009.seg", "deep"))
+	d := NewObjectDirectory(store, nil, "idx")
+
+	assert.NoError(t, d.Setup(true))
+	assert.NoError(t, d.Persist(index.ItemKindSegment, 2, bytesWriterTo("two"), nil))
+	assert.NoError(t, d.Persist(index.ItemKindSnapshot, 3, bytesWriterTo("snap"), nil))
+	assert.NoError(t, d.Remove(index.ItemKindSegment, 1))
+	for i := 0; i < 3; i++ {
+		ids, err := d.List(index.ItemKindSegment)
+		assert.NoError(t, err)
+		assert.Equal(t, []uint64{2}, ids, "nested keys are not items of this prefix")
+		items, size := d.Stats()
+		assert.Equal(t, uint64(2), items)
+		assert.Equal(t, uint64(len("two")+len("snap")), size)
+	}
+	assert.Equal(t, 1, store.Lists(), "the prefix is listed once per directory")
+
+	fresh := NewObjectDirectory(store, nil, "idx")
+	ids, err := fresh.List(index.ItemKindSegment)
+	assert.NoError(t, err)
+	assert.Equal(t, []uint64{2}, ids, "tracked state matches the store")
+}
+
+func TestObjectDirectoryPersistFailure(t *testing.T) {
+	cache, err := newFileCache(t.TempDir(), 1<<20)
+	assert.NoError(t, err)
+	store := &countingStore{MemoryObjectStore: NewMemoryObjectStore(), putErr: errors.New("put failed")}
+	d := NewObjectDirectory(store, cache, "idx")
+	assert.NoError(t, d.Setup(false))
+	_, err = d.List(index.ItemKindSegment)
+	assert.NoError(t, err)
+
+	assert.Error(t, d.Persist(index.ItemKindSegment, 1, bytesWriterTo("one"), nil))
+	ids, err := d.List(index.ItemKindSegment)
+	assert.NoError(t, err)
+	assert.Empty(t, ids, "a failed upload is not tracked")
+	assert.Zero(t, cache.Size(), "a failed upload is not cached")
+	files, err := filepath.Glob(filepath.Join(cache.root, "*"+cacheTempExt))
+	assert.NoError(t, err)
+	assert.Empty(t, files, "spooled file is removed")
+
+	assert.Error(t, d.Persist(index.ItemKindSegment, 2, errWriterTo{}, nil))
+}
+
+type errWriterTo struct{}
+
+func (errWriterTo) WriteTo(io.Writer, chan struct{}) (int64, error) {
+	return 0, errors.New("write failed")
+}
+
+func TestObjectDirectoryPersistCancel(t *testing.T) {
+	store := &countingStore{MemoryObjectStore: NewMemoryObjectStore()}
+	d := NewObjectDirectory(store, nil, "idx")
+	closeCh := make(chan struct{})
+	assert.NoError(t, d.Persist(index.ItemKindSegment, 1, bytesWriterTo("one"), closeCh))
+	store.mu.Lock()
+	ctx := store.putCtx
+	store.mu.Unlock()
+	assert.Error(t, ctx.Err(), "the upload context ends with Persist")
+
+	ctx, cancel := closeContext(closeCh)
+	defer cancel()
+	close(closeCh)
+	<-ctx.Done()
+	assert.ErrorIs(t, ctx.Err(), context.Canceled, "closing closeCh aborts the upload")
+}
+
+// TestRemoveObjectPrefixCacheError checks a broken cache never leaves bucket data behind.
+func TestRemoveObjectPrefixCacheError(t *testing.T) {
+	store := NewMemoryObjectStore()
+	assert.NoError(t, putString(store, "idx/000000000001.seg", "one"))
+	cache, err := newFileCache(t.TempDir(), 1<<20)
+	assert.NoError(t, err)
+	assert.Error(t, removeObjectPrefix(store, cache, ".."), "escaping prefix is rejected by the cache")
+	assert.NoError(t, putString(store, "../000000000001.seg", "x"))
+	assert.Error(t, removeObjectPrefix(store, cache, ".."))
+	assert.Equal(t, 0, store.Len("../"), "objects are deleted before the cache is touched")
+	assert.NoError(t, removeObjectPrefix(store, cache, "idx"))
+	assert.Equal(t, 0, store.Len("idx/"))
 }
