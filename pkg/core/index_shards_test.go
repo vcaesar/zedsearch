@@ -37,6 +37,7 @@ func TestIndexShard_NewShardConcurrentReads(t *testing.T) {
 	ZED_INDEX_SHARD_WAL_LIST.Remove(shard.GetShardName())
 
 	var wg sync.WaitGroup
+	defer wg.Wait()
 	wg.Go(func() {
 		for range 3 {
 			assert.NoError(t, shard.NewShard())
