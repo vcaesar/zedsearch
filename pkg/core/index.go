@@ -441,9 +441,9 @@ func (index *Index) publishDocTime(shard *IndexShard) {
 // UpdateStatsBySecondShard update second layer shard stats, mainly docNum and storageSize
 func (index *Index) UpdateStatsBySecondShard(id string, secondIndex int64) {
 	shard := index.shards[id]
-	shard.lock.RLock()
+	index.lock.RLock()
 	secondShard := shard.shards[secondIndex]
-	shard.lock.RUnlock()
+	index.lock.RUnlock()
 
 	secondShard.lock.RLock()
 	w := secondShard.writer

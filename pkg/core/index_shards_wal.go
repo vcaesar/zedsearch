@@ -17,6 +17,7 @@
 package core
 
 import (
+	stderrors "errors"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -63,42 +64,30 @@ func (s *IndexShard) writeWAL(data []byte) error {
 	return nil
 }
 
-// OpenWAL open WAL for index
+// OpenWAL publishes the shard to writers and the consumer only after recovery.
 func (s *IndexShard) OpenWAL() error {
 	if atomic.LoadUint64(&s.open) == 1 {
+		return nil
+	}
+	s.walMu.Lock()
+	defer s.walMu.Unlock()
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	if s.wal != nil {
 		return nil
 	}
 	if s.root.retired.Load() {
 		return ErrIndexReadOnly
 	}
-
-	// open wal
-	s.lock.Lock()
-	// enter here check wal isopen again
-	if s.wal != nil {
-		s.lock.Unlock()
-		return nil
-	}
-	// do open wal
 	var err error
 	if s.wal, err = wal.Open(s.GetShardName()); err != nil {
-		s.lock.Unlock()
 		return err
 	}
-	s.lock.Unlock()
-
-	// set wal opened
-	atomic.StoreUint64(&s.open, 1)
-	s.close = make(chan struct{})
-
-	// check wal rollback
-	if err = s.Rollback(); err != nil {
-		return err
+	if err := s.Rollback(); err != nil {
+		return stderrors.Join(err, s.closeWALLocked())
 	}
-
-	// set wal to consumer list
 	ZED_INDEX_SHARD_WAL_LIST.Add(s)
-
+	atomic.StoreUint64(&s.open, 1)
 	return nil
 }
 
@@ -171,7 +160,7 @@ func (s *IndexShard) Rollback() error {
 
 // ConsumeWAL consume WAL for index returns if there is any data updated
 func (s *IndexShard) ConsumeWAL() bool {
-	// a flush or snapshot install may close the shard between ticks
+	// A closed shard has no pending work for the consumer.
 	s.lock.RLock()
 	closed := s.wal == nil
 	s.lock.RUnlock()
@@ -515,7 +504,7 @@ func (w *walMergeDocs) WriteToShardRollback(shard *IndexShard, shardID int64, ba
 	var writer *riot.Writer
 	var err error
 	if shardID >= 0 {
-		writer, err = shard.GetWriter(shardID)
+		writer, err = shard.getWriter(shardID, false)
 	} else {
 		return nil // no insert
 	}

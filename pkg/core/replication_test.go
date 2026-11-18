@@ -18,6 +18,7 @@ package core
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -259,6 +260,44 @@ func TestIndexRefresh(t *testing.T) {
 	})
 }
 
+// Rollback opens a writer to undo an interrupted batch. A failure rebuilding
+// that batch must leave both the WAL and the writer available for a retry.
+func TestIndexRefreshRetriesWALRecovery(t *testing.T) {
+	name := t.Name() + ".index_1"
+	index, err := NewIndex(name, StorageTypeDisk, 1)
+	require.NoError(t, err)
+	require.NoError(t, StoreIndex(index))
+	t.Cleanup(func() { assert.NoError(t, DeleteIndex(name)) })
+	shard := anyShard(index)
+	mappings := meta.NewMappings()
+	day := meta.NewProperty("date")
+	mappings.SetProperty("day", day)
+	require.NoError(t, index.SetMappings(mappings))
+	w, err := wal.Open(shard.GetShardName())
+	require.NoError(t, err)
+	require.NoError(t, w.Write([]byte(`{"@_id":"pending","@_action":"insert","@_shard":0,"day":"2026-01-02"}`)))
+	require.NoError(t, w.Redo.Write(RedoActionRead, []byte("1:1")))
+	require.NoError(t, w.Close())
+
+	for range 2 {
+		require.ErrorContains(t, index.Refresh(), "field [day]")
+		require.Zero(t, atomic.LoadUint64(&shard.open))
+		require.Nil(t, shard.wal)
+		require.Empty(t, index.openWriterStats())
+		require.False(t, slices.Contains(ZED_INDEX_SHARD_WAL_LIST.List(), shard))
+	}
+	require.NoError(t, shard.Close())
+
+	day.Format = time.DateOnly
+	mappings.SetProperty("day", day)
+	require.NoError(t, index.SetMappings(mappings))
+	require.NoError(t, index.Refresh())
+	require.True(t, slices.Contains(ZED_INDEX_SHARD_WAL_LIST.List(), shard))
+	count, err := countDocs(index)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(1), count)
+}
+
 // A wait neither succeeds nor panics once the WAL it waits on is closed.
 func TestIndexWaitApplied(t *testing.T) {
 	name := "TestIndexWaitApplied.index_1"
@@ -271,7 +310,6 @@ func TestIndexWaitApplied(t *testing.T) {
 	require.NoError(t, shard.OpenWAL())
 	// nothing applies the WAL once the consumer is gone
 	ZED_INDEX_SHARD_WAL_LIST.Remove(shard.GetShardName())
-	time.Sleep(2 * config.Global.WalSyncInterval)
 	require.NoError(t, index.CreateDocument("1", map[string]interface{}{"name": "pending"}, false))
 
 	t.Run("pending", func(t *testing.T) {
@@ -283,7 +321,6 @@ func TestIndexWaitApplied(t *testing.T) {
 		assert.ErrorContains(t, index.WaitApplied(50*time.Millisecond), "not applied within")
 	})
 	t.Run("closed", func(t *testing.T) {
-		go func() { <-shard.close }() // the consumer takes the close signal
 		require.NoError(t, index.Close())
 		_, err := shard.committedIndex()
 		assert.ErrorContains(t, err, "WAL closed")

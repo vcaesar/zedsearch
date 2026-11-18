@@ -24,7 +24,6 @@ import (
 	"github.com/stretchr/testify/require"
 	blugeindex "github.com/vcaesar/riot/index"
 
-	"github.com/vcaesar/zedsearch/pkg/config"
 	"github.com/vcaesar/zedsearch/pkg/meta"
 	"github.com/vcaesar/zedsearch/pkg/zutils/json"
 )
@@ -162,8 +161,6 @@ func TestIndexShard_ConsumeWALSkipsInvalidEntry(t *testing.T) {
 	shard := anyShard(index)
 	require.NoError(t, shard.OpenWAL())
 	ZED_INDEX_SHARD_WAL_LIST.Remove(shard.GetShardName())
-	t.Cleanup(func() { ZED_INDEX_SHARD_WAL_LIST.Add(shard) })
-	time.Sleep(2 * config.Global.WalSyncInterval)
 
 	require.NoError(t, shard.writeWAL([]byte(`{}`)))
 	require.True(t, shard.ConsumeWAL())
@@ -188,11 +185,8 @@ func TestIndexShard_ConsumeWALKeepsOrderAcrossShards(t *testing.T) {
 
 	shard := anyShard(index)
 	require.NoError(t, shard.OpenWAL())
-	// consume by hand only, let a background pass in flight finish; closing
-	// the index needs the consumer back
+	// Consume by hand after any background pass in flight has finished.
 	ZED_INDEX_SHARD_WAL_LIST.Remove(shard.GetShardName())
-	t.Cleanup(func() { ZED_INDEX_SHARD_WAL_LIST.Add(shard) })
-	time.Sleep(2 * config.Global.WalSyncInterval)
 
 	doc := map[string]interface{}{"name": "test"}
 	require.NoError(t, index.CreateDocument("1", doc, false))
@@ -255,10 +249,7 @@ func TestIndexShard_writeWALDocsPublishesDocTime(t *testing.T) {
 
 	shard := anyShard(index)
 	require.NoError(t, shard.OpenWAL())
-	// consume by hand only; closing the index needs the consumer back
 	ZED_INDEX_SHARD_WAL_LIST.Remove(shard.GetShardName())
-	t.Cleanup(func() { ZED_INDEX_SHARD_WAL_LIST.Add(shard) })
-	time.Sleep(2 * config.Global.WalSyncInterval)
 
 	day1 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	day2 := day1.Add(24 * time.Hour)

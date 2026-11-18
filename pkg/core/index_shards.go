@@ -25,7 +25,9 @@ package core
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -62,7 +64,7 @@ type IndexShard struct {
 	shards []*IndexSecondShard
 	wal    *wal.Log
 	lock   sync.RWMutex
-	close  chan struct{}
+	walMu  sync.Mutex // serializes OpenWAL and Close, including consumer registration
 	// hookMu keeps WALHook calls in WAL order
 	hookMu sync.Mutex
 }
@@ -142,10 +144,11 @@ func (s *IndexShard) NewShard() error {
 	s.root.UpdateStatsBySecondShard(s.GetID(), s.GetLatestShardID())
 	s.root.lock.Lock()
 	secondShard := s.shards[s.GetLatestShardID()]
-	secondShard.ref.Stats.DocTimeMin = s.ref.Stats.DocTimeMin
-	secondShard.ref.Stats.DocTimeMax = s.ref.Stats.DocTimeMax
-	s.ref.Stats.DocTimeMin = 0
-	s.ref.Stats.DocTimeMax = 0
+	// GetReaders loads these without the lock
+	atomic.StoreInt64(&secondShard.ref.Stats.DocTimeMin, s.ref.Stats.DocTimeMin)
+	atomic.StoreInt64(&secondShard.ref.Stats.DocTimeMax, s.ref.Stats.DocTimeMax)
+	atomic.StoreInt64(&s.ref.Stats.DocTimeMin, 0)
+	atomic.StoreInt64(&s.ref.Stats.DocTimeMax, 0)
 	// create new shard
 	atomic.AddInt64(&s.ref.ShardNum, 1)
 	s.ref.Shards = append(s.ref.Shards, &meta.IndexSecondShard{ID: s.GetLatestShardID()})
@@ -161,21 +164,36 @@ func (s *IndexShard) NewShard() error {
 
 // GetWriter return the newest shard writer or special shard writer
 func (s *IndexShard) GetWriter(shardID ...int64) (*riot.Writer, error) {
-	if s.root.IsCold() || s.root.retired.Load() {
-		return nil, ErrIndexReadOnly
-	}
 	var id int64
 	if len(shardID) == 1 {
 		id = shardID[0]
 	} else {
 		id = s.GetLatestShardID()
 	}
+	return s.getWriter(id, true)
+}
+
+// Rollback uses the writer without reopening the WAL it is recovering.
+func (s *IndexShard) getWriter(id int64, withWAL bool) (*riot.Writer, error) {
+	if s.root.IsCold() || s.root.retired.Load() {
+		return nil, ErrIndexReadOnly
+	}
 	if id >= s.GetShardNum() || id < 0 {
 		return nil, errors.New(errors.ErrorTypeRuntimeException, "second shard not found")
 	}
-	s.lock.RLock()
+	if withWAL {
+		if err := s.OpenWAL(); err != nil {
+			return nil, err
+		}
+		s.lock.RLock()
+		defer s.lock.RUnlock()
+		if s.wal == nil {
+			return nil, ErrIndexReadOnly
+		}
+	}
+	s.root.lock.RLock()
 	secondShard := s.shards[id]
-	s.lock.RUnlock()
+	s.root.lock.RUnlock()
 
 	secondShard.lock.RLock()
 	w := secondShard.writer
@@ -186,11 +204,6 @@ func (s *IndexShard) GetWriter(shardID ...int64) (*riot.Writer, error) {
 
 	// open writer
 	if err := s.openWriter(id); err != nil {
-		return nil, err
-	}
-
-	// check WAL
-	if err := s.OpenWAL(); err != nil {
 		return nil, err
 	}
 
@@ -221,9 +234,9 @@ func (s *IndexShard) GetReaders(timeMin, timeMax int64) ([]*riot.Reader, error) 
 	eg.SetLimit(config.Global.Shard.GoroutineNum)
 	for i := s.GetLatestShardID(); i >= 0; i-- {
 		i := i
-		s.lock.RLock()
+		s.root.lock.RLock()
 		secondShard := s.shards[i]
-		s.lock.RUnlock()
+		s.root.lock.RUnlock()
 		sMin := atomic.LoadInt64(&secondShard.ref.Stats.DocTimeMin)
 		sMax := atomic.LoadInt64(&secondShard.ref.Stats.DocTimeMax)
 		if (timeMin > 0 && sMax > 0 && sMax < timeMin) ||
@@ -268,9 +281,9 @@ func (s *IndexShard) openWriter(shardID int64) error {
 	if analyzers != nil {
 		defaultSearchAnalyzer = analyzers["default"]
 	}
-	s.lock.RLock()
+	s.root.lock.RLock()
 	secondShard := s.shards[shardID]
-	s.lock.RUnlock()
+	s.root.lock.RUnlock()
 	secondShard.lock.Lock()
 	defer secondShard.lock.Unlock()
 	if secondShard.writer != nil {
@@ -283,31 +296,36 @@ func (s *IndexShard) openWriter(shardID int64) error {
 }
 
 func (s *IndexShard) Close() error {
+	s.walMu.Lock()
+	defer s.walMu.Unlock()
 	if atomic.LoadUint64(&s.open) == 0 {
 		return nil
 	}
-
-	s.close <- struct{}{}
-	atomic.StoreUint64(&s.open, 0)
-
+	// Drain the consumer before taking the shard lock it uses.
+	ZED_INDEX_SHARD_WAL_LIST.remove(s.GetShardName(), s)
 	s.lock.Lock()
 	defer s.lock.Unlock()
-	for _, secondShard := range s.shards {
-		if secondShard.writer == nil {
-			continue
-		}
-		if err := secondShard.writer.Close(); err != nil {
-			return err
-		}
-		secondShard.writer = nil
-	}
+	atomic.StoreUint64(&s.open, 0)
+	return s.closeWALLocked()
+}
 
-	if err := s.wal.Close(); err != nil {
-		return err
+// closeWALLocked also releases writers opened by an incomplete rollback.
+func (s *IndexShard) closeWALLocked() error {
+	s.root.lock.RLock()
+	seconds := slices.Clone(s.shards)
+	s.root.lock.RUnlock()
+	var err error
+	for _, second := range seconds {
+		second.lock.Lock()
+		if second.writer != nil {
+			err = stderrors.Join(err, second.writer.Close())
+			second.writer = nil
+		}
+		second.lock.Unlock()
 	}
+	err = stderrors.Join(err, s.wal.Close())
 	s.wal = nil
-
-	return nil
+	return err
 }
 
 func (s *IndexShard) SetTimestamp(t int64) {

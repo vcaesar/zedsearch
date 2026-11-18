@@ -40,6 +40,7 @@ var ZED_INDEX_SHARD_WAL_LIST IndexShardWALList
 type IndexShardWALList struct {
 	Shards map[string]*IndexShard
 	lock   sync.RWMutex
+	cycle  sync.Mutex // a removal waits for workers using an earlier snapshot
 }
 
 func init() {
@@ -53,16 +54,16 @@ func (t *IndexShardWALList) Add(shard *IndexShard) {
 	t.lock.Unlock()
 }
 
+// Remove waits for any consumer pass using the shard, including its metadata update.
 func (t *IndexShardWALList) Remove(name string) {
-	t.lock.Lock()
-	delete(t.Shards, name)
-	t.lock.Unlock()
+	t.remove(name, nil)
 }
 
-// removeClosed drops name unless its shard was opened again.
-func (t *IndexShardWALList) removeClosed(name string) {
+func (t *IndexShardWALList) remove(name string, expected *IndexShard) {
+	t.cycle.Lock()
+	defer t.cycle.Unlock()
 	t.lock.Lock()
-	if shard, ok := t.Shards[name]; ok && atomic.LoadUint64(&shard.open) == 0 {
+	if expected == nil || t.Shards[name] == expected {
 		delete(t.Shards, name)
 	}
 	t.lock.Unlock()
@@ -91,26 +92,14 @@ func (t *IndexShardWALList) ConsumeWAL() {
 	eg.SetLimit(config.Global.Shard.GoroutineNum)
 	tick := time.NewTicker(config.Global.WalSyncInterval)
 	for range tick.C {
-		// one snapshot sizes the channels and starts the workers: a shard
-		// registered in between would block its worker on a full channel
+		t.cycle.Lock()
+		// Size the result channel from the same snapshot that starts the workers.
 		shards := t.List()
-		shardClosed := make(chan string, len(shards))
 		indexUpdated := make(chan string, len(shards))
 		for _, shard := range shards {
 			shard := shard
 			indexes[shard.GetIndexName()] = shard.root
 			eg.Go(func() error {
-				if atomic.LoadUint64(&shard.open) == 0 {
-					shardClosed <- shard.GetShardName()
-					return nil
-				}
-				select {
-				case <-shard.close:
-					shardClosed <- shard.GetShardName()
-					return nil
-				default:
-					// continue
-				}
 				updated := shard.ConsumeWAL()
 				if updated {
 					indexUpdated <- shard.GetIndexName()
@@ -119,13 +108,7 @@ func (t *IndexShardWALList) ConsumeWAL() {
 			})
 		}
 		_ = eg.Wait()
-		close(shardClosed)
 		close(indexUpdated)
-
-		// check shard closed; a shard reopened meanwhile stays
-		for name := range shardClosed {
-			t.removeClosed(name)
-		}
 
 		// update index stats
 		updated := false
@@ -149,6 +132,8 @@ func (t *IndexShardWALList) ConsumeWAL() {
 
 			delete(indexes, name)
 		}
+
+		t.cycle.Unlock()
 
 		// release the batch memory, but not on idle ticks: a forced GC every
 		// WalSyncInterval stalls searches for nothing

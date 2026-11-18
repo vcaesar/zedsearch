@@ -23,8 +23,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/vcaesar/zedsearch/pkg/config"
 )
 
 // riotSample is one zed_riot_* sample of an index.
@@ -125,7 +123,6 @@ func TestRiotCollector_ConcurrentRollover(t *testing.T) {
 	// let a pass in flight finish
 	shard := index.GetShardByDocID("1")
 	ZED_INDEX_SHARD_WAL_LIST.Remove(shard.GetShardName())
-	time.Sleep(2 * config.Global.WalSyncInterval)
 
 	reg := prometheus.NewPedanticRegistry()
 	require.NoError(t, reg.Register(RiotCollector))
@@ -171,8 +168,6 @@ func TestRiotCollector_ConcurrentRollover(t *testing.T) {
 		assert.Len(t, shards, 4, "one counter series per writer")
 	})
 	t.Run("close", func(t *testing.T) {
-		// closing hands the shard back to the WAL consumer
-		ZED_INDEX_SHARD_WAL_LIST.Add(shard)
 		scraping(t, func() { require.NoError(t, shard.Close()) })
 		assert.Empty(t, index.openWriterStats())
 		samples, err := riotSamples(reg, name)
