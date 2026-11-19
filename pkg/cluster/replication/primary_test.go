@@ -282,6 +282,14 @@ func TestShip(t *testing.T) {
 			answers = tt.answers(p)
 			assert.Equal(t, tt.want, m.ship(context.Background(), p, "node-b", 3, nil, false))
 			assert.Equal(t, tt.recovered, recovered)
+			if tt.want {
+				mu.Lock()
+				assert.Empty(t, answers, "every scripted answer is consumed")
+				mu.Unlock()
+				p.mu.Lock()
+				assert.Equal(t, uint64(3), p.acked["node-b"])
+				p.mu.Unlock()
+			}
 		})
 	}
 }

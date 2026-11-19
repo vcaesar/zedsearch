@@ -51,14 +51,26 @@ func TestParseTranslogKey(t *testing.T) {
 }
 
 func TestUploadErrors(t *testing.T) {
+	store := useObjectStore(t)
 	m := newManager(t, ModeDocument, newFakeTopology("node-a"), newLoopTransport())
-	p := &primary{index: "x", term: "t1", remote: true, storageType: "bogus", seq: 1,
-		ops: []Op{{Seq: 1, Entry: json.RawMessage(`{}`)}}}
-	assert.ErrorContains(t, m.upload(p), "upload translog")
-	assert.Zero(t, p.uploaded)
-
-	p.ops[0].Entry = json.RawMessage(`{`)
-	assert.Error(t, m.upload(p), "an entry that cannot be encoded")
+	tests := []struct {
+		name        string
+		storageType string
+		entry       string
+		want        string
+	}{
+		{name: "storage fails", storageType: "bogus", entry: `{}`, want: "upload translog"},
+		{name: "entry cannot be encoded", storageType: core.StorageTypeS3, entry: `{`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &primary{index: "x", term: "t1", remote: true, storageType: tt.storageType, seq: 1,
+				ops: []Op{{Seq: 1, Entry: json.RawMessage(tt.entry)}}}
+			assert.ErrorContains(t, m.upload(p), tt.want)
+			assert.Zero(t, p.uploaded)
+			assert.Zero(t, store.Len(translogPrefix("x")), "no translog object is written")
+		})
+	}
 }
 
 func TestReplayRemoteErrors(t *testing.T) {

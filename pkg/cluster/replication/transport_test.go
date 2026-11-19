@@ -275,16 +275,19 @@ func TestReadSnapshotErrors(t *testing.T) {
 	tests := []struct {
 		name string
 		data []byte
+		want string
 	}{
 		{name: "not a tar", data: bytes.Repeat([]byte("x"), 1024)},
 		{name: "bad metadata", data: tarOf(t, map[string]string{snapshotMetaName: "{"})},
-		{name: "escaping entry", data: tarOf(t, map[string]string{"../escape.seg": "x"})},
-		{name: "unwritable entry", data: tarOf(t, map[string]string{"sub": "x", "sub/1.seg": "x"})},
+		{name: "escaping entry", data: tarOf(t, map[string]string{snapshotMetaName: "{}", "../escape.seg": "x"}), want: "escapes the target"},
+		{name: "unwritable entry", data: tarOf(t, map[string]string{snapshotMetaName: "{}", "sub": "x", "sub/1.seg": "x"})},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := ReadSnapshot(bytes.NewReader(tt.data), t.TempDir())
-			assert.Error(t, err)
+			require.Error(t, err)
+			assert.NotContains(t, err.Error(), "without metadata")
+			assert.ErrorContains(t, err, tt.want)
 		})
 	}
 

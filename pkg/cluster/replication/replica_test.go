@@ -22,6 +22,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -34,6 +35,9 @@ import (
 // skipAsRoot skips tests that rely on file permissions.
 func skipAsRoot(t *testing.T) {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("directory permissions are not enforced on windows")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("running as root, permissions are not enforced")
 	}
@@ -53,15 +57,23 @@ func TestApplyErrors(t *testing.T) {
 	newDiskIndex(t, name)
 	topo := newFakeTopology("node-b")
 	topo.set(name, "node-a", "node-b")
-	m := newManager(t, ModeDocument, topo, newLoopTransport())
-	r := m.replicaFor(name)
-	r.term, r.ready = "t1", true
-
-	_, err := m.apply(&Batch{Index: name, Term: "t1", From: 1, Ops: []Op{{Seq: 1}}, Mappings: json.RawMessage(`{`)})
-	assert.Error(t, err, "broken mappings")
-	_, err = m.apply(&Batch{Index: name, Term: "t1", From: 1, Ops: []Op{{Seq: 1, Shard: "nope", Entry: json.RawMessage(testEntry)}}})
-	assert.Error(t, err, "unknown shard")
-	assert.Zero(t, r.seq, "a failed batch is not acknowledged")
+	tests := []struct {
+		name  string
+		batch *Batch
+	}{
+		{name: "broken mappings", batch: &Batch{Index: name, Term: "t1", From: 1, Ops: []Op{{Seq: 1}}, Mappings: json.RawMessage(`{`)}},
+		{name: "unknown shard", batch: &Batch{Index: name, Term: "t1", From: 1, Ops: []Op{{Seq: 1, Shard: "nope", Entry: json.RawMessage(testEntry)}}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newManager(t, ModeDocument, topo, newLoopTransport())
+			r := m.replicaFor(name)
+			r.term, r.ready = "t1", true
+			_, err := m.apply(tt.batch)
+			assert.Error(t, err)
+			assert.Zero(t, r.seq, "a failed batch is not acknowledged")
+		})
+	}
 
 	index, ok := core.GetIndex(name)
 	require.True(t, ok)
@@ -132,7 +144,7 @@ func TestRecoverErrors(t *testing.T) {
 	name := "TestRecoverErrors.index_1"
 	topo := newFakeTopology("node-b")
 	topo.set(name, "node-a", "node-b")
-	var snapshot func(dir string) (*SnapshotInfo, error)
+	snapshot := func(string) (*SnapshotInfo, error) { return nil, errors.New("no snapshot expected") }
 	transport := &funcTransport{snapshot: func(_ string, _ *SnapshotRequest, dir string) (*SnapshotInfo, error) {
 		return snapshot(dir)
 	}}
@@ -264,12 +276,25 @@ func TestServeSnapshotErrors(t *testing.T) {
 }
 
 func TestSumErrors(t *testing.T) {
-	dir := t.TempDir()
-	var c sumCache
-	_, _, err := c.sum(dir, dir)
-	assert.Error(t, err, "a directory has no content sum")
-	_, err = fileSum(filepath.Join(dir, "missing.seg"))
-	assert.Error(t, err)
+	tests := []struct {
+		name string
+		sum  func(dir string) error
+	}{
+		{name: "a directory has no content sum", sum: func(dir string) error {
+			var c sumCache
+			_, _, err := c.sum(dir, dir)
+			return err
+		}},
+		{name: "missing file", sum: func(dir string) error {
+			_, err := fileSum(filepath.Join(dir, "missing.seg"))
+			return err
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Error(t, tt.sum(t.TempDir()))
+		})
+	}
 }
 
 func TestStageSegmentsErrors(t *testing.T) {
