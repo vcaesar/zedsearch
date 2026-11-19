@@ -12,8 +12,16 @@ describe('search request parity', () => {
   });
   it.each(['Gold', 'City:Paris', '-City:Paris', 'City:Paris Gold', '+City:Paris +Gold', '+City:Paris -Gold', '+Medal:Gold +Year:>2000', 'par*', '"New York"'])('preserves query-string syntax %s', query => {
     const request = buildSearch({ query, time: { ...initialTime, selectedFullTime: true } }, 50, now);
-    expect(request.query.bool.must).toEqual([{ query_string: { query } }]);
+    expect(request.query).toEqual({ function_score: { query: { bool: { must: [{ query_string: { query } }] } }, field_value_factor: { field: 'page_rank', modifier: 'sqrt', missing: 1 }, boost_mode: 'multiply' } });
+    expect(request.sort).toEqual(['_score', '-@timestamp']);
     expect(request.aggs.histogram).toEqual({ auto_date_histogram: { field: '@timestamp', buckets: 100 } });
+  });
+  it('filters the time range without scoring it when ranking a query', () => {
+    const request = buildSearch({ query: 'golang', time: initialTime }, 10, now);
+    expect(request.query).toMatchObject({ function_score: { query: { bool: {
+      must: [{ query_string: { query: 'golang' } }],
+      filter: [{ range: { '@timestamp': { gte: '2026-02-15T11:30:00.000Z', lt: now.toISOString() } } }],
+    } } } });
   });
   it.each([[60000, '1s'], [300000, '5s'], [600000, '10s'], [1800000, '30s'], [3600000, '1m'], [10800000, '5m'], [86400000, '1h'], [604800000, '1d']] as const)('selects histogram interval at %i ms', (duration, expected) => {
     const interval = histogramInterval(duration);

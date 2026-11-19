@@ -54,8 +54,15 @@ export function buildSearch(data: QueryData, size: number, now = new Date()) {
     must.push({ range: { '@timestamp': { gte: start.toISOString(), lt: end.toISOString(), format: '2006-01-02T15:04:05Z07:00' } } });
     histogram = { date_histogram: { field: '@timestamp', ...histogramInterval(+end - +start) } };
   }
-  must.push(data.query === '' ? { match_all: {} } : { query_string: { query: data.query } });
-  return { query: { bool: { must } }, sort: ['-@timestamp'], from: 0, size, aggs: { histogram } };
+  if (data.query === '') {
+    must.push({ match_all: {} });
+    return { query: { bool: { must } } as Record<string, unknown>, sort: ['-@timestamp'], from: 0, size, aggs: { histogram } };
+  }
+  // The time range filters without scoring, so it cannot dilute relevance.
+  const bool = must.length ? { must: [{ query_string: { query: data.query } }], filter: must } : { must: [{ query_string: { query: data.query } }] };
+  // Rank relevance by link authority; documents without page_rank keep their relevance score.
+  const query = { function_score: { query: { bool }, field_value_factor: { field: 'page_rank', modifier: 'sqrt', missing: 1 }, boost_mode: 'multiply' } };
+  return { query: query as Record<string, unknown>, sort: ['_score', '-@timestamp'], from: 0, size, aggs: { histogram } };
 }
 export function deepKeys(value: unknown): string[] {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
