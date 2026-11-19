@@ -73,6 +73,10 @@
   .dialog label > :is(input, .ui-select, .password-input, textarea).block { margin-top: 8px; }
   .dialog p + p { margin-top: 12px; }
   .template-indicators { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+  /* .agent-status { border-radius: 999px; padding: 2px 10px; font-size: 12px; font-weight: 600; }
+  .agent-status.online { background: light-dark(#dcfce7, #14532d); color: light-dark(#166534, #bbf7d0); }
+  .agent-status.degraded { background: light-dark(#fef3c7, #713f12); color: light-dark(#92400e, #fde68a); }
+  .agent-status.offline { background: light-dark(#f1f5f9, #334155); color: light-dark(#475569, #cbd5e1); } */
   .dialog { max-height: 90vh; width: 100%; max-width: 768px; overflow: auto; border: 1px solid light-dark(#dfe6f1, #37465d); border-radius: 18px; background: light-dark(white, #1b2638); padding: 28px; box-shadow: 0 24px 80px light-dark(#182b4a26, #00000066); }
   .console-shell { min-height: 100dvh; padding-left: 60px; }
   .console-shell.rail-collapsed { padding-left: 0; }
@@ -125,6 +129,8 @@
   .search-popover-control > summary { display: flex; align-items: center; padding: 9px 12px; border: 1px solid light-dark(#dce4ef, #37465d); border-radius: 9px; }
   .search-popover { position: absolute; top: calc(100% + 8px); right: 0; z-index: 40; width: 440px; max-width: calc(100vw - 24px); max-height: 70dvh; overflow-y: auto; overscroll-behavior: contain; box-shadow: 0 12px 32px light-dark(#182b4a26, #00000066); }
   .syntax-guide-panel { width: 384px; overflow-wrap: anywhere; }
+  .toolbar > .histogram-toggle { display: inline-flex; align-items: center; padding: 6px; }
+  .histogram-toggle svg { width: 18px; height: 18px; }
   .time-range-presets { display: grid; grid-template-columns: 5rem repeat(6, minmax(0, 1fr)); align-items: center; gap: 6px; margin-bottom: 12px; }
   .time-range-presets button { min-height: 44px; padding: 8px 0; }
   .time-range-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
@@ -139,8 +145,6 @@
   .search-results { transition: opacity 150ms; }
   .search-results[aria-busy=true] { opacity: .6; }
   .result-controls { margin-bottom: 12px; }
-  .result-controls-empty { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
-  .result-controls-empty p { margin: 0; font-size: 13px; color: light-dark(#71839e, #a1b2cb); }
   .result-view-toggle { gap: 4px; margin: 0; }
   .result-view-toggle button { padding: 6px 10px; }
   .time-range-actions { display: flex; align-items: center; gap: 8px; margin-top: 8px; }

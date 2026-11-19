@@ -7,6 +7,7 @@ import Login from './views/Login';
 import Search from './views/Search';
 import Index from './views/Index';
 import Template from './views/Template';
+// import Fleet from './views/Fleet'; // TODO: restore with the fleet backend
 import User from './views/User';
 import Role from './views/Role';
 import About from './views/About';
@@ -14,7 +15,9 @@ import Icon from './components/Icon';
 import Select from './components/Select';
 import ThemeSelect from './components/ThemeSelect';
 import Account from './components/Account';
+import Settings from './components/Settings';
 
+// const pages = ['search', 'index', 'template', 'fleet', 'user', 'role', 'about'] as const;
 const pages = ['search', 'index', 'template', 'user', 'role', 'about'] as const;
 
 const retainedPages = { '/search': Search, '/index': Index, '/template': Template };
@@ -25,6 +28,7 @@ function Console() {
   const [drawer, setDrawer] = useState(true);
   const [visited, setVisited] = useState<string[]>([]);
   const [editingAccount, setEditingAccount] = useState(false);
+  const [editingSettings, setEditingSettings] = useState(false);
   const path = location.pathname.replace(/\/$/, '') || '/';
   if (path in retainedPages && !visited.includes(path)) setVisited([...visited, path]);
   if (!user) return <Navigate to="/login" state={{ from: location.pathname + location.search }} replace />;
@@ -36,8 +40,9 @@ function Console() {
         {pages.map(name => <NavLink key={name} to={`/${name}`} aria-label={`${t(`menu.${name}`)} workspace`} title={t(`menu.${name}`)} className={({ isActive }) => `rail-link ${isActive ? 'active' : ''}`}><Icon name={name} /></NavLink>)}
       </nav>
       <div className="rail-utilities">
+        <button className="rail-link" type="button" aria-label="Settings" title="Settings" onClick={() => setEditingSettings(true)}><Icon name="settings" /></button>
         <a className="rail-link" href={`${apiEndpoint}/swagger/index.html`} target="_blank" rel="noreferrer" aria-label={t('menu.openapi')} title={t('menu.openapi')}><Icon name="openapi" /></a>
-        <a className="rail-link" href="https://zincsearch-docs.zinc.dev" target="_blank" rel="noreferrer" aria-label={t('menu.documentation')} title={t('menu.documentation')}><Icon name="documentation" /></a>
+        <a className="rail-link" href="https://github.com/vcaesar/zedsearch/blob/main/docs/web/index.md" target="_blank" rel="noreferrer" aria-label={t('menu.documentation')} title={t('menu.documentation')}><Icon name="documentation" /></a>
         <button className="rail-link" type="button" aria-label={t('menu.signOut')} title={t('menu.signOut')} onClick={() => setCredentials(null)}><Icon name="signOut" /></button>
       </div>
     </aside>}
@@ -53,6 +58,7 @@ function Console() {
         </div>
       </header>
       {editingAccount && <Account user={user} onClose={() => setEditingAccount(false)} />}
+      {editingSettings && <Settings onClose={() => setEditingSettings(false)} />}
       <nav aria-label="Main navigation" className="section-tabs">
         {pages.map(name => <NavLink key={name} to={`/${name}`} className={({ isActive }) => `section-tab ${isActive ? 'active' : ''}`}>{t(`menu.${name}`)}</NavLink>)}
       </nav>
@@ -61,7 +67,7 @@ function Console() {
         <Routes>
           <Route index element={<Navigate to="/search" replace />} />
           {Object.keys(retainedPages).map(key => <Route key={key} path={key} element={null} />)}
-          <Route path="/user" element={<User />} /><Route path="/role" element={<Role />} /><Route path="/about" element={<About />} />
+          {/* <Route path="/fleet" element={<Fleet />} /> */}<Route path="/user" element={<User />} /><Route path="/role" element={<Role />} /><Route path="/about" element={<About />} />
           <Route path="*" element={<section className="card"><h1>404</h1><p>Sorry, nothing here…</p><Link to="/search">Go Home</Link></section>} />
         </Routes>
       </main>

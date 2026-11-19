@@ -211,6 +211,11 @@ var defaultConfig []byte
 var Global = new(config)
 
 func init() {
+	setup()
+}
+
+// setup loads Global and applies the process-wide settings derived from it.
+func setup() {
 	if err := load(Global); err != nil {
 		log.Fatal().Err(err).Msg("failed to load configuration")
 	}

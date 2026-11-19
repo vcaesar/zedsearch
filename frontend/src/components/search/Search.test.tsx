@@ -129,7 +129,8 @@ describe('Search migration', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
     await screen.findByText('Found 0 hits in 0 ms');
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
-    expect(screen.queryByRole('img')).not.toBeInTheDocument();
+    expect(screen.getByRole('img')).toHaveTextContent('No data available');
+    expect(screen.getByRole('img').querySelector('rect')).toBeNull();
     expect(screen.getByText('0-0 of 0')).toBeInTheDocument();
     expect(screen.getByLabelText('Next page')).toBeDisabled();
   });

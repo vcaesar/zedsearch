@@ -9,6 +9,7 @@ import { changeLanguage } from '../locales';
 vi.mock('../views/Search', () => ({ default: () => <input aria-label="Saved search" /> }));
 vi.mock('../views/Index', () => ({ default: () => <h1>Indexes page</h1> }));
 vi.mock('../views/Template', () => ({ default: () => <h1>Templates page</h1> }));
+// vi.mock('../views/Fleet', () => ({ default: () => <h1>Fleet page</h1> }));
 vi.mock('../views/User', () => ({ default: () => <h1>Users page</h1> }));
 vi.mock('../views/Role', () => ({ default: () => <h1>Roles page</h1> }));
 vi.mock('../services/about', () => ({ default: { get: vi.fn().mockResolvedValue({ data: { version: '1.0-test', build: 'test' } }) } }));
@@ -25,6 +26,8 @@ it('preserves search state across navigation and signs out', async () => {
   await user.type(screen.getByLabelText('Saved search'), 'status:200');
   await user.click(screen.getByRole('link', { name: 'Index' }));
   expect(screen.getByRole('heading', { name: 'Indexes page' })).toBeInTheDocument();
+  // await user.click(screen.getByRole('link', { name: 'Fleet' }));
+  // expect(screen.getByRole('heading', { name: 'Fleet page' })).toBeInTheDocument();
   await user.click(screen.getByRole('link', { name: 'Search' }));
   expect(screen.getByLabelText('Saved search')).toHaveValue('status:200');
   await user.click(screen.getByRole('link', { name: 'About' }));
@@ -45,6 +48,11 @@ it('keeps rail and section navigation in sync and supports collapsing the rail',
   expect(screen.getByRole('link', { name: 'Index' })).toHaveAttribute('aria-current', 'page');
   expect(screen.getByRole('link', { name: 'Skip to content' })).toHaveAttribute('href', '#workspace');
   expect(screen.getByRole('main')).toHaveAttribute('id', 'workspace');
+  expect(screen.getByRole('link', { name: 'Docs' })).toHaveAttribute('href', 'https://github.com/vcaesar/zedsearch/blob/main/docs/web/index.md');
+  await user.click(screen.getByRole('button', { name: 'Settings' }));
+  expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Close' }));
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   await user.click(screen.getByRole('link', { name: 'Search workspace' }));
   expect(screen.getByRole('link', { name: 'Search' })).toHaveAttribute('aria-current', 'page');
   await user.click(screen.getByRole('button', { name: 'Menu' }));

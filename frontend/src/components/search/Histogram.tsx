@@ -1,4 +1,6 @@
 import { useRef, useState } from 'react';
+import Icon from '../Icon';
+import { setSetting, useSettings } from '../../settings';
 import type { SearchResponse } from './model';
 
 export function bucketLabel(key: string | number, interval: string) {
@@ -52,10 +54,12 @@ export function axisTicks(from: number, to: number, count: number): { time: numb
   }
 }
 export default function Histogram({ histogram, interval }: { histogram: NonNullable<SearchResponse['aggregations']>['histogram']; interval: string }) {
-  const [zoom, setZoom] = useState(1);
+  const [zoomLevel, setZoom] = useState(1);
   const chart = useRef<SVGSVGElement>(null);
   const [exportError, setExportError] = useState('');
+  const { chart: showChart, chartExport } = useSettings();
   const buckets = histogram?.buckets || [];
+  const zoom = buckets.length ? zoomLevel : 1;
   const maximum = Math.max(1, ...buckets.map(bucket => Number(bucket.doc_count)));
   const label = (key: string | number) => bucketLabel(key, histogram?.interval || interval);
   const width = 800 * zoom, margin = 30, plot = width - 2 * margin;
@@ -77,7 +81,7 @@ export default function Histogram({ histogram, interval }: { histogram: NonNulla
         blob = new Blob([csv], { type: 'text/csv' });
       } else {
         const svg = chart.current!.cloneNode(true) as SVGSVGElement;
-        svg.setAttribute('width', String(800 * zoom));
+        svg.setAttribute('width', String(width));
         svg.setAttribute('height', '170');
         svg.removeAttribute('style');
         blob = new Blob([new XMLSerializer().serializeToString(svg)], { type: 'image/svg+xml' });
@@ -88,7 +92,7 @@ export default function Histogram({ histogram, interval }: { histogram: NonNulla
             image.src = url;
             await image.decode();
             const canvas = document.createElement('canvas');
-            canvas.width = 800 * zoom;
+            canvas.width = width;
             canvas.height = 170;
             const context = canvas.getContext('2d');
             if (!context) throw new Error('Canvas unavailable');
@@ -111,17 +115,19 @@ export default function Histogram({ histogram, interval }: { histogram: NonNulla
   }
   return <section aria-label="Search histogram">
     {exportError && <p className="error" role="alert">{exportError}</p>}
-    {buckets.length ? <>
-      <div className="toolbar"><button type="button" aria-label="Zoom in histogram" onClick={() => setZoom(Math.min(8, zoom * 2))}>+</button><button type="button" aria-label="Zoom out histogram" onClick={() => setZoom(Math.max(1, zoom / 2))}>−</button><button type="button" onClick={() => setZoom(1)}>Reset zoom</button>{(['csv', 'svg', 'png'] as const).map(format => <button type="button" key={format} onClick={() => { void download(format); }}>Download {format.toUpperCase()}</button>)}</div>
-      <div className="overflow-x-auto"><svg ref={chart} role="img" aria-label="Document counts over time" viewBox={`0 0 ${width} 170`} style={{ width: `${zoom * 100}%`, minWidth: 300, height: 170 }}>
+    <div className="toolbar"><button type="button" className="histogram-toggle" aria-label={showChart ? 'Hide chart' : 'Show chart'} title={showChart ? 'Hide chart' : 'Show chart'} aria-pressed={showChart} onClick={() => setSetting('chart', !showChart)}><Icon name={showChart ? 'chart' : 'chartOff'} /></button>
+      {showChart && <><button type="button" aria-label="Zoom in histogram" disabled={!buckets.length} onClick={() => setZoom(Math.min(8, zoom * 2))}>+</button><button type="button" aria-label="Zoom out histogram" disabled={!buckets.length} onClick={() => setZoom(Math.max(1, zoom / 2))}>−</button><button type="button" disabled={!buckets.length} onClick={() => setZoom(1)}>Reset zoom</button>
+        {chartExport && (['csv', 'svg', 'png'] as const).map(format => <button type="button" key={format} disabled={!buckets.length} onClick={() => { void download(format); }}>Download {format.toUpperCase()}</button>)}</>}
+    </div>
+    {showChart && <div className="overflow-x-auto"><svg ref={chart} role="img" aria-label="Document counts over time" viewBox={`0 0 ${width} 170`} style={{ width: `${zoom * 100}%`, minWidth: 300, height: 170 }}>
         <g stroke="currentColor" strokeOpacity="0.15">{ticks.map(tick => <line key={tick.x} x1={tick.x} x2={tick.x} y1="10" y2="140" />)}<line x1={margin} x2={width - margin} y1="135" y2="135" /></g>
         {buckets.map((bucket, index) => {
           const bar = Math.min(slot * 0.9, 24);
           const height = Number(bucket.doc_count) / maximum * 125;
           return <rect key={`${bucket.key}-${index}`} x={center(index) - bar / 2} y={135 - height} width={bar} height={height} rx="2" fill="#26A69A"><title>{label(bucket.key)}: {bucket.doc_count}</title></rect>;
         })}
-        {ticks.map(tick => <text key={tick.x} x={tick.x} y="155" fontSize="10" textAnchor={anchor(tick.x, tick.text)} fill="currentColor">{tick.text}</text>)}<text x="0" y="12" fontSize="10" fill="currentColor">{maximum}</text>
-      </svg></div>
-    </> : <p>No data available</p>}
+        {ticks.map(tick => <text key={tick.x} x={tick.x} y="155" fontSize="10" textAnchor={anchor(tick.x, tick.text)} fill="currentColor">{tick.text}</text>)}
+        {buckets.length ? <text x="0" y="12" fontSize="10" fill="currentColor">{maximum}</text> : <text x={width / 2} y="80" fontSize="12" textAnchor="middle" fill="currentColor" fillOpacity="0.6">No data available</text>}
+      </svg></div>}
   </section>;
 }
