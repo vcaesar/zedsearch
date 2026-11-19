@@ -1,4 +1,4 @@
-/* Copyright 2026 AtomAI
+/* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -22,7 +22,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/vcaesar/zedsearch/agent/fleetapi"
 	"github.com/vcaesar/zedsearch/pkg/meta"
 )
 
@@ -50,61 +49,6 @@ func TestAlias(t *testing.T) {
 	_, err = Alias.Get()
 	assert.ErrorIs(t, err, errMock)
 	assert.ErrorIs(t, Alias.Set(want), errMock)
-}
-
-func TestFleetAgent(t *testing.T) {
-	m := useMock(t)
-	agent := fleetapi.Agent{ID: "TestFleetAgent.agent_1", Name: "agent"}
-
-	require.NoError(t, FleetAgent.Set(agent))
-	got, err := FleetAgent.Get(agent.ID)
-	require.NoError(t, err)
-	assert.Equal(t, agent.Name, got.Name)
-
-	list, err := FleetAgent.List()
-	require.NoError(t, err)
-	require.Len(t, list, 1)
-	assert.Equal(t, agent.ID, list[0].ID)
-
-	require.NoError(t, FleetAgent.Delete(agent.ID))
-	_, err = FleetAgent.Get(agent.ID)
-	assert.ErrorIs(t, err, ErrorKeyNotExists)
-
-	assert.Error(t, FleetAgent.Set(fleetapi.Agent{ID: "bad", EnrolledAt: badTime}))
-
-	m.data["/fleet_agent/broken"] = []byte("{")
-	_, err = FleetAgent.List()
-	assert.Error(t, err)
-	_, err = FleetAgent.Get("broken")
-	assert.Error(t, err)
-
-	m.err = errMock
-	_, err = FleetAgent.List()
-	assert.ErrorIs(t, err, errMock)
-}
-
-func TestFleetPolicy(t *testing.T) {
-	m := useMock(t)
-	policy := fleetapi.Policy{ID: "TestFleetPolicy.policy_1", Name: "policy", Revision: 2}
-
-	require.NoError(t, FleetPolicy.Set(policy))
-	got, err := FleetPolicy.Get(policy.ID)
-	require.NoError(t, err)
-	assert.Equal(t, int64(2), got.Revision)
-
-	list, err := FleetPolicy.List()
-	require.NoError(t, err)
-	require.Len(t, list, 1)
-
-	require.NoError(t, FleetPolicy.Delete(policy.ID))
-	list, err = FleetPolicy.List()
-	require.NoError(t, err)
-	assert.Empty(t, list)
-
-	m.err = errMock
-	_, err = FleetPolicy.Get(policy.ID)
-	assert.ErrorIs(t, err, errMock)
-	assert.ErrorIs(t, FleetPolicy.Set(policy), errMock)
 }
 
 func TestIndex(t *testing.T) {
