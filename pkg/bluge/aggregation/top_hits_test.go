@@ -208,3 +208,19 @@ func TestTopHitsUnderBucketAggregations(t *testing.T) {
 		})
 	}
 }
+
+func TestTopHitsCalculatorSourceAndStoredFields(t *testing.T) {
+	agg := NewTopHitsAggregation(1, 0, "", false)
+	agg.SetSource(false, []string{"name"})
+	agg.SetStoredFields([]string{"vec"})
+
+	d := &search.DocumentMatch{Number: 1, Score: 1}
+	d.SetReader(&storedStubReader{stored: map[string]string{"_id": "a", "vec": "v1", "other": "x"}})
+	calc := runTopHits(t, agg, []*search.DocumentMatch{d})
+
+	enable, fields := calc.Source()
+	assert.False(t, enable)
+	assert.Equal(t, []string{"name"}, fields)
+	require.Len(t, calc.Hits(), 1)
+	assert.Equal(t, map[string][]byte{"vec": []byte("v1")}, calc.Hits()[0].Stored)
+}

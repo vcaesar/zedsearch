@@ -20,6 +20,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/vcaesar/riot/search"
+	"github.com/vcaesar/riot/search/aggregations"
 )
 
 func histogramBuckets(calc *HistogramCalculator) map[string]uint64 {
@@ -124,4 +125,18 @@ func TestHistogramCalculatorMerge(t *testing.T) {
 			assert.Len(t, a.Buckets(), len(tt.want), "a bucket name is listed twice")
 		})
 	}
+}
+
+func TestHistogramAggregationFieldsAndOther(t *testing.T) {
+	agg := NewHistogramAggregation(search.Field("age"), 10, 0, nil, nil, 1, 1)
+	agg.AddAggregation("max_score", aggregations.Max(search.Field("score")))
+	assert.ElementsMatch(t, []string{"age", "score"}, agg.Fields())
+
+	calc := agg.Calculator().(*HistogramCalculator)
+	for _, d := range numericDocs(t, []float64{1, 2, 15}) {
+		calc.Consume(d)
+	}
+	calc.Finish()
+	assert.Equal(t, map[string]uint64{"0": 2}, histogramBuckets(calc))
+	assert.Equal(t, 1, calc.Other())
 }

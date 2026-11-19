@@ -123,3 +123,98 @@ func TestTermsAggregationTextFirstValue(t *testing.T) {
 	assert.Equal(t, want, got)
 	assert.Len(t, got, 4) // "b", "a", the numeric term and missing ""
 }
+
+func TestTermsCalculatorValueSources(t *testing.T) {
+	docs := func(t *testing.T, vals ...[][]byte) []*search.DocumentMatch {
+		rv := make([]*search.DocumentMatch, 0, len(vals))
+		for _, v := range vals {
+			rv = append(rv, newTestMatch(t, []string{"f"}, map[string][][]byte{"f": v}))
+		}
+		return rv
+	}
+	tests := []struct {
+		name    string
+		srcType int
+		vals    [][][]byte
+		want    map[string]uint64
+	}{
+		{
+			name: "text values", srcType: TextValuesSource,
+			vals: [][][]byte{textTerms("a", "b"), textTerms("b")},
+			want: map[string]uint64{"a": 1, "b": 2},
+		},
+		{
+			name: "numeric value", srcType: NumericValueSource,
+			vals: [][][]byte{numTerms(1.5), numTerms(1.5), numTerms(3)},
+			want: map[string]uint64{"1.5": 2, "3": 1},
+		},
+		{
+			name: "numeric values", srcType: NumericValuesSource,
+			vals: [][][]byte{numTerms(1, 2), numTerms(2)},
+			want: map[string]uint64{"1": 1, "2": 2},
+		},
+		{
+			name: "boolean value", srcType: BooleanValueSource,
+			vals: [][][]byte{numTerms(1), numTerms(0), numTerms(1)},
+			want: map[string]uint64{"true": 2, "false": 1},
+		},
+		{
+			name: "boolean values", srcType: BooleanValuesSource,
+			vals: [][][]byte{numTerms(0, 1), numTerms(0)},
+			want: map[string]uint64{"true": 1, "false": 2},
+		},
+		{
+			name: "unsupported type", srcType: -1,
+			vals: [][][]byte{textTerms("a")},
+			want: map[string]uint64{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			calc := NewTermsAggregation(search.Field("f"), tt.srcType, 10).Calculator().(*TermsCalculator)
+			for _, d := range docs(t, tt.vals...) {
+				calc.Consume(d)
+			}
+			calc.Finish()
+			assert.Equal(t, tt.want, bucketCounts(calc.Buckets()))
+		})
+	}
+}
+
+func TestTermsCalculatorSizeAndOther(t *testing.T) {
+	calc := NewTermsAggregation(search.Field("city"), TextValueSource, 1).Calculator().(*TermsCalculator)
+	for _, d := range filterDocs(t, "sf", "sf", "la") {
+		calc.Consume(d)
+	}
+	calc.Finish()
+	assert.Equal(t, []string{"sf"}, bucketNames(calc.Buckets()))
+	assert.Equal(t, 1, calc.Other())
+}
+
+func TestTermsCalculatorMerge(t *testing.T) {
+	agg := NewTermsAggregation(search.Field("city"), TextValueSource, 2)
+	a := agg.Calculator().(*TermsCalculator)
+	b := agg.Calculator().(*TermsCalculator)
+	for _, d := range filterDocs(t, "sf", "la") {
+		a.Consume(d)
+	}
+	for _, d := range filterDocs(t, "la", "la", "nyc") {
+		b.Consume(d)
+	}
+	a.Finish()
+	b.Finish()
+	a.Merge(b)
+	assert.Equal(t, []string{"la", "sf"}, bucketNames(a.Buckets()))
+	assert.Equal(t, map[string]uint64{"la": 3, "sf": 1}, bucketCounts(a.Buckets()))
+	assert.Equal(t, 1, a.Other())
+
+	// other calculator types are ignored
+	a.Merge(NewMissingAggregation(search.Field("city")).Calculator())
+	assert.Len(t, a.Buckets(), 2)
+}
+
+func TestTermsAggregationFields(t *testing.T) {
+	agg := NewTermsAggregation(search.Field("city"), TextValueSource, 10)
+	agg.AddAggregation("avg_age", aggregations.Avg(search.Field("age")))
+	assert.ElementsMatch(t, []string{"city", "age"}, agg.Fields())
+}
