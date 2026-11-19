@@ -18,4 +18,4 @@
 
 package chs
 
-const bigDictEmbedded = false
+var bigDictEmbedded = false
