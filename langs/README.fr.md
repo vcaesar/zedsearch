@@ -26,6 +26,29 @@ Regardez la vidéo ci-dessous pour une démonstration rapide de ZedSearch.
 
 <!-- [![Zed Youtube](../screenshots/zed-youtube.jpg)](https://www.youtube.com/watch?v=aZXtuVjt1ow) -->
 
+## Homebrew
+
+macOS et Linux, via [vcaesar/homebrew-tap](https://github.com/vcaesar/homebrew-tap) :
+
+```sh
+brew install vcaesar/tap/zedsearch
+```
+
+## Docker
+
+Les images sont publiées sur [Docker Hub](https://hub.docker.com/r/riotgo/zedsearch) sous `riotgo/zedsearch` (linux/amd64, linux/arm64, linux/arm/v7) :
+
+Avant de lancer la commande, définissez `ZED_FIRST_ADMIN_PASSWORD` dans votre environnement avec le mot de passe choisi :
+
+```sh
+docker run -d --name zedsearch -p 4080:4080 \
+    -v zedsearch-data:/data -e ZED_DATA_PATH=/data \
+    -e ZED_FIRST_ADMIN_USER=admin -e "ZED_FIRST_ADMIN_PASSWORD=${ZED_FIRST_ADMIN_PASSWORD:?Set ZED_FIRST_ADMIN_PASSWORD}" \
+    riotgo/zedsearch:latest
+```
+
+Le volume nommé `zedsearch-data` est accessible en écriture à l'utilisateur du conteneur (uid 10001) ; pour utiliser un répertoire de l'hôte, lancez `mkdir -p ./data && sudo chown 10001:10001 ./data` puis montez `-v "$PWD/data:/data"`.
+
 # Pourquoi ZedSearch
 
 Bien qu'Elasticsearch soit un très bon produit, il est complexe, nécessite beaucoup de ressources et a plus de dix ans. J'ai créé ZedSearch pour qu'il soit plus facile d'utiliser l'indexation de recherche plein texte sans trop d'efforts.
@@ -101,29 +124,6 @@ Consultez le [démarrage rapide](../docs/web/quickstart.md)
 ZedSearch compte des centaines d'installations en production.
 
 Les binaires pour toutes les plateformes sont disponibles sur la [page des releases](https://github.com/vcaesar/zedsearch/releases/latest). Les archives par défaut ne sont pas compressées avec UPX ; pour un téléchargement plus léger, toutes les versions Linux et la version Windows amd64 sont aussi fournies dans une archive `*_upx.tar.gz` compressée avec [UPX](https://upx.github.io/) (démarrage légèrement plus lent, et certains antivirus peuvent signaler les fichiers `.exe` compressés).
-
-## Homebrew
-
-macOS et Linux, via [vcaesar/homebrew-tap](https://github.com/vcaesar/homebrew-tap) :
-
-```sh
-brew install vcaesar/tap/zedsearch
-```
-
-## Docker
-
-Les images sont publiées sur [Docker Hub](https://hub.docker.com/r/riotgo/zedsearch) sous `riotgo/zedsearch` (linux/amd64, linux/arm64, linux/arm/v7) :
-
-Avant de lancer la commande, définissez `ZED_FIRST_ADMIN_PASSWORD` dans votre environnement avec le mot de passe choisi :
-
-```sh
-docker run -d --name zedsearch -p 4080:4080 \
-    -v zedsearch-data:/data -e ZED_DATA_PATH=/data \
-    -e ZED_FIRST_ADMIN_USER=admin -e "ZED_FIRST_ADMIN_PASSWORD=${ZED_FIRST_ADMIN_PASSWORD:?Set ZED_FIRST_ADMIN_PASSWORD}" \
-    riotgo/zedsearch:latest
-```
-
-Le volume nommé `zedsearch-data` est accessible en écriture à l'utilisateur du conteneur (uid 10001) ; pour utiliser un répertoire de l'hôte, lancez `mkdir -p ./data && sudo chown 10001:10001 ./data` puis montez `-v "$PWD/data:/data"`.
 
 ## Compilation
 

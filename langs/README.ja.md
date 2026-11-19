@@ -26,6 +26,29 @@ ZedSearch の簡単なデモは以下の動画をご覧ください。
 
 <!-- [![Zed Youtube](../screenshots/zed-youtube.jpg)](https://www.youtube.com/watch?v=aZXtuVjt1ow) -->
 
+## Homebrew
+
+macOS と Linux では [vcaesar/homebrew-tap](https://github.com/vcaesar/homebrew-tap) からインストールできます：
+
+```sh
+brew install vcaesar/tap/zedsearch
+```
+
+## Docker
+
+イメージは [Docker Hub](https://hub.docker.com/r/riotgo/zedsearch) で `riotgo/zedsearch` として公開されています（linux/amd64、linux/arm64、linux/arm/v7）：
+
+実行する前に、環境変数 `ZED_FIRST_ADMIN_PASSWORD` に任意のパスワードを設定してください：
+
+```sh
+docker run -d --name zedsearch -p 4080:4080 \
+    -v zedsearch-data:/data -e ZED_DATA_PATH=/data \
+    -e ZED_FIRST_ADMIN_USER=admin -e "ZED_FIRST_ADMIN_PASSWORD=${ZED_FIRST_ADMIN_PASSWORD:?Set ZED_FIRST_ADMIN_PASSWORD}" \
+    riotgo/zedsearch:latest
+```
+
+名前付きボリューム `zedsearch-data` はコンテナのユーザー（uid 10001）が書き込めます。ホストのディレクトリを使う場合は、`mkdir -p ./data && sudo chown 10001:10001 ./data` を実行してから `-v "$PWD/data:/data"` でマウントします。
+
 # なぜ ZedSearch なのか
 
 Elasticsearch は非常に優れた製品ですが、複雑で多くのリソースを必要とし、10 年以上前から存在しています。私は、多くの作業をせずに誰もが全文検索インデックスを簡単に使えるように ZedSearch を作りました。
@@ -101,29 +124,6 @@ go + gin + react
 ZedSearch は数百の本番環境で導入されています。
 
 各プラットフォーム向けのバイナリは [Releases ページ](https://github.com/vcaesar/zedsearch/releases/latest) にあります。デフォルトのアーカイブは UPX で圧縮されていません。ダウンロードサイズを抑えたい場合は、すべての Linux ビルドと Windows amd64 ビルドに [UPX](https://upx.github.io/) で圧縮した `*_upx.tar.gz` も用意しています（起動がやや遅くなり、一部のウイルス対策ソフトが圧縮された `.exe` ファイルを誤検知する場合があります）。
-
-## Homebrew
-
-macOS と Linux では [vcaesar/homebrew-tap](https://github.com/vcaesar/homebrew-tap) からインストールできます：
-
-```sh
-brew install vcaesar/tap/zedsearch
-```
-
-## Docker
-
-イメージは [Docker Hub](https://hub.docker.com/r/riotgo/zedsearch) で `riotgo/zedsearch` として公開されています（linux/amd64、linux/arm64、linux/arm/v7）：
-
-実行する前に、環境変数 `ZED_FIRST_ADMIN_PASSWORD` に任意のパスワードを設定してください：
-
-```sh
-docker run -d --name zedsearch -p 4080:4080 \
-    -v zedsearch-data:/data -e ZED_DATA_PATH=/data \
-    -e ZED_FIRST_ADMIN_USER=admin -e "ZED_FIRST_ADMIN_PASSWORD=${ZED_FIRST_ADMIN_PASSWORD:?Set ZED_FIRST_ADMIN_PASSWORD}" \
-    riotgo/zedsearch:latest
-```
-
-名前付きボリューム `zedsearch-data` はコンテナのユーザー（uid 10001）が書き込めます。ホストのディレクトリを使う場合は、`mkdir -p ./data && sudo chown 10001:10001 ./data` を実行してから `-v "$PWD/data:/data"` でマウントします。
 
 ## ビルド
 

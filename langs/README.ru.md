@@ -26,6 +26,29 @@ ZedSearch — это поисковый движок с полнотекстов
 
 <!-- [![Zed Youtube](../screenshots/zed-youtube.jpg)](https://www.youtube.com/watch?v=aZXtuVjt1ow) -->
 
+## Homebrew
+
+macOS и Linux, через [vcaesar/homebrew-tap](https://github.com/vcaesar/homebrew-tap):
+
+```sh
+brew install vcaesar/tap/zedsearch
+```
+
+## Docker
+
+Образы опубликованы на [Docker Hub](https://hub.docker.com/r/riotgo/zedsearch) как `riotgo/zedsearch` (linux/amd64, linux/arm64, linux/arm/v7):
+
+Перед запуском задайте выбранный пароль в переменной окружения `ZED_FIRST_ADMIN_PASSWORD`:
+
+```sh
+docker run -d --name zedsearch -p 4080:4080 \
+    -v zedsearch-data:/data -e ZED_DATA_PATH=/data \
+    -e ZED_FIRST_ADMIN_USER=admin -e "ZED_FIRST_ADMIN_PASSWORD=${ZED_FIRST_ADMIN_PASSWORD:?Set ZED_FIRST_ADMIN_PASSWORD}" \
+    riotgo/zedsearch:latest
+```
+
+Именованный том `zedsearch-data` доступен для записи пользователю контейнера (uid 10001); чтобы использовать каталог хоста, выполните `mkdir -p ./data && sudo chown 10001:10001 ./data` и смонтируйте `-v "$PWD/data:/data"`.
+
 # Почему ZedSearch
 
 Хотя Elasticsearch — очень хороший продукт, он сложен, требует много ресурсов и существует уже более десяти лет. Я создал ZedSearch, чтобы людям было проще пользоваться полнотекстовой поисковой индексацией без лишней работы.
@@ -101,29 +124,6 @@ go + gin + react
 ZedSearch используется в сотнях производственных установок.
 
 Бинарные файлы для всех платформ доступны на [странице релизов](https://github.com/vcaesar/zedsearch/releases/latest). Архивы по умолчанию не сжаты UPX; для меньшего размера загрузки все сборки для Linux и сборка для Windows amd64 также публикуются в виде `*_upx.tar.gz`, упакованного [UPX](https://upx.github.io/) (запуск немного медленнее, а некоторые антивирусы могут ошибочно помечать упакованные `.exe`-файлы).
-
-## Homebrew
-
-macOS и Linux, через [vcaesar/homebrew-tap](https://github.com/vcaesar/homebrew-tap):
-
-```sh
-brew install vcaesar/tap/zedsearch
-```
-
-## Docker
-
-Образы опубликованы на [Docker Hub](https://hub.docker.com/r/riotgo/zedsearch) как `riotgo/zedsearch` (linux/amd64, linux/arm64, linux/arm/v7):
-
-Перед запуском задайте выбранный пароль в переменной окружения `ZED_FIRST_ADMIN_PASSWORD`:
-
-```sh
-docker run -d --name zedsearch -p 4080:4080 \
-    -v zedsearch-data:/data -e ZED_DATA_PATH=/data \
-    -e ZED_FIRST_ADMIN_USER=admin -e "ZED_FIRST_ADMIN_PASSWORD=${ZED_FIRST_ADMIN_PASSWORD:?Set ZED_FIRST_ADMIN_PASSWORD}" \
-    riotgo/zedsearch:latest
-```
-
-Именованный том `zedsearch-data` доступен для записи пользователю контейнера (uid 10001); чтобы использовать каталог хоста, выполните `mkdir -p ./data && sudo chown 10001:10001 ./data` и смонтируйте `-v "$PWD/data:/data"`.
 
 ## Сборка
 
