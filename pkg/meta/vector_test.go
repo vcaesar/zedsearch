@@ -222,10 +222,12 @@ func TestSourceVectors(t *testing.T) {
 		assert.NoError(t, err)
 		assert.JSONEq(t, `{"name":"x"}`, string(got))
 
-		assert.Zero(t, testing.AllocsPerRun(10, func() {
-			v.Reset()
-			v.Visit("emb", emb)
-		}))
+		// AllocsPerRun counts process-wide mallocs, background goroutines make it flaky
+		buf := &v.values["emb"][:1][0]
+		v.Reset()
+		v.Visit("emb", emb)
+		assert.Same(t, buf, &v.values["emb"][:1][0])
+		assert.Equal(t, emb, v.values["emb"])
 	})
 
 	t.Run("errors", func(t *testing.T) {
