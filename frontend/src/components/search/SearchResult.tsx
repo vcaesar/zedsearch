@@ -30,7 +30,7 @@ export default function SearchResult({ result, columns, query, interval, loading
   return <section className="card search-results flex-1 min-w-0" data-cy="search-result-area" aria-label={t('search.searchResult')} aria-busy={loading}>
     <h2>{t('search.searchResult')}</h2>
     {result && <p role="status">Found {result.hits.total.value.toLocaleString()} hits in {result.took} ms</p>}
-    <div className={`result-controls ${result?.aggregations?.histogram?.buckets?.length ? '' : 'result-controls-empty'}`}>
+    <div className="result-controls">
     <Histogram histogram={result?.aggregations?.histogram} interval={interval} />
     <div className="toolbar result-view-toggle"><button type="button" aria-pressed={mode === 'table'} onClick={() => setMode('table')}>Table</button><button type="button" aria-pressed={mode === 'json'} onClick={() => setMode('json')}>JSON</button></div>
     </div>

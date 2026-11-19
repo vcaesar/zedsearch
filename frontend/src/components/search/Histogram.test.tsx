@@ -1,8 +1,9 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import Histogram, { axisTicks, bucketLabel } from './Histogram';
+import { setSetting } from '../../settings';
 
-afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); setSetting('chart', true); setSetting('chartExport', true); });
 const histogram = { buckets: [{ key: new Date(2026, 1, 15, 12, 30, 45).getTime(), doc_count: 7 }] };
 describe('Histogram', () => {
   it.each([['1s', '12:30:45'], ['1m', '12:30'], ['1h', '02-15 12:30'], ['1d', '2026-02-15']] as const)('formats %s buckets', (interval, label) => {
@@ -51,6 +52,27 @@ describe('Histogram', () => {
   ] as const)('aligns %s ticks to calendar boundaries around the range', (_, offset, length, labels) => {
     const from = new Date(2026, 0, 1, 12).getTime() + offset;
     expect(axisTicks(from, from + length, 10).map(tick => tick.text)).toEqual(labels);
+  });
+  it('keeps the chart visible without data', () => {
+    render(<Histogram histogram={undefined} interval="1s" />);
+    expect(screen.getByRole('img', { name: 'Document counts over time' })).toHaveTextContent('No data available');
+    expect(screen.getByLabelText('Zoom in histogram')).toBeDisabled();
+  });
+  it('toggles the chart and remembers the choice', () => {
+    const { unmount } = render(<Histogram histogram={histogram} interval="1s" />);
+    expect(screen.getByRole('img')).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: /^Download/ }).map(button => button.textContent)).toEqual(['Download CSV', 'Download SVG', 'Download PNG']);
+    act(() => setSetting('chartExport', false));
+    expect(screen.queryByRole('button', { name: /^Download/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Hide chart' }));
+    expect(screen.queryByRole('img')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Zoom in histogram')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Show chart' })).toHaveAttribute('aria-pressed', 'false');
+    unmount();
+    render(<Histogram histogram={histogram} interval="1s" />);
+    expect(screen.queryByRole('img')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Show chart' }));
+    expect(screen.getByRole('img')).toBeInTheDocument();
   });
   it.each(['CSV', 'SVG', 'PNG'])('exports %s', async format => {
     const create = vi.fn(() => 'blob:histogram');
