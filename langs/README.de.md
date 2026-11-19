@@ -102,6 +102,26 @@ ZedSearch hat Hunderte von Produktionsinstallationen.
 
 Binärdateien für alle Plattformen finden Sie auf der [Release-Seite](https://github.com/vcaesar/zedsearch/releases/latest). Die Standardarchive sind nicht mit UPX komprimiert; für einen kleineren Download gibt es für alle Linux-Builds und den Windows-amd64-Build zusätzlich ein mit [UPX](https://upx.github.io/) gepacktes `*_upx.tar.gz` (etwas langsamerer Start, und manche Antivirenprogramme melden gepackte `.exe`-Dateien möglicherweise fälschlich).
 
+## Homebrew
+
+macOS und Linux, über [vcaesar/homebrew-tap](https://github.com/vcaesar/homebrew-tap):
+
+```sh
+brew install --cask vcaesar/tap/zedsearch
+```
+
+## Docker
+
+Images liegen auf [Docker Hub](https://hub.docker.com/r/riotgo/zedsearch) als `riotgo/zedsearch` (linux/amd64, linux/arm64, linux/arm/v7):
+
+```sh
+mkdir data
+docker run -d --name zedsearch -p 4080:4080 \
+    -v "$PWD/data:/data" -e ZED_DATA_PATH=/data \
+    -e ZED_FIRST_ADMIN_USER=admin -e ZED_FIRST_ADMIN_PASSWORD=*** \
+    riotgo/zedsearch:latest
+```
+
 ## Build
 
 Setzen Sie `ZED_FIRST_ADMIN_USER` / `ZED_FIRST_ADMIN_PASSWORD` oder konfigurieren Sie `conf/zed.toml` (siehe unten) und führen Sie im Repository-Stammverzeichnis aus:

@@ -102,6 +102,26 @@ ZedSearch 已有數百個正式環境部署。
 
 各平台的二進位檔可在 [Releases 頁面](https://github.com/vcaesar/zedsearch/releases/latest) 取得。預設封存檔未使用 UPX 壓縮；為了更小的下載大小，所有 Linux 版本與 Windows amd64 版本另外提供經 [UPX](https://upx.github.io/) 壓縮的 `*_upx.tar.gz`（啟動稍慢，且部分防毒軟體可能會誤判壓縮過的 `.exe` 檔）。
 
+## Homebrew
+
+macOS 與 Linux，透過 [vcaesar/homebrew-tap](https://github.com/vcaesar/homebrew-tap) 安裝：
+
+```sh
+brew install --cask vcaesar/tap/zedsearch
+```
+
+## Docker
+
+映像檔發布於 [Docker Hub](https://hub.docker.com/r/riotgo/zedsearch)，名稱為 `riotgo/zedsearch`（linux/amd64、linux/arm64、linux/arm/v7）：
+
+```sh
+mkdir data
+docker run -d --name zedsearch -p 4080:4080 \
+    -v "$PWD/data:/data" -e ZED_DATA_PATH=/data \
+    -e ZED_FIRST_ADMIN_USER=admin -e ZED_FIRST_ADMIN_PASSWORD=*** \
+    riotgo/zedsearch:latest
+```
+
 ## 建置
 
 設定 `ZED_FIRST_ADMIN_USER` / `ZED_FIRST_ADMIN_PASSWORD` 或設定 `conf/zed.toml`（見下文），然後在儲存庫根目錄執行：

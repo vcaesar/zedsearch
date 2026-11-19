@@ -102,6 +102,26 @@ ZedSearch는 수백 개의 프로덕션 환경에 설치되어 있습니다.
 
 모든 플랫폼용 바이너리는 [릴리스 페이지](https://github.com/vcaesar/zedsearch/releases/latest)에서 받을 수 있습니다. 기본 아카이브는 UPX로 압축되지 않습니다. 더 작은 다운로드가 필요하면 모든 Linux 빌드와 Windows amd64 빌드에 [UPX](https://upx.github.io/)로 압축한 `*_upx.tar.gz`도 제공됩니다(시작이 약간 느려지며, 일부 백신 프로그램이 압축된 `.exe` 파일을 오탐할 수 있습니다).
 
+## Homebrew
+
+macOS와 Linux에서는 [vcaesar/homebrew-tap](https://github.com/vcaesar/homebrew-tap)로 설치할 수 있습니다:
+
+```sh
+brew install --cask vcaesar/tap/zedsearch
+```
+
+## Docker
+
+이미지는 [Docker Hub](https://hub.docker.com/r/riotgo/zedsearch)에 `riotgo/zedsearch`로 게시됩니다(linux/amd64, linux/arm64, linux/arm/v7):
+
+```sh
+mkdir data
+docker run -d --name zedsearch -p 4080:4080 \
+    -v "$PWD/data:/data" -e ZED_DATA_PATH=/data \
+    -e ZED_FIRST_ADMIN_USER=admin -e ZED_FIRST_ADMIN_PASSWORD=*** \
+    riotgo/zedsearch:latest
+```
+
 ## 빌드
 
 `ZED_FIRST_ADMIN_USER` / `ZED_FIRST_ADMIN_PASSWORD`를 설정하거나 `conf/zed.toml`을 구성한 뒤(아래 참조) 저장소 루트에서 실행합니다:
