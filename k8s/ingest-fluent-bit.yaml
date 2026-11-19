@@ -27,7 +27,8 @@ data:
         Name              tail
         Tag               kube.*
         Path              /var/log/containers/*.log
-        Parser            docker
+        # containerd/CRI-O nodes write CRI-format logs, Docker nodes JSON.
+        multiline.parser  docker, cri
         DB                /var/log/flb_kube.db
         Mem_Buf_Limit     5MB
         Skip_Long_Lines   On
@@ -54,6 +55,7 @@ data:
         Host z.zedsearch.svc.cluster.local
         Port 4080
         Generate_ID On
+        Suppress_Type_Name On
         HTTP_User admin
         HTTP_Passwd Complexpass#123
         Logstash_Format On

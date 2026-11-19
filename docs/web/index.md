@@ -19,7 +19,7 @@ Elasticsearch is a very good product, but it is complex, needs lots of resources
 1. Index storage on local disk or object storage (S3/MinIO, Google Cloud Storage, Alibaba Cloud OSS), with hot/warm/cold data tiers.
 1. Metadata in bolt (default), badger or etcd.
 1. Optional multi-node cluster coordinated through etcd, with replication.
-1. Opt-in [logs indexes](https://github.com/vcaesar/zedsearch/blob/main/pkg/logs/README.md) with event-time normalization.
+1. Opt-in [logs indexes](https://github.com/vcaesar/zedsearch/blob/dev/pkg/logs/README.md) with event-time normalization.
 1. Prometheus metrics on `/metrics`.
 1. React web UI. Release binaries and Docker images embed it; plain `go build` produces an API-only binary (see [Installation](installation.md)).
 

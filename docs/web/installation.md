@@ -24,7 +24,7 @@ Download the windows archive from the [releases page](https://github.com/vcaesar
 
 ## Docker
 
-Images: `ghcr.io/vcaesar/zedsearch:latest` (or `:<version>`) for tagged releases, `ghcr.io/vcaesar/zedsearch-dev:nightly` for builds from `main`. Platforms: linux/amd64, linux/arm64, linux/arm/v7.
+Images: `ghcr.io/vcaesar/zedsearch:latest` (or `:<version>`) for tagged releases, `ghcr.io/vcaesar/zedsearch-dev:nightly` for builds from `dev`. Platforms: linux/amd64, linux/arm64, linux/arm/v7.
 
     mkdir data
     docker run -d --name zedsearch -p 4080:4080 \
@@ -40,15 +40,15 @@ The image's working directory is `/`, so a config file can be mounted at `/conf/
 
 ## Kubernetes - Manifest
 
-[k8s/kube-deployment.yaml](https://github.com/vcaesar/zedsearch/blob/main/k8s/kube-deployment.yaml) creates a StatefulSet and a Service `z` in the `zedsearch` namespace. Edit `ZED_FIRST_ADMIN_PASSWORD` in it before applying.
+[k8s/kube-deployment.yaml](https://github.com/vcaesar/zedsearch/blob/dev/k8s/kube-deployment.yaml) creates a StatefulSet and a Service `z` in the `zedsearch` namespace. Edit `ZED_FIRST_ADMIN_PASSWORD` in it before applying.
 
     kubectl create ns zedsearch
-    kubectl apply -f https://raw.githubusercontent.com/vcaesar/zedsearch/main/k8s/kube-deployment.yaml
+    kubectl apply -f https://raw.githubusercontent.com/vcaesar/zedsearch/dev/k8s/kube-deployment.yaml
     kubectl -n zedsearch port-forward svc/z 4080:4080
 
 ## Kubernetes - Helm
 
-The chart is in [helm/zedsearch](https://github.com/vcaesar/zedsearch/tree/main/helm/zedsearch). Set `auth.username` / `auth.password` in [values.yaml](https://github.com/vcaesar/zedsearch/blob/main/helm/zedsearch/values.yaml), then from a checkout of the repository:
+The chart is in [helm/zedsearch](https://github.com/vcaesar/zedsearch/tree/dev/helm/zedsearch). Set `auth.username` / `auth.password` in [values.yaml](https://github.com/vcaesar/zedsearch/blob/dev/helm/zedsearch/values.yaml), then from a checkout of the repository:
 
     kubectl create ns zedsearch
     helm install zedsearch helm/zedsearch -n zedsearch
@@ -85,7 +85,7 @@ go build -tags web -o zedsearch cmd/zedsearch/main.go
 
 Settings are applied in this order:
 
-1. Built-in defaults ([pkg/config/default.toml](https://github.com/vcaesar/zedsearch/blob/main/pkg/config/default.toml)).
+1. Built-in defaults ([pkg/config/default.toml](https://github.com/vcaesar/zedsearch/blob/dev/pkg/config/default.toml)).
 1. `conf/zed.toml`, relative to the working directory, if present.
 1. Non-empty environment variables: every key in uppercase, e.g. `zed_server_port` → `ZED_SERVER_PORT`.
 
