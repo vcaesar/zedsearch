@@ -107,7 +107,7 @@ ZedSearch 已有数百个生产环境部署。
 macOS 和 Linux，通过 [vcaesar/homebrew-tap](https://github.com/vcaesar/homebrew-tap) 安装：
 
 ```sh
-brew install --cask vcaesar/tap/zedsearch
+brew install vcaesar/tap/zedsearch
 ```
 
 ## Docker
@@ -115,12 +115,13 @@ brew install --cask vcaesar/tap/zedsearch
 镜像发布在 [Docker Hub](https://hub.docker.com/r/riotgo/zedsearch)，名称为 `riotgo/zedsearch`（linux/amd64、linux/arm64、linux/arm/v7）：
 
 ```sh
-mkdir data
 docker run -d --name zedsearch -p 4080:4080 \
-    -v "$PWD/data:/data" -e ZED_DATA_PATH=/data \
-    -e ZED_FIRST_ADMIN_USER=admin -e ZED_FIRST_ADMIN_PASSWORD=*** \
+    -v zedsearch-data:/data -e ZED_DATA_PATH=/data \
+    -e ZED_FIRST_ADMIN_USER=admin -e ZED_FIRST_ADMIN_PASSWORD={your-password} \
     riotgo/zedsearch:latest
 ```
+
+命名卷 `zedsearch-data` 可由容器用户（uid 10001）写入；如需改用宿主机目录，请先运行 `sudo chown 10001:10001 ./data`，再挂载 `-v "$PWD/data:/data"`。
 
 ## 构建
 

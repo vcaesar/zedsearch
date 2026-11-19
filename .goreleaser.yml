@@ -144,7 +144,7 @@ homebrew_casks:
   - name: zedsearch
     ids: [zedsearch]
     repository:
-      owner: zinclabs
+      owner: vcaesar
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     # Cask is only pushed when the HOMEBREW_TAP_GITHUB_TOKEN secret is configured.

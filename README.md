@@ -107,7 +107,7 @@ Binaries for every platform are on the [releases page](https://github.com/vcaesa
 macOS and Linux, via [vcaesar/homebrew-tap](https://github.com/vcaesar/homebrew-tap):
 
 ```sh
-brew install --cask vcaesar/tap/zedsearch
+brew install vcaesar/tap/zedsearch
 ```
 
 ## Docker
@@ -115,12 +115,13 @@ brew install --cask vcaesar/tap/zedsearch
 Images are on [Docker Hub](https://hub.docker.com/r/riotgo/zedsearch) as `riotgo/zedsearch` (linux/amd64, linux/arm64, linux/arm/v7):
 
 ```sh
-mkdir data
 docker run -d --name zedsearch -p 4080:4080 \
-    -v "$PWD/data:/data" -e ZED_DATA_PATH=/data \
-    -e ZED_FIRST_ADMIN_USER=admin -e ZED_FIRST_ADMIN_PASSWORD=*** \
+    -v zedsearch-data:/data -e ZED_DATA_PATH=/data \
+    -e ZED_FIRST_ADMIN_USER=admin -e ZED_FIRST_ADMIN_PASSWORD={your-password} \
     riotgo/zedsearch:latest
 ```
+
+The named volume `zedsearch-data` is writable by the container user (uid 10001); to use a host directory instead, run `sudo chown 10001:10001 ./data` and mount `-v "$PWD/data:/data"`.
 
 ## Build
 

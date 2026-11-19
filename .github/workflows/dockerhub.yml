@@ -30,8 +30,8 @@ jobs:
        startsWith(github.event.workflow_run.head_branch, 'v'))
     runs-on: ubuntu-latest
     env:
-      # Override with the DOCKERHUB_IMAGE repository variable, e.g. vcaesar/zedsearch.
-      IMAGE: ${{ vars.DOCKERHUB_IMAGE || format('{0}/zedsearch', secrets.DOCKERHUB_USERNAME) }}
+      # The image documented in README.md; override with the DOCKERHUB_IMAGE repository variable.
+      IMAGE: ${{ vars.DOCKERHUB_IMAGE || 'riotgo/zedsearch' }}
     steps:
       # latest always points to the highest stable (X.Y.Z) release tag, so a
       # prerelease, a backport (1.2.4 after 1.3.0) or a late manual dispatch
