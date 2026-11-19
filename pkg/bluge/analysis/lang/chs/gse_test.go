@@ -21,6 +21,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-ego/gse"
 	"github.com/stretchr/testify/assert"
 	"github.com/vcaesar/riot/analysis"
 
@@ -214,4 +215,14 @@ func collectToken(tokens analysis.TokenStream) string {
 		str = append(str, string(token.Term))
 	}
 	return "[" + strings.Join(str, " ") + "]"
+}
+
+func TestLoadDict_BigFallback(t *testing.T) {
+	oldSeg, oldEmbedded := seg, bigDictEmbedded
+	seg, bigDictEmbedded = new(gse.Segmenter), false
+	t.Cleanup(func() { seg, bigDictEmbedded = oldSeg, oldEmbedded })
+
+	loadDict(true, false, "BIG")
+	got := NewGseStandardTokenizer().Tokenize([]byte("科幻片"))
+	assert.NotEqual(t, "[科幻片]", collectToken(got), "small dict is used when big is not compiled in")
 }

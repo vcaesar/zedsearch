@@ -193,3 +193,62 @@ func TestRunMissingBinary(t *testing.T) {
 	err := Run(filepath.Join(t.TempDir(), "missing"), nil)
 	require.Error(t, err)
 }
+
+func TestBuildEntry(t *testing.T) {
+	t.Run("outside checkout", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		_, err := Build()
+		require.ErrorContains(t, err, "source checkout")
+	})
+	t.Run("checkout without frontend", func(t *testing.T) {
+		root := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(root, "go.mod"), []byte("module github.com/vcaesar/zedsearch\n"), 0o600))
+		t.Chdir(root)
+		// npm ci cannot start in the missing frontend directory, so nothing is installed.
+		binary, err := Build()
+		require.ErrorContains(t, err, "npm")
+		assert.Empty(t, binary)
+	})
+}
+
+func TestBuildLockError(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs POSIX permissions as a non-root user")
+	}
+	root := t.TempDir()
+	dir := filepath.Join(root, "test")
+	require.NoError(t, os.MkdirAll(dir, 0o500))
+	t.Cleanup(func() { require.NoError(t, os.Chmod(dir, 0o755)) })
+	_, err := build(root, func(*exec.Cmd) error {
+		t.Fatal("must not run a command")
+		return nil
+	})
+	require.Error(t, err)
+}
+
+func TestBuildWindows(t *testing.T) {
+	prev := goos
+	goos = "windows"
+	t.Cleanup(func() { goos = prev })
+
+	t.Run("exe names and cmd wrapper", func(t *testing.T) {
+		root := t.TempDir()
+		var args [][]string
+		binary, err := build(root, func(cmd *exec.Cmd) error {
+			args = append(args, cmd.Args)
+			return fakeGoBuild(cmd)
+		})
+		require.NoError(t, err)
+		assert.Equal(t, filepath.Join(root, "test/zedsearch-web.exe"), binary)
+		assert.Equal(t, []string{"cmd", "/c", "npm", "ci"}, args[0])
+		assert.Equal(t, []string{"cmd", "/c", "npm", "run", "build"}, args[1])
+	})
+	t.Run("busy binary falls back to the per-process copy", func(t *testing.T) {
+		root := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(root, "test/zedsearch-web.exe/busy"), 0o755))
+		binary, err := build(root, fakeGoBuild)
+		require.NoError(t, err)
+		assert.Equal(t, fmt.Sprintf("%s-%d.exe", filepath.Join(root, "test/zedsearch-web"), os.Getpid()), binary)
+		assert.FileExists(t, binary)
+	})
+}

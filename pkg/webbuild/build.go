@@ -27,6 +27,9 @@ import (
 	"github.com/gofrs/flock"
 )
 
+// goos is a variable so tests can cover the Windows paths on any OS.
+var goos = runtime.GOOS
+
 // Build compiles the console and a self-contained web binary from a source checkout.
 func Build() (string, error) {
 	dir, err := os.Getwd()
@@ -73,7 +76,7 @@ func build(root string, run func(*exec.Cmd) error) (_ string, err error) {
 
 	output := filepath.Join(dir, "zedsearch-web")
 	temp := fmt.Sprintf("%s-%d", output, os.Getpid())
-	if runtime.GOOS == "windows" {
+	if goos == "windows" {
 		output += ".exe"
 		temp += ".exe"
 	}
@@ -93,7 +96,7 @@ func build(root string, run func(*exec.Cmd) error) (_ string, err error) {
 	}
 	if err := os.Rename(temp, output); err != nil {
 		// Windows cannot replace a binary another node is running; use this build's own copy.
-		if runtime.GOOS == "windows" {
+		if goos == "windows" {
 			return temp, nil
 		}
 		return "", err
@@ -102,7 +105,7 @@ func build(root string, run func(*exec.Cmd) error) (_ string, err error) {
 }
 
 func npmCommand(args ...string) *exec.Cmd {
-	if runtime.GOOS == "windows" {
+	if goos == "windows" {
 		return exec.Command("cmd", append([]string{"/c", "npm"}, args...)...)
 	}
 	return exec.Command("npm", args...)

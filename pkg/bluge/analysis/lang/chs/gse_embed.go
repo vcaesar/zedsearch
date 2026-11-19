@@ -20,4 +20,4 @@ package chs
 
 // bigDictEmbedded reports whether gse's built-in dictionaries are compiled in.
 // Release binaries are built with `-tags ne` (gse "no embed") to drop ~37MB.
-const bigDictEmbedded = true
+var bigDictEmbedded = true

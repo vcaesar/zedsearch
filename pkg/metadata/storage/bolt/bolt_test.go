@@ -16,9 +16,13 @@
 package bolt
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	"github.com/vcaesar/zedsearch/pkg/errors"
 )
 
 func Test_boltStorage_List(t *testing.T) {
@@ -190,4 +194,32 @@ func Test_boltStorage_Delete(t *testing.T) {
 			}
 		})
 	}
+}
+
+func Test_boltStorage_EdgeCases(t *testing.T) {
+	store := New("/zedsearch/test_edge")
+	defer store.Close()
+
+	t.Run("empty prefix lists nothing", func(t *testing.T) {
+		got, err := store.List("", 0, 0)
+		assert.NoError(t, err)
+		assert.Empty(t, got)
+	})
+	t.Run("get from missing bucket", func(t *testing.T) {
+		_, err := store.Get("/Test_boltStorage_EdgeCases_missing/foo")
+		assert.ErrorIs(t, err, errors.ErrKeyNotFound)
+	})
+	t.Run("set without bucket name", func(t *testing.T) {
+		assert.Error(t, store.Set("/foo", []byte("bar")))
+	})
+	t.Run("delete from missing bucket", func(t *testing.T) {
+		assert.NoError(t, store.Delete("/Test_boltStorage_EdgeCases_missing/foo"))
+	})
+}
+
+func Test_openbboltDB_Error(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "file")
+	assert.NoError(t, os.WriteFile(file, nil, 0o600))
+	_, err := openbboltDB(filepath.Join(file, "sub", "db.bolt"), false)
+	assert.Error(t, err)
 }
