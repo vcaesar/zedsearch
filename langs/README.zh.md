@@ -114,14 +114,16 @@ brew install vcaesar/tap/zedsearch
 
 镜像发布在 [Docker Hub](https://hub.docker.com/r/riotgo/zedsearch)，名称为 `riotgo/zedsearch`（linux/amd64、linux/arm64、linux/arm/v7）：
 
+运行前，请将环境变量 `ZED_FIRST_ADMIN_PASSWORD` 设置为所选密码：
+
 ```sh
 docker run -d --name zedsearch -p 4080:4080 \
     -v zedsearch-data:/data -e ZED_DATA_PATH=/data \
-    -e ZED_FIRST_ADMIN_USER=admin -e ZED_FIRST_ADMIN_PASSWORD={your-password} \
+    -e ZED_FIRST_ADMIN_USER=admin -e "ZED_FIRST_ADMIN_PASSWORD=${ZED_FIRST_ADMIN_PASSWORD:?Set ZED_FIRST_ADMIN_PASSWORD}" \
     riotgo/zedsearch:latest
 ```
 
-命名卷 `zedsearch-data` 可由容器用户（uid 10001）写入；如需改用宿主机目录，请先运行 `sudo chown 10001:10001 ./data`，再挂载 `-v "$PWD/data:/data"`。
+命名卷 `zedsearch-data` 可由容器用户（uid 10001）写入；如需改用宿主机目录，请先运行 `mkdir -p ./data && sudo chown 10001:10001 ./data`，再挂载 `-v "$PWD/data:/data"`。
 
 ## 构建
 

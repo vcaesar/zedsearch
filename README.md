@@ -114,14 +114,16 @@ brew install vcaesar/tap/zedsearch
 
 Images are on [Docker Hub](https://hub.docker.com/r/riotgo/zedsearch) as `riotgo/zedsearch` (linux/amd64, linux/arm64, linux/arm/v7):
 
+Set `ZED_FIRST_ADMIN_PASSWORD` in your environment to your chosen password before running:
+
 ```sh
 docker run -d --name zedsearch -p 4080:4080 \
     -v zedsearch-data:/data -e ZED_DATA_PATH=/data \
-    -e ZED_FIRST_ADMIN_USER=admin -e ZED_FIRST_ADMIN_PASSWORD={your-password} \
+    -e ZED_FIRST_ADMIN_USER=admin -e "ZED_FIRST_ADMIN_PASSWORD=${ZED_FIRST_ADMIN_PASSWORD:?Set ZED_FIRST_ADMIN_PASSWORD}" \
     riotgo/zedsearch:latest
 ```
 
-The named volume `zedsearch-data` is writable by the container user (uid 10001); to use a host directory instead, run `sudo chown 10001:10001 ./data` and mount `-v "$PWD/data:/data"`.
+The named volume `zedsearch-data` is writable by the container user (uid 10001); to use a host directory instead, run `mkdir -p ./data && sudo chown 10001:10001 ./data` and mount `-v "$PWD/data:/data"`.
 
 ## Build
 
