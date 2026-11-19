@@ -5,6 +5,12 @@ on:
     branches: [dev]
   workflow_dispatch:
 
+# Queue publishes instead of running them in parallel, so an older, slower build
+# can't push :nightly after a newer one.
+concurrency:
+  group: nightly-dev-image
+  cancel-in-progress: false
+
 permissions:
   contents: read
   packages: write

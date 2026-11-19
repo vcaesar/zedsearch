@@ -5,20 +5,6 @@ metadata:
 
 ---
 
-# First admin credentials; only used to create the admin user on first start.
-# Change the password before applying (or create the Secret out of band).
-apiVersion: v1
-kind: Secret
-metadata:
-  name: zedsearch-admin
-  namespace: zedsearch
-type: Opaque
-stringData:
-  ZED_FIRST_ADMIN_USER: admin
-  ZED_FIRST_ADMIN_PASSWORD: Complexpass#123
-
----
-
 apiVersion: v1
 kind: Service
 metadata:
@@ -69,6 +55,7 @@ spec:
       containers:
         - name: zedsearch
           image: riotgo/zedsearch:latest
+          # First admin credentials, managed outside this file: see admin-secret.yaml.
           envFrom:
             - secretRef:
                 name: zedsearch-admin

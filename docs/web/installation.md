@@ -40,9 +40,10 @@ The image's working directory is `/`, so a config file can be mounted at `/conf/
 
 ## Kubernetes - Manifest
 
-[k8s/kube-deployment.yaml](https://github.com/vcaesar/zedsearch/blob/dev/k8s/kube-deployment.yaml) creates a StatefulSet and a Service `z` in the `zedsearch` namespace. Edit `ZED_FIRST_ADMIN_PASSWORD` in it before applying.
+[k8s/kube-deployment.yaml](https://github.com/vcaesar/zedsearch/blob/dev/k8s/kube-deployment.yaml) creates a StatefulSet and a Service `z` in the `zedsearch` namespace. It reads the first admin credentials from the `zedsearch-admin` Secret: create it out of band (below) or edit `ZED_FIRST_ADMIN_PASSWORD` in [k8s/admin-secret.yaml](https://github.com/vcaesar/zedsearch/blob/dev/k8s/admin-secret.yaml) and apply that instead.
 
     kubectl create ns zedsearch
+    kubectl -n zedsearch create secret generic zedsearch-admin --from-literal=ZED_FIRST_ADMIN_USER=admin --from-literal=ZED_FIRST_ADMIN_PASSWORD='...'
     kubectl apply -f https://raw.githubusercontent.com/vcaesar/zedsearch/dev/k8s/kube-deployment.yaml
     kubectl -n zedsearch port-forward svc/z 4080:4080
 
