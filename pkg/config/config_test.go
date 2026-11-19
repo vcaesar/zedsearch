@@ -26,7 +26,9 @@ import (
 	"time"
 
 	"github.com/pelletier/go-toml/v2"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
+	"github.com/vcaesar/ice/compress"
 )
 
 // isolate clears every config env var and moves into an empty working
@@ -322,4 +324,122 @@ func TestLoadInvalidTOML(t *testing.T) {
 	t.Chdir("dir")
 	assert.NoError(t, os.MkdirAll(configFile, 0o755))
 	assert.ErrorContains(t, load(new(config)), "read config")
+}
+
+// expectFatal runs fn with zerolog's fatal exit turned into a panic and
+// reports whether log.Fatal was reached.
+func expectFatal(t *testing.T, fn func()) (fatal bool) {
+	t.Helper()
+	prev := zerolog.FatalExitFunc
+	zerolog.FatalExitFunc = func() { panic("fatal") }
+	t.Cleanup(func() { zerolog.FatalExitFunc = prev })
+	defer func() { fatal = recover() == "fatal" }()
+	fn()
+	return false
+}
+
+// keepGlobals restores the process-wide state that setup mutates.
+func keepGlobals(t *testing.T) {
+	t.Helper()
+	cfg, algo, level := *Global, compress.Algorithm, zerolog.GlobalLevel()
+	t.Cleanup(func() {
+		*Global = cfg
+		compress.Algorithm = algo
+		zerolog.SetGlobalLevel(level)
+	})
+}
+
+func TestSetup(t *testing.T) {
+	tests := []struct {
+		compressor string
+		want       int
+	}{
+		{"snappy", compress.SNAPPY},
+		{"S2", compress.S2},
+		{"zstd", compress.ZSTD},
+	}
+	for _, tt := range tests {
+		t.Run(tt.compressor, func(t *testing.T) {
+			keepGlobals(t)
+			isolate(t)
+			t.Setenv("ZED_DATA_PATH", t.TempDir())
+			t.Setenv("ZED_ICE_COMPRESSOR", tt.compressor)
+			t.Setenv("ZED_LOG_LEVEL", "info")
+			compress.Algorithm = -1
+			setup()
+			assert.Equal(t, tt.want, compress.Algorithm)
+			assert.Equal(t, zerolog.InfoLevel, zerolog.GlobalLevel())
+			assert.NoDirExists(t, filepath.Join(Global.DataPath, "_test_"))
+		})
+	}
+
+	t.Run("invalid log level", func(t *testing.T) {
+		keepGlobals(t)
+		isolate(t)
+		t.Setenv("ZED_DATA_PATH", t.TempDir())
+		t.Setenv("ZED_LOG_LEVEL", "bogus")
+		assert.False(t, expectFatal(t, setup))
+		assert.Equal(t, "bogus", Global.LogLevel)
+	})
+
+	t.Run("invalid config file", func(t *testing.T) {
+		keepGlobals(t)
+		isolate(t)
+		assert.NoError(t, os.WriteFile(configFile, []byte(`zed_server_port = [`), 0o600))
+		assert.True(t, expectFatal(t, setup))
+	})
+
+	t.Run("data path not writable", func(t *testing.T) {
+		keepGlobals(t)
+		isolate(t)
+		file := filepath.Join(t.TempDir(), "file")
+		assert.NoError(t, os.WriteFile(file, nil, 0o600))
+		t.Setenv("ZED_DATA_PATH", filepath.Join(file, "data"))
+		assert.True(t, expectFatal(t, setup))
+	})
+}
+
+func TestSetFieldInvalid(t *testing.T) {
+	var c struct {
+		Int  int
+		Uint uint64
+		Bool bool
+	}
+	rv := reflect.ValueOf(&c).Elem()
+
+	setField(rv.Field(0), "")
+	assert.Zero(t, c.Int)
+
+	tests := []struct {
+		name  string
+		field int
+		value string
+	}{
+		{"int", 0, "not-a-size"},
+		{"uint", 1, "-1"},
+		{"bool", 2, "maybe"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("ZED_TEST_SET_FIELD", tt.value)
+			assert.True(t, expectFatal(t, func() { setField(rv.Field(tt.field), "ZED_TEST_SET_FIELD") }))
+		})
+	}
+}
+
+func TestSetupDataPathNotRemovable(t *testing.T) {
+	keepGlobals(t)
+	isolate(t)
+	dir := t.TempDir()
+	assert.NoError(t, os.MkdirAll(filepath.Join(dir, "_test_", "keep"), 0o755))
+	t.Setenv("ZED_DATA_PATH", dir)
+	assert.True(t, expectFatal(t, setup))
+}
+
+func TestLoadInvalidDefaults(t *testing.T) {
+	isolate(t)
+	prev := defaultConfig
+	defaultConfig = []byte(`zed_server_port = [`)
+	t.Cleanup(func() { defaultConfig = prev })
+	assert.ErrorContains(t, load(new(config)), "decode built-in defaults")
 }
