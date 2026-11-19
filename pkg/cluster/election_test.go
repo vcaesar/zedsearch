@@ -22,6 +22,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	zerrors "github.com/vcaesar/zedsearch/pkg/errors"
 )
 
 func TestElectionSingleWinner(t *testing.T) {
@@ -257,4 +259,150 @@ func TestElectionLeadershipExpiresWithoutRenewal(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, won)
 	assert.True(t, election.IsLeader())
+}
+
+func TestElectionCampaignFailures(t *testing.T) {
+	ctx := context.Background()
+	leaderKey := "/e/leader"
+
+	t.Run("grant fails", func(t *testing.T) {
+		e := NewElection(newFaultStore(failOn(errFault, "", "Grant")), "/e/", "a", time.Minute, time.Second)
+		_, err := e.Campaign(ctx)
+		assert.ErrorIs(t, err, errFault)
+	})
+	t.Run("create and revoke fail", func(t *testing.T) {
+		store := newFaultStore(func(op, key string) error {
+			if op == "Create" || op == "Revoke" {
+				return errFault
+			}
+			return nil
+		})
+		_, err := NewElection(store, "/e/", "a", time.Minute, time.Second).Campaign(ctx)
+		assert.ErrorIs(t, err, errFault)
+	})
+	t.Run("leader vanishes between create and get", func(t *testing.T) {
+		store := newFaultStore(nil)
+		won, err := NewElection(store, "/e/", "a", time.Minute, time.Second).Campaign(ctx)
+		require.NoError(t, err)
+		require.True(t, won)
+
+		store.setRule(failOn(zerrors.ErrKeyNotFound, leaderKey, "Get"))
+		second := NewElection(store, "/e/", "b", time.Minute, time.Second)
+		won, err = second.Campaign(ctx)
+		require.NoError(t, err)
+		assert.False(t, won)
+		assert.Empty(t, second.Leader())
+	})
+	t.Run("get of the other leader fails", func(t *testing.T) {
+		store := newFaultStore(nil)
+		_, err := NewElection(store, "/e/", "a", time.Minute, time.Second).Campaign(ctx)
+		require.NoError(t, err)
+
+		store.setRule(failOn(errFault, leaderKey, "Get"))
+		_, err = NewElection(store, "/e/", "b", time.Minute, time.Second).Campaign(ctx)
+		assert.ErrorIs(t, err, errFault)
+	})
+	t.Run("renewal get fails", func(t *testing.T) {
+		store := newFaultStore(nil)
+		e := NewElection(store, "/e/", "a", time.Minute, time.Second)
+		won, err := e.Campaign(ctx)
+		require.NoError(t, err)
+		require.True(t, won)
+
+		store.setRule(failOn(errFault, leaderKey, "Get"))
+		_, err = e.Campaign(ctx)
+		assert.ErrorIs(t, err, errFault)
+	})
+}
+
+func TestElectionResignWhenNotLeading(t *testing.T) {
+	e := NewElection(NewMemoryStore(), "/e/", "a", time.Minute, time.Second)
+	assert.NoError(t, e.Resign(context.Background()))
+	assert.Equal(t, "/e/leader", e.Key())
+}
+
+func TestElectionRunLogsFailures(t *testing.T) {
+	e := NewElection(newFaultStore(failOn(errFault, "", "Grant")), "/e/", "a", time.Minute, 5*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	e.Run(ctx)
+	assert.False(t, e.IsLeader())
+}
+
+func TestNewCoordinatorDefaults(t *testing.T) {
+	c := NewCoordinator(nil, nil, nil, 0, -1, time.Second)
+	assert.Equal(t, DefaultPartitions, c.partitions)
+	assert.Zero(t, c.replicas)
+}
+
+// leaderCoordinator elects "a" on store and returns its coordinator over
+// prefix "/c/", with members "a" and "b" registered when join is set.
+func leaderCoordinator(t *testing.T, store Store, join bool) *Coordinator {
+	t.Helper()
+	ctx := context.Background()
+	election := NewElection(store, "/c/", "a", time.Minute, time.Second)
+	won, err := election.Campaign(ctx)
+	require.NoError(t, err)
+	require.True(t, won)
+	membership := NewMembership(store, "/c/", Node{ID: "a"}, time.Minute, time.Second)
+	if join {
+		require.NoError(t, membership.Join(ctx))
+		require.NoError(t, NewMembership(store, "/c/", Node{ID: "b"}, time.Minute, time.Second).Join(ctx))
+	}
+	return NewCoordinator(election, membership, NewAssigner(store, "/c/", 4), 4, 1, time.Second)
+}
+
+func TestCoordinatorRebalanceFailures(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("no members", func(t *testing.T) {
+		store := NewMemoryStore()
+		c := leaderCoordinator(t, store, false)
+		require.NoError(t, c.RebalanceOnce(ctx))
+		assignments, err := c.assigner.List(ctx)
+		require.NoError(t, err)
+		assert.Empty(t, assignments)
+	})
+
+	tests := []struct {
+		name string
+		rule faultRule
+	}{
+		{"list nodes", failOn(errFault, "/c/nodes/", "List")},
+		{"list assignments", failOn(errFault, "/c/assign/", "List")},
+		{"list replicas", failOn(errFault, "/c/replicas", "Get")},
+		{"list in-sync", failOn(errFault, "/c/insync", "Get")},
+		{"apply", failOn(errFault, "/c/assign/", "CompareAndSwap")},
+		{"set replicas", failOn(errFault, "/c/replicas", "CompareAndSwap")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newFaultStore(nil)
+			c := leaderCoordinator(t, store, true)
+			store.setRule(tt.rule)
+			assert.ErrorIs(t, c.RebalanceOnce(ctx), errFault)
+		})
+	}
+
+	t.Run("replica map changed concurrently", func(t *testing.T) {
+		store := newFaultStore(nil)
+		c := leaderCoordinator(t, store, true)
+		store.setRule(failOn(errLose, "/c/replicas", "CompareAndSwap"))
+		require.NoError(t, c.RebalanceOnce(ctx))
+		replicas, rev, err := c.assigner.ListReplicas(ctx)
+		require.NoError(t, err)
+		assert.Empty(t, replicas)
+		assert.Zero(t, rev)
+	})
+}
+
+func TestCoordinatorRunLogsFailures(t *testing.T) {
+	store := newFaultStore(nil)
+	c := leaderCoordinator(t, store, true)
+	c.interval = 5 * time.Millisecond
+	store.setRule(failOn(errFault, "/c/", "Watch", "List"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	c.Run(ctx)
 }

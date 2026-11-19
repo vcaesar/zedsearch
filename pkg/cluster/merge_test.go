@@ -544,3 +544,241 @@ func TestDecodeSearchResponseSubAggNamedLikeField(t *testing.T) {
 	assert.InDelta(t, 9.0, got.Aggregations["errors"].Aggregations["max"].Value, 0.0001)
 	assert.Equal(t, uint64(4), *got.Aggregations["errors"].DocCount)
 }
+
+func TestDecodeSearchResponseEdgeCases(t *testing.T) {
+	resp, err := DecodeSearchResponse([]byte(`{"took":3,"hits":{"total":{"value":1}}}`))
+	require.NoError(t, err)
+	assert.Equal(t, 3, resp.Took)
+	assert.Nil(t, resp.Aggregations)
+
+	resp, err = DecodeSearchResponse([]byte(`{"aggregations":{"bad":1,"ok":{"value":2}}}`))
+	require.NoError(t, err)
+	require.Len(t, resp.Aggregations, 1, "a non-object aggregation is skipped")
+	assert.InDelta(t, 2, resp.Aggregations["ok"].Value, 0)
+}
+
+func TestAggGenericConversionFailures(t *testing.T) {
+	assert.Empty(t, aggToGeneric(meta.AggregationResponse{Value: make(chan int)}))
+	assert.Equal(t, meta.AggregationResponse{}, aggFromGeneric(map[string]interface{}{"value": make(chan int)}))
+	assert.Equal(t, meta.AggregationResponse{}, aggFromGeneric(map[string]interface{}{"count": "many"}))
+}
+
+func TestMergeSearchWithoutQuery(t *testing.T) {
+	left := response(1, 1, 1, hit("a", "a1", 1, nil))
+	left.Aggregations = map[string]meta.AggregationResponse{"hist": bucketAgg(bucket("2", 1))}
+	right := response(1, 2, 1, hit("b", "b1", 2, nil))
+	right.Aggregations = map[string]meta.AggregationResponse{"hist": bucketAgg(bucket("1", 1))}
+
+	got := MergeSearch([]*meta.SearchResponse{left, right}, nil)
+	assert.Equal(t, []string{"b1", "a1"}, hitIDs(got.Hits.Hits), "no query keeps every hit")
+	buckets := got.Aggregations["hist"].Buckets.([]interface{})
+	require.Len(t, buckets, 2)
+	assert.Equal(t, "1", buckets[0].(map[string]interface{})["key"], "numeric keys sort ascending")
+}
+
+func TestMergeAggByShape(t *testing.T) {
+	single := mergeAgg(
+		map[string]interface{}{"doc_count": float64(2)},
+		map[string]interface{}{"doc_count": float64(3)},
+		meta.Aggregations{}, "f", 2, 3)
+	assert.InDelta(t, 5, single["doc_count"], 0)
+
+	avg := mergeAgg(
+		map[string]interface{}{"value": nil},
+		map[string]interface{}{"value": nil},
+		meta.Aggregations{Avg: &meta.AggregationMetric{}}, "a", 0, 0)
+	assert.InDelta(t, 0, avg["value"], 0, "an average over no documents is 0")
+
+	_, ok := partial(map[string]interface{}{PartialAggName: map[string]interface{}{"count": 1}})
+	assert.False(t, ok, "a partial without sum is ignored")
+}
+
+func TestMergeSubAggsCopiesMissing(t *testing.T) {
+	dst := map[string]interface{}{"doc_count": float64(1)}
+	src := map[string]interface{}{"doc_count": float64(1), "inner": map[string]interface{}{"value": float64(4)}}
+	mergeSubAggs(dst, src, nil, 1, 1)
+	assert.Equal(t, src["inner"], dst["inner"])
+}
+
+func TestMergeBucketsForms(t *testing.T) {
+	list := []interface{}{bucket("a", 1)}
+	assert.Equal(t, list, mergeBuckets(list, "bogus", meta.Aggregations{}), "mismatched forms keep dst")
+
+	keyed := map[string]interface{}{"low": map[string]interface{}{"doc_count": float64(1)}}
+	assert.Equal(t, keyed, mergeBuckets(keyed, "bogus", meta.Aggregations{}))
+
+	merged := mergeBuckets(
+		map[string]interface{}{"low": map[string]interface{}{"doc_count": float64(1)}},
+		map[string]interface{}{
+			"low":  map[string]interface{}{"doc_count": float64(2)},
+			"high": map[string]interface{}{"doc_count": float64(3)},
+			"junk": 1,
+		}, meta.Aggregations{}).(map[string]interface{})
+	assert.InDelta(t, 3, merged["low"].(map[string]interface{})["doc_count"], 0)
+	assert.InDelta(t, 3, merged["high"].(map[string]interface{})["doc_count"], 0)
+	assert.NotContains(t, merged, "junk")
+
+	assert.Equal(t, list, mergeBuckets(nil, list, meta.Aggregations{}))
+	assert.Equal(t, "kept", mergeBuckets("kept", list, meta.Aggregations{}))
+}
+
+func TestMergeBucketListSkipsJunk(t *testing.T) {
+	out := mergeBucketList(
+		[]interface{}{"junk", bucket("x", 1)},
+		[]interface{}{1, bucket("y", 3)},
+		meta.Aggregations{})
+	require.Len(t, out, 2)
+	assert.Equal(t, "y", out[0].(map[string]interface{})["key"], "string keys sort by doc_count")
+}
+
+func TestMergeBucketListMultiTerms(t *testing.T) {
+	def := meta.Aggregations{MultiTerms: &meta.AggregationMultiTerms{Size: 1, Order: map[string]string{"_key": "asc"}}}
+	out := mergeBucketList([]interface{}{bucket("b", 5)}, []interface{}{bucket("a", 1)}, def)
+	require.Len(t, out, 1)
+	assert.Equal(t, "a", out[0].(map[string]interface{})["key"])
+}
+
+func TestSortTermsBySubAggregation(t *testing.T) {
+	withSub := func(key string, value float64) map[string]interface{} {
+		b := bucket(key, 1)
+		b["stats"] = map[string]interface{}{"max": value, "value": value}
+		return b
+	}
+	buckets := []interface{}{withSub("a", 1), withSub("b", 3), withSub("c", 3)}
+
+	sortTerms(buckets, map[string]string{"stats.max": "desc"})
+	assert.Equal(t, "b", buckets[0].(map[string]interface{})["key"], "ties are broken by key")
+	assert.Equal(t, "c", buckets[1].(map[string]interface{})["key"])
+
+	sortTerms(buckets, map[string]string{"stats": "asc"})
+	assert.Equal(t, "a", buckets[0].(map[string]interface{})["key"])
+}
+
+func TestMergeBucketSubAggs(t *testing.T) {
+	dst := map[string]interface{}{"key": "k", "doc_count": float64(1), "flag": true}
+	src := map[string]interface{}{
+		"key": "k", "doc_count": float64(2), "flag": false,
+		"total": map[string]interface{}{"value": float64(1)},
+	}
+	mergeBucket(dst, src, nil)
+	assert.InDelta(t, 3, dst["doc_count"], 0)
+	assert.Equal(t, true, dst["flag"], "scalar fields are not merged")
+	assert.Equal(t, src["total"], dst["total"])
+}
+
+func TestBucketKey(t *testing.T) {
+	assert.Equal(t, "1.5", bucketKey(map[string]interface{}{"key": 1.5}))
+	assert.Equal(t, "2024", bucketKey(map[string]interface{}{"key_as_string": "2024"}))
+	assert.Empty(t, bucketKey(map[string]interface{}{}))
+}
+
+func TestSortBuckets(t *testing.T) {
+	mixed := []interface{}{bucket("a", 1), "junk"}
+	sortBuckets(mixed)
+	assert.Equal(t, "junk", mixed[1], "a list with junk is left alone")
+
+	byCount := []interface{}{bucket("b", 1), bucket("a", 1), bucket("c", 2)}
+	sortBuckets(byCount)
+	keys := []string{}
+	for _, b := range byCount {
+		keys = append(keys, bucketKey(b.(map[string]interface{})))
+	}
+	assert.Equal(t, []string{"c", "a", "b"}, keys)
+}
+
+func TestSortHitsEdgeCases(t *testing.T) {
+	hits := []meta.Hit{
+		hit("i", "c", 0, map[string]interface{}{}),
+		hit("i", "b", 0, map[string]interface{}{}),
+		hit("i", "e", 0, map[string]interface{}{"n": float64(1)}),
+		hit("i", "d", 0, map[string]interface{}{"n": float64(1)}),
+	}
+	sortHits(hits, &meta.ZedQuery{Sort: "n"})
+	assert.Equal(t, []string{"d", "e", "b", "c"}, hitIDs(hits), "ties and missing values order by id")
+}
+
+func TestSortField(t *testing.T) {
+	_, _, ok := sortField(&meta.ZedQuery{Sort: "_score"})
+	assert.False(t, ok)
+	_, _, ok = sortField(&meta.ZedQuery{Sort: 42})
+	assert.False(t, ok)
+}
+
+func TestParseSort(t *testing.T) {
+	tests := []struct {
+		name      string
+		value     interface{}
+		wantField string
+		wantDesc  bool
+		wantOK    bool
+	}{
+		{"minus", "-year", "year", true, true},
+		{"plus", "+year", "year", false, true},
+		{"empty list", []interface{}{}, "", false, false},
+		{"string list", []string{"-year"}, "year", true, true},
+		{"empty string list", []string{}, "", false, false},
+		{"empty map", map[string]interface{}{}, "", false, false},
+		{"order object", map[string]interface{}{"year": map[string]interface{}{"order": "DESC"}}, "year", true, true},
+		{"order object without order", map[string]interface{}{"year": map[string]interface{}{}}, "year", false, true},
+		{"unknown order type", map[string]interface{}{"year": 1}, "year", false, true},
+		{"unknown", 42, "", false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			field, desc, ok := parseSort(tt.value)
+			assert.Equal(t, tt.wantField, field)
+			assert.Equal(t, tt.wantDesc, desc)
+			assert.Equal(t, tt.wantOK, ok)
+		})
+	}
+}
+
+func TestHitValue(t *testing.T) {
+	withFields := meta.Hit{Fields: map[string]interface{}{"list": []interface{}{"x", "y"}, "empty": []interface{}{}, "one": "z"}}
+	value, ok := hitValue(withFields, "list")
+	assert.True(t, ok)
+	assert.Equal(t, "x", value)
+	_, ok = hitValue(withFields, "empty")
+	assert.False(t, ok)
+	value, ok = hitValue(withFields, "one")
+	assert.True(t, ok)
+	assert.Equal(t, "z", value)
+	_, ok = hitValue(meta.Hit{Source: "raw"}, "one")
+	assert.False(t, ok)
+}
+
+func TestToFloat(t *testing.T) {
+	when := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
+	tests := []struct {
+		name   string
+		value  interface{}
+		want   float64
+		wantOK bool
+	}{
+		{"float32", float32(1.5), 1.5, true},
+		{"int", 2, 2, true},
+		{"int64", int64(3), 3, true},
+		{"uint64", uint64(4), 4, true},
+		{"numeric string", "5.5", 5.5, true},
+		{"rfc3339 string", when.Format(time.RFC3339), float64(when.UnixNano()), true},
+		{"bad string", "nope", 0, false},
+		{"time", when, float64(when.UnixNano()), true},
+		{"bool", true, 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := toFloat(tt.value)
+			assert.Equal(t, tt.wantOK, ok)
+			assert.InDelta(t, tt.want, got, 0)
+		})
+	}
+	assert.Zero(t, compareValues(1, 1.0))
+}
+
+func TestStringify(t *testing.T) {
+	assert.Equal(t, "x", stringify("x"))
+	assert.Empty(t, stringify(nil))
+	assert.Equal(t, "1.25", stringify(1.25))
+	assert.Equal(t, `{"a":1}`, stringify(map[string]int{"a": 1}))
+	assert.Empty(t, stringify(make(chan int)))
+}

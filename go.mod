@@ -31,7 +31,7 @@ require (
 	github.com/vcaesar/bluge_segment_api v1.2.2
 	github.com/vcaesar/ice v1.6.1
 	github.com/vcaesar/query_string v0.6.0
-	github.com/vcaesar/riot v1.80.0
+	github.com/vcaesar/riot v1.80.1
 	github.com/zedsearch/mmap-go v1.3.0
 	github.com/zedsearch/wal v1.3.0
 	go.etcd.io/bbolt v1.5.0
@@ -45,6 +45,7 @@ require (
 	golang.org/x/net v0.62.0
 	golang.org/x/sync v0.25.0
 	golang.org/x/text v0.44.0
+	google.golang.org/grpc v1.85.0
 	vitess.io/vitess v0.24.5
 )
 
@@ -155,7 +156,6 @@ require (
 	golang.org/x/tools v0.52.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20261026165753-2ffab32bce7e // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20261026165753-2ffab32bce7e // indirect
-	google.golang.org/grpc v1.85.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 	gopkg.in/ini.v1 v1.67.3 // indirect
 )

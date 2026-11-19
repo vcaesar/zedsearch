@@ -319,3 +319,16 @@ func TestClusterReplicasDisabled(t *testing.T) {
 	assert.Nil(t, Replicas("anything"))
 	assert.False(t, IsLocalReplica("anything"))
 }
+
+func TestListReplicasFailures(t *testing.T) {
+	ctx := context.Background()
+	_, _, err := NewAssigner(newFaultStore(failOn(errFault, "/test/replicas", "Get")), "/test/", 8).ListReplicas(ctx)
+	assert.ErrorIs(t, err, errFault)
+
+	store := NewMemoryStore()
+	assigner := NewAssigner(store, "/test/", 8)
+	_, err = store.Put(ctx, assigner.ReplicasKey(), []byte("{"), NoLease)
+	require.NoError(t, err)
+	_, _, err = assigner.ListReplicas(ctx)
+	assert.Error(t, err)
+}

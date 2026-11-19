@@ -22,6 +22,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/vcaesar/zedsearch/pkg/config"
 )
 
 func TestPartitionOfN(t *testing.T) {
@@ -246,4 +248,37 @@ func countOwners(final map[int]string) map[string]int {
 		counts[owner]++
 	}
 	return counts
+}
+
+func TestAssignerDefaultsAndBadRecords(t *testing.T) {
+	previous := config.Global.Cluster.Partitions
+	t.Cleanup(func() { config.Global.Cluster.Partitions = previous })
+	config.Global.Cluster.Partitions = 0
+	assert.Equal(t, DefaultPartitions, partitionCount())
+
+	ctx := context.Background()
+	store := NewMemoryStore()
+	assigner := NewAssigner(store, "/test/", 0)
+	assert.Equal(t, DefaultPartitions, assigner.partitions)
+
+	_, err := store.Put(ctx, assigner.AssignPrefix()+"x", []byte(`{"owner":"a"}`), NoLease)
+	require.NoError(t, err)
+	_, err = store.Put(ctx, assigner.AssignPrefix()+"1", []byte("{"), NoLease)
+	require.NoError(t, err)
+	_, err = store.Put(ctx, assigner.AssignPrefix()+"2", []byte(`{"owner":"a"}`), NoLease)
+	require.NoError(t, err)
+
+	assignments, err := assigner.List(ctx)
+	require.NoError(t, err)
+	require.Len(t, assignments, 1, "bad keys and values are skipped")
+	assert.Equal(t, "a", assignments[2].Owner)
+}
+
+func TestAssignerFailures(t *testing.T) {
+	ctx := context.Background()
+	assigner := NewAssigner(newFaultStore(failOn(errFault, "/test/assign/", "List", "CompareAndSwap")), "/test/", 4)
+
+	_, err := assigner.List(ctx)
+	assert.ErrorIs(t, err, errFault)
+	assert.ErrorIs(t, assigner.Apply(ctx, nil, map[int]string{1: "a"}), errFault)
 }
