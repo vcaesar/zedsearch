@@ -12,7 +12,7 @@ header() {
 ZedSearch Installer
 
 Website: https://github.com/vcaesar/zedsearch
-Docs: https://zincsearch-docs.zinc.dev
+Docs: https://github.com/zedsearch/zedsearch-docs
 Repo: https://github.com/vcaesar/zedsearch
 
 EOF

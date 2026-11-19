@@ -54,11 +54,12 @@ export function axisTicks(from: number, to: number, count: number): { time: numb
   }
 }
 export default function Histogram({ histogram, interval }: { histogram: NonNullable<SearchResponse['aggregations']>['histogram']; interval: string }) {
-  const [zoom, setZoom] = useState(1);
+  const [zoomLevel, setZoom] = useState(1);
   const chart = useRef<SVGSVGElement>(null);
   const [exportError, setExportError] = useState('');
   const { chart: showChart, chartExport } = useSettings();
   const buckets = histogram?.buckets || [];
+  const zoom = buckets.length ? zoomLevel : 1;
   const maximum = Math.max(1, ...buckets.map(bucket => Number(bucket.doc_count)));
   const label = (key: string | number) => bucketLabel(key, histogram?.interval || interval);
   const width = 800 * zoom, margin = 30, plot = width - 2 * margin;
@@ -80,7 +81,7 @@ export default function Histogram({ histogram, interval }: { histogram: NonNulla
         blob = new Blob([csv], { type: 'text/csv' });
       } else {
         const svg = chart.current!.cloneNode(true) as SVGSVGElement;
-        svg.setAttribute('width', String(800 * zoom));
+        svg.setAttribute('width', String(width));
         svg.setAttribute('height', '170');
         svg.removeAttribute('style');
         blob = new Blob([new XMLSerializer().serializeToString(svg)], { type: 'image/svg+xml' });
@@ -91,7 +92,7 @@ export default function Histogram({ histogram, interval }: { histogram: NonNulla
             image.src = url;
             await image.decode();
             const canvas = document.createElement('canvas');
-            canvas.width = 800 * zoom;
+            canvas.width = width;
             canvas.height = 170;
             const context = canvas.getContext('2d');
             if (!context) throw new Error('Canvas unavailable');

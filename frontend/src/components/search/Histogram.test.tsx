@@ -58,6 +58,16 @@ describe('Histogram', () => {
     expect(screen.getByRole('img', { name: 'Document counts over time' })).toHaveTextContent('No data available');
     expect(screen.getByLabelText('Zoom in histogram')).toBeDisabled();
   });
+  it('shows empty results unzoomed and restores the zoom for data', () => {
+    const { rerender } = render(<Histogram histogram={histogram} interval="1s" />);
+    fireEvent.click(screen.getByLabelText('Zoom in histogram'));
+    fireEvent.click(screen.getByLabelText('Zoom in histogram'));
+    rerender(<Histogram histogram={{ buckets: [] }} interval="1s" />);
+    expect(screen.getByRole('img')).toHaveStyle({ width: '100%' });
+    expect(screen.getByText('No data available')).toHaveAttribute('x', '400');
+    rerender(<Histogram histogram={histogram} interval="1s" />);
+    expect(screen.getByRole('img')).toHaveStyle({ width: '400%' });
+  });
   it('toggles the chart and remembers the choice', () => {
     const { unmount } = render(<Histogram histogram={histogram} interval="1s" />);
     expect(screen.getByRole('img')).toBeInTheDocument();
