@@ -1,4 +1,4 @@
-/* Copyright 2026 AtomAI
+/* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -11,7 +11,14 @@
 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 * See the License for the specific language governing permissions and
 * limitations under the License.
- */
+*
+Part of this work fall under the AtomAI Enterprise Edition (EE)
+and are licensed under the Business Source License 1.1,
+if you are the Cloud companies or your companies with revenue greater than $1M,
+please refer to [AGPL-3.0](./LICENSE-EE)) and LICENSE-EE for details,
+or production use of the Licensed Work requires a commercial license agreement with Zedsearch.
+Contact info@atomai.cc for licensing.
+*/
 
 package index
 
@@ -95,6 +102,10 @@ func Reindex(c zhttp.Context) {
 		zutils.RenderJSON(c, http.StatusBadRequest, meta.HTTPResponseError{Error: "index " + req.Source.Index + " does not exists"})
 		return
 	}
+	if !source.GetMappings().SourceEnabled() {
+		zutils.RenderJSON(c, http.StatusBadRequest, meta.HTTPResponseError{Error: "index " + req.Source.Index + " has _source disabled, it cannot be reindexed"})
+		return
+	}
 	dest, _, err := core.GetOrCreateIndex(req.Dest.Index, "", 0)
 	if err != nil {
 		zutils.RenderJSON(c, http.StatusBadRequest, meta.HTTPResponseError{Error: err.Error()})
@@ -136,8 +147,11 @@ func Reindex(c zhttp.Context) {
 				failures = append(failures, hit.ID)
 				continue
 			}
-			// _source carries @timestamp as time.Time, the write path wants a parsable value
-			doc[meta.TimeFieldName] = hit.Timestamp.Format(time.RFC3339Nano)
+			// _source carries @timestamp as time.Time, the write path wants a parsable value;
+			// a document indexed without one (zed_auto_timestamp off) has none to carry
+			if !hit.Timestamp.IsZero() {
+				doc[meta.TimeFieldName] = hit.Timestamp.Format(time.RFC3339Nano)
+			}
 			if err := dest.CreateDocument(hit.ID, doc, true); err != nil {
 				log.Error().Err(err).Msgf("handlers.index.Reindex: index [%s] doc [%s]", dest.GetName(), hit.ID)
 				failures = append(failures, hit.ID)

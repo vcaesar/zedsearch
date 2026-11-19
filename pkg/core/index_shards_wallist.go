@@ -1,4 +1,5 @@
 /* Copyright 2022 Zinc Labs Inc. and Contributors
+* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -11,7 +12,14 @@
 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 * See the License for the specific language governing permissions and
 * limitations under the License.
- */
+*
+Part of this work fall under the AtomAI Enterprise Edition (EE)
+and are licensed under the Business Source License 1.1,
+if you are the Cloud companies or your companies with revenue greater than $1M,
+please refer to [AGPL-3.0](./LICENSE-EE)) and LICENSE-EE for details,
+and production use of the Licensed Work requires a commercial license agreement with Zedsearch.
+Contact info@atomai.cc for licensing.
+*/
 
 package core
 
@@ -32,6 +40,7 @@ var ZED_INDEX_SHARD_WAL_LIST IndexShardWALList
 type IndexShardWALList struct {
 	Shards map[string]*IndexShard
 	lock   sync.RWMutex
+	cycle  sync.Mutex // a removal waits for workers using an earlier snapshot
 }
 
 func init() {
@@ -45,16 +54,16 @@ func (t *IndexShardWALList) Add(shard *IndexShard) {
 	t.lock.Unlock()
 }
 
+// Remove waits for any consumer pass using the shard, including its metadata update.
 func (t *IndexShardWALList) Remove(name string) {
-	t.lock.Lock()
-	delete(t.Shards, name)
-	t.lock.Unlock()
+	t.remove(name, nil)
 }
 
-// removeClosed drops name unless its shard was opened again.
-func (t *IndexShardWALList) removeClosed(name string) {
+func (t *IndexShardWALList) remove(name string, expected *IndexShard) {
+	t.cycle.Lock()
+	defer t.cycle.Unlock()
 	t.lock.Lock()
-	if shard, ok := t.Shards[name]; ok && atomic.LoadUint64(&shard.open) == 0 {
+	if expected == nil || t.Shards[name] == expected {
 		delete(t.Shards, name)
 	}
 	t.lock.Unlock()
@@ -83,23 +92,14 @@ func (t *IndexShardWALList) ConsumeWAL() {
 	eg.SetLimit(config.Global.Shard.GoroutineNum)
 	tick := time.NewTicker(config.Global.WalSyncInterval)
 	for range tick.C {
-		shardClosed := make(chan string, t.Len())
-		indexUpdated := make(chan string, t.Len())
-		for _, shard := range t.List() {
+		t.cycle.Lock()
+		// Size the result channel from the same snapshot that starts the workers.
+		shards := t.List()
+		indexUpdated := make(chan string, len(shards))
+		for _, shard := range shards {
 			shard := shard
 			indexes[shard.GetIndexName()] = shard.root
 			eg.Go(func() error {
-				if atomic.LoadUint64(&shard.open) == 0 {
-					shardClosed <- shard.GetShardName()
-					return nil
-				}
-				select {
-				case <-shard.close:
-					shardClosed <- shard.GetShardName()
-					return nil
-				default:
-					// continue
-				}
 				updated := shard.ConsumeWAL()
 				if updated {
 					indexUpdated <- shard.GetIndexName()
@@ -108,16 +108,12 @@ func (t *IndexShardWALList) ConsumeWAL() {
 			})
 		}
 		_ = eg.Wait()
-		close(shardClosed)
 		close(indexUpdated)
 
-		// check shard closed; a shard reopened meanwhile stays
-		for name := range shardClosed {
-			t.removeClosed(name)
-		}
-
 		// update index stats
+		updated := false
 		for name := range indexUpdated {
+			updated = true
 			index, ok := indexes[name]
 			if !ok {
 				continue
@@ -137,7 +133,12 @@ func (t *IndexShardWALList) ConsumeWAL() {
 			delete(indexes, name)
 		}
 
-		// force gc
-		runtime.GC()
+		t.cycle.Unlock()
+
+		// release the batch memory, but not on idle ticks: a forced GC every
+		// WalSyncInterval stalls searches for nothing
+		if updated {
+			runtime.GC()
+		}
 	}
 }

@@ -1,5 +1,5 @@
 /* Copyright 2022 Zinc Labs Inc. and Contributors
-* Copyright 2026 AtomAI
+* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -12,7 +12,14 @@
 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 * See the License for the specific language governing permissions and
 * limitations under the License.
- */
+*
+Part of this work fall under the AtomAI Enterprise Edition (EE)
+and are licensed under the Business Source License 1.1,
+if you are the Cloud companies or your companies with revenue greater than $1M,
+please refer to [AGPL-3.0](./LICENSE-EE)) and LICENSE-EE for details,
+and production use of the Licensed Work requires a commercial license agreement with Zedsearch.
+Contact info@atomai.cc for licensing.
+*/
 
 package core
 
@@ -24,6 +31,8 @@ import (
 	"time"
 
 	"github.com/vcaesar/riot"
+	"github.com/vcaesar/riot/analysis"
+
 	"github.com/vcaesar/zedsearch/pkg/config"
 	"github.com/vcaesar/zedsearch/pkg/logs"
 	"github.com/vcaesar/zedsearch/pkg/meta"
@@ -46,10 +55,14 @@ func (s *IndexShard) BuildBlugeDocumentFromJSON(docID string, doc map[string]int
 
 	// Create a new bluge document
 	bdoc := riot.NewDocument(docID)
+	var vectorFields []string
 	// Iterate through each field and add it to the bluge document
 	for key, value := range doc {
 		if value == nil || key == meta.TimeFieldName || key == meta.SourceFieldName {
 			continue
+		}
+		if key == meta.SourceVectorsField {
+			continue // reserved: a stored value would be read as the list of excluded vectors
 		}
 
 		prop, ok := mappings.GetProperty(key)
@@ -65,6 +78,7 @@ func (s *IndexShard) BuildBlugeDocumentFromJSON(docID string, doc map[string]int
 			if err := s.buildField(mappings, bdoc, key, value); err != nil {
 				return nil, err
 			}
+			vectorFields = append(vectorFields, key)
 			continue // whole array is one value
 		}
 
@@ -82,9 +96,10 @@ func (s *IndexShard) BuildBlugeDocumentFromJSON(docID string, doc map[string]int
 		}
 	}
 
-	// set timestamp
+	// set timestamp, CheckDocument leaves it out without zed_auto_timestamp
 	timestamp := time.Now()
-	if value, ok := doc[meta.TimeFieldName]; ok {
+	value, hasTimestamp := doc[meta.TimeFieldName]
+	if hasTimestamp {
 		delete(doc, meta.TimeFieldName)
 		switch value := value.(type) {
 		case string:
@@ -98,21 +113,35 @@ func (s *IndexShard) BuildBlugeDocumentFromJSON(docID string, doc map[string]int
 		default:
 			return nil, fmt.Errorf("invalid WAL timestamp type %T", value)
 		}
+		bdoc.AddField(riot.NewDateTimeField(meta.TimeFieldName, timestamp).StoreValue().Sortable().Aggregatable())
 	}
-	bdoc.AddField(riot.NewDateTimeField(meta.TimeFieldName, timestamp).StoreValue().Sortable().Aggregatable())
 
 	// set source
-	var sourceByteVal []byte
-	if v, ok := doc[meta.SourceFieldName]; ok && v != nil {
-		sourceByteVal, _ = json.Marshal(v)
-	} else {
-		delete(doc, meta.SourceFieldName)
-		sourceByteVal, _ = json.Marshal(doc)
+	if mappings.SourceEnabled() {
+		var source interface{} = doc
+		if v, ok := doc[meta.SourceFieldName]; ok && v != nil {
+			source = v
+		} else {
+			delete(doc, meta.SourceFieldName)
+		}
+		if m, ok := source.(map[string]interface{}); ok && len(vectorFields) > 0 && s.root.ExcludeSourceVectors() {
+			stripped, excluded, err := meta.ExcludeSourceVectors(m, vectorFields)
+			if err != nil {
+				return nil, err
+			}
+			if excluded != nil {
+				source = stripped
+				bdoc.AddField(riot.NewStoredOnlyField(meta.SourceVectorsField, excluded))
+			}
+		}
+		sourceByteVal, _ := json.Marshal(source)
+		bdoc.AddField(riot.NewStoredOnlyField("_source", sourceByteVal))
 	}
-	bdoc.AddField(riot.NewStoredOnlyField("_source", sourceByteVal))
 
 	bdoc.AddField(riot.NewStoredOnlyField("_index", []byte(s.GetIndexName())))
-	bdoc.AddField(riot.NewCompositeFieldExcluding("_all", []string{"_id", "_index", "_source", meta.TimeFieldName}))
+	if mappings.AllEnabled() {
+		bdoc.AddField(newAllField())
+	}
 
 	// Add time for index
 	bdoc.SetTimestamp(timestamp.UnixNano())
@@ -121,6 +150,39 @@ func (s *IndexShard) BuildBlugeDocumentFromJSON(docID string, doc map[string]int
 
 	return bdoc, nil
 }
+
+// newAllField returns the _all field that queries without a field search.
+// Unless zed_all_field_positions is set, it keeps only terms and frequencies.
+func newAllField() riot.Field {
+	all := riot.NewCompositeFieldExcluding("_all", []string{"_id", "_index", "_source", meta.TimeFieldName})
+	if config.Global.AllFieldPositions {
+		return all
+	}
+	return termsOnlyField{all}
+}
+
+// termsOnlyField is a composite field that drops the term locations of the
+// fields it consumes.
+type termsOnlyField struct{ *riot.CompositeField }
+
+func (f termsOnlyField) Consume(field riot.Field) {
+	tfs := field.AnalyzedTokenFrequencies()
+	terms := make(analysis.TokenFrequencies, len(tfs))
+	for k, tf := range tfs {
+		term := *tf
+		term.Locations = nil
+		terms[k] = &term
+	}
+	f.CompositeField.Consume(withFrequencies{field, terms})
+}
+
+// withFrequencies is field with its token frequencies replaced.
+type withFrequencies struct {
+	riot.Field
+	tfs analysis.TokenFrequencies
+}
+
+func (f withFrequencies) AnalyzedTokenFrequencies() analysis.TokenFrequencies { return f.tfs }
 
 func (s *IndexShard) buildField(mappings *meta.Mappings, bdoc *riot.Document, key string, value interface{}) error {
 	var field *riot.TermField
@@ -144,6 +206,10 @@ func (s *IndexShard) buildField(mappings *meta.Mappings, bdoc *riot.Document, ke
 			return nil
 		}
 		field = riot.NewKeywordField(key, v)
+		if prop.Highlightable {
+			// matches are reported by term location, a keyword has none without positions
+			field.SearchTermPositions()
+		}
 	case "bool":
 		field = riot.NewKeywordField(key, strconv.FormatBool(value.(bool)))
 	case "geo_point":
@@ -169,11 +235,9 @@ func (s *IndexShard) buildField(mappings *meta.Mappings, bdoc *riot.Document, ke
 		}
 		field = riot.NewDateTimeField(key, v)
 	}
+	// highlighting analyzes the stored value again, so no field keeps offsets
 	if prop.Store || prop.Highlightable {
 		field.StoreValue()
-	}
-	if prop.Highlightable {
-		field.HighlightMatches()
 	}
 	if prop.Sortable {
 		field.Sortable()
@@ -282,7 +346,10 @@ func (s *IndexShard) CheckDocument(docID string, doc map[string]interface{}, upd
 	flatDoc[meta.ActionFieldName] = action
 	flatDoc[meta.IDFieldName] = docID
 	flatDoc[meta.ShardFieldName] = shard
-	flatDoc[meta.TimeFieldName] = timestamp.UnixNano()
+	_, hasTimestamp := flatDoc[meta.TimeFieldName]
+	if hasTimestamp || isLogs || config.Global.AutoTimestamp {
+		flatDoc[meta.TimeFieldName] = timestamp.UnixNano()
+	}
 	if isLogs {
 		// Preserve event-time precision across JSON WAL decoding to float64.
 		flatDoc[meta.TimeFieldName] = timestamp.Format(time.RFC3339Nano)
@@ -296,13 +363,19 @@ func (s *IndexShard) CheckDocument(docID string, doc map[string]interface{}, upd
 func (s *IndexShard) checkProperty(mappings *meta.Mappings, key string, value interface{}) bool {
 	prop, ok := mappings.GetProperty(key)
 	if ok {
-		if config.Global.EnableTextKeywordMapping && prop.Type == "text" {
-			if _, ok := mappings.GetProperty(key + ".keyword"); ok {
-				return false
-			}
-		} else {
+		if !config.Global.EnableTextKeywordMapping || prop.Type != "text" {
 			return false
 		}
+		if _, ok := mappings.GetProperty(key + ".keyword"); ok {
+			return false
+		}
+		// add the sub-field and keep the mapped options, such as highlightable or analyzer
+		prop = prop.DeepClone()
+		p := meta.NewProperty("keyword")
+		prop.AddField("keyword", p)
+		mappings.SetProperty(key+".keyword", p)
+		mappings.SetProperty(key, prop)
+		return true
 	}
 
 	// try to find the type of the value and use it to define default mapping

@@ -1,4 +1,4 @@
-/* Copyright 2026 AtomAI
+/* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -18,7 +18,10 @@ package core
 import (
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,6 +31,7 @@ import (
 	"github.com/vcaesar/zedsearch/pkg/config"
 	"github.com/vcaesar/zedsearch/pkg/meta"
 	"github.com/vcaesar/zedsearch/pkg/metadata"
+	"github.com/vcaesar/zedsearch/pkg/wal"
 	"github.com/vcaesar/zedsearch/pkg/zutils/json"
 )
 
@@ -207,6 +211,121 @@ func TestFlushAndLoadIndex(t *testing.T) {
 
 	_, err = LoadIndex("TestFlushAndLoadIndex.missing")
 	assert.Error(t, err)
+}
+
+// Refresh returns once the documents written before it are searchable,
+// and leaves the writers and the WAL open.
+func TestIndexRefresh(t *testing.T) {
+	name := "TestIndexRefresh.index_1"
+	index, err := NewIndex(name, StorageTypeDisk, 2)
+	require.NoError(t, err)
+	require.NoError(t, StoreIndex(index))
+	t.Cleanup(func() { _ = DeleteIndex(name) })
+
+	t.Run("nothing written", func(t *testing.T) {
+		// no WAL is open, nothing to wait for
+		require.NoError(t, index.Refresh())
+	})
+	t.Run("pending writes", func(t *testing.T) {
+		const docs = 300
+		for i := range docs {
+			require.NoError(t, index.CreateDocument(strconv.Itoa(i), map[string]interface{}{"name": "refreshed"}, false))
+		}
+		require.NoError(t, index.Refresh())
+		n, err := countDocs(index)
+		require.NoError(t, err)
+		assert.Equal(t, uint64(docs), n, "documents are searchable when Refresh returns")
+		for _, shard := range index.shards {
+			assert.Equal(t, uint64(1), atomic.LoadUint64(&shard.open), "Refresh closed shard %s", shard.GetID())
+		}
+	})
+	t.Run("entries left in a closed WAL", func(t *testing.T) {
+		// a restart leaves the WAL closed until the next write
+		require.NoError(t, index.Close())
+		shard := anyShard(index)
+		require.Equal(t, uint64(0), atomic.LoadUint64(&shard.open))
+		entry, err := idempotentEntry([]byte(`{"@_id":"restart","@_action":"insert","name":"pending"}`))
+		require.NoError(t, err)
+		w, err := wal.Open(shard.GetShardName())
+		require.NoError(t, err)
+		require.NoError(t, w.Write(entry))
+		require.NoError(t, w.Close())
+
+		before, err := countDocs(index)
+		require.NoError(t, err)
+		require.NoError(t, index.Refresh())
+		n, err := countDocs(index)
+		require.NoError(t, err)
+		assert.Equal(t, before+1, n, "Refresh applies entries persisted before the restart")
+	})
+}
+
+// Rollback opens a writer to undo an interrupted batch. A failure rebuilding
+// that batch must leave both the WAL and the writer available for a retry.
+func TestIndexRefreshRetriesWALRecovery(t *testing.T) {
+	name := t.Name() + ".index_1"
+	index, err := NewIndex(name, StorageTypeDisk, 1)
+	require.NoError(t, err)
+	require.NoError(t, StoreIndex(index))
+	t.Cleanup(func() { assert.NoError(t, DeleteIndex(name)) })
+	shard := anyShard(index)
+	mappings := meta.NewMappings()
+	day := meta.NewProperty("date")
+	mappings.SetProperty("day", day)
+	require.NoError(t, index.SetMappings(mappings))
+	w, err := wal.Open(shard.GetShardName())
+	require.NoError(t, err)
+	require.NoError(t, w.Write([]byte(`{"@_id":"pending","@_action":"insert","@_shard":0,"day":"2026-01-02"}`)))
+	require.NoError(t, w.Redo.Write(RedoActionRead, []byte("1:1")))
+	require.NoError(t, w.Close())
+
+	for range 2 {
+		require.ErrorContains(t, index.Refresh(), "field [day]")
+		require.Zero(t, atomic.LoadUint64(&shard.open))
+		require.Nil(t, shard.wal)
+		require.Empty(t, index.openWriterStats())
+		require.False(t, slices.Contains(ZED_INDEX_SHARD_WAL_LIST.List(), shard))
+	}
+	require.NoError(t, shard.Close())
+
+	day.Format = time.DateOnly
+	mappings.SetProperty("day", day)
+	require.NoError(t, index.SetMappings(mappings))
+	require.NoError(t, index.Refresh())
+	require.True(t, slices.Contains(ZED_INDEX_SHARD_WAL_LIST.List(), shard))
+	count, err := countDocs(index)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(1), count)
+}
+
+// A wait neither succeeds nor panics once the WAL it waits on is closed.
+func TestIndexWaitApplied(t *testing.T) {
+	name := "TestIndexWaitApplied.index_1"
+	index, err := NewIndex(name, StorageTypeDisk, 1)
+	require.NoError(t, err)
+	require.NoError(t, StoreIndex(index))
+	t.Cleanup(func() { _ = DeleteIndex(name) })
+
+	shard := anyShard(index)
+	require.NoError(t, shard.OpenWAL())
+	// nothing applies the WAL once the consumer is gone
+	ZED_INDEX_SHARD_WAL_LIST.Remove(shard.GetShardName())
+	require.NoError(t, index.CreateDocument("1", map[string]interface{}{"name": "pending"}, false))
+
+	t.Run("pending", func(t *testing.T) {
+		last, err := shard.wal.LastIndex()
+		require.NoError(t, err)
+		committed, err := shard.committedIndex()
+		require.NoError(t, err)
+		assert.Less(t, committed, last)
+		assert.ErrorContains(t, index.WaitApplied(50*time.Millisecond), "not applied within")
+	})
+	t.Run("closed", func(t *testing.T) {
+		require.NoError(t, index.Close())
+		_, err := shard.committedIndex()
+		assert.ErrorContains(t, err, "WAL closed")
+		assert.NoError(t, index.WaitApplied(time.Second), "no open WAL, nothing to wait for")
+	})
 }
 
 func TestStoreGuard(t *testing.T) {

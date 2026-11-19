@@ -1,4 +1,4 @@
-/* Copyright 2026 AtomAI
+/* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 
@@ -217,7 +218,7 @@ func TestSearchVectorHNSWMapping(t *testing.T) {
 
 		resp = request("GET", "/api/"+index+"/_mapping", nil)
 		assert.Equal(t, http.StatusOK, resp.Code, resp.Body.String())
-		assert.Contains(t, resp.Body.String(), `"index_options":{"m":8,"ef_construction":32}`)
+		assert.Contains(t, resp.Body.String(), `"index_options":{"type":"hnsw","m":8,"ef_construction":32}`)
 	})
 
 	t.Run("index documents", func(t *testing.T) {
@@ -260,4 +261,81 @@ func TestSearchVectorHNSWMapping(t *testing.T) {
 		resp := request("DELETE", "/api/index/"+index, nil)
 		assert.Equal(t, http.StatusOK, resp.Code)
 	})
+}
+
+func TestSearchVectorExcludeSource(t *testing.T) {
+	for _, tc := range []struct {
+		name, settings string
+	}{
+		{name: "excluded", settings: `{"index.mapping.exclude_source_vectors": true}`},
+		{name: "kept", settings: `{"index": {"mapping": {"exclude_source_vectors": false}}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			index := "TestSearchVectorExcludeSource.index_" + tc.name
+			request("DELETE", "/api/index/"+index, nil) // drop leftovers from previous run
+
+			resp := request("PUT", "/es/"+index, bytes.NewBufferString(`{
+				"settings": `+tc.settings+`,
+				"mappings": {"properties": {
+					"name": {"type": "keyword"},
+					"meta": {"properties": {"emb": {"type": "knn_vector", "dimension": 2, "compression_level": "4x"}}}
+				}}
+			}`))
+			assert.Equal(t, http.StatusOK, resp.Code, resp.Body.String())
+			defer request("DELETE", "/api/index/"+index, nil)
+
+			resp = request("GET", "/api/"+index+"/_mapping", nil)
+			assert.Contains(t, resp.Body.String(), `"index_options":{"type":"int8_hnsw"}`)
+
+			resp = request("PUT", "/api/"+index+"/_doc/1", bytes.NewBufferString(`{"name": "x", "meta": {"emb": [0.5, 0.25], "tag": "t"}}`))
+			assert.Equal(t, http.StatusOK, resp.Code, resp.Body.String())
+			waitForDocument(t, index, "1")
+
+			want := map[string]interface{}{"emb": []interface{}{0.5, 0.25}, "tag": "t"}
+			// ok is false for a response without a readable _source
+			getSource := func() (source map[string]interface{}, ok bool) {
+				resp := request("GET", "/api/"+index+"/_doc/1", nil)
+				hit := new(meta.Hit)
+				if resp.Code != http.StatusOK || json.Unmarshal(resp.Body.Bytes(), hit) != nil {
+					return nil, false
+				}
+				source, ok = hit.Source.(map[string]interface{})
+				return source, ok
+			}
+			if source, ok := getSource(); assert.True(t, ok, "document has no _source") {
+				assert.Equal(t, want, source["meta"])
+			}
+
+			t.Run("search restores vectors", func(t *testing.T) {
+				resp := request("POST", "/es/"+index+"/_search", bytes.NewBufferString(
+					`{"query": {"knn": {"field": "meta.emb", "query_vector": [1, 0.5], "k": 1}}}`))
+				assert.Equal(t, http.StatusOK, resp.Code, resp.Body.String())
+				data := new(meta.SearchResponse)
+				assert.NoError(t, json.Unmarshal(resp.Body.Bytes(), data))
+				if assert.Len(t, data.Hits.Hits, 1) {
+					source, ok := data.Hits.Hits[0].Source.(map[string]interface{})
+					assert.True(t, ok, "hit has no _source")
+					assert.Equal(t, want, source["meta"])
+				}
+			})
+
+			t.Run("top_hits restores vectors", func(t *testing.T) {
+				resp := request("POST", "/es/"+index+"/_search", bytes.NewBufferString(
+					`{"size": 0, "aggs": {"top": {"top_hits": {"size": 1}}}}`))
+				assert.Equal(t, http.StatusOK, resp.Code, resp.Body.String())
+				assert.Contains(t, resp.Body.String(), `"emb":[0.5,0.25]`)
+			})
+
+			t.Run("update restores the new vector", func(t *testing.T) {
+				resp := request("POST", "/api/"+index+"/_update/1", bytes.NewBufferString(`{"name": "y", "meta": {"emb": [0.125, 1]}}`))
+				assert.Equal(t, http.StatusOK, resp.Code, resp.Body.String())
+				// one read checks name and meta: a second read may see another snapshot
+				wantMeta := map[string]interface{}{"emb": []interface{}{0.125, 1.0}}
+				assert.Eventually(t, func() bool {
+					source, ok := getSource()
+					return ok && source["name"] == "y" && assert.ObjectsAreEqual(wantMeta, source["meta"])
+				}, 10*time.Second, 20*time.Millisecond)
+			})
+		})
+	}
 }

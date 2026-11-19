@@ -1,5 +1,5 @@
 /* Copyright 2022 Zinc Labs Inc. and Contributors
-* Copyright 2026 AtomAI
+* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -12,7 +12,14 @@
 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 * See the License for the specific language governing permissions and
 * limitations under the License.
- */
+*
+Part of this work fall under the AtomAI Enterprise Edition (EE)
+and are licensed under the Business Source License 1.1,
+if you are the Cloud companies or your companies with revenue greater than $1M,
+please refer to [AGPL-3.0](./LICENSE-EE)) and LICENSE-EE for details,
+and production use of the Licensed Work requires a commercial license agreement with Zedsearch.
+Contact info@atomai.cc for licensing.
+*/
 
 package main
 
@@ -40,6 +47,7 @@ import (
 	"github.com/vcaesar/zedsearch/pkg/meta"
 	"github.com/vcaesar/zedsearch/pkg/metadata"
 	"github.com/vcaesar/zedsearch/pkg/routes"
+	"github.com/vcaesar/zedsearch/pkg/tracing"
 	"github.com/vcaesar/zedsearch/pkg/webbuild"
 	"github.com/vcaesar/zedsearch/pkg/zhttp"
 )
@@ -94,6 +102,17 @@ func main() {
 	sentries()
 	// Continuous profiling
 	profiling()
+	// Distributed tracing
+	stopTracing, err := tracing.Start(context.Background(), tracing.Config{
+		Enable:   config.Global.TracingEnable,
+		Endpoint: config.Global.TracingEndpoint,
+		Service:  "zedsearch",
+		Version:  meta.Version,
+		Node:     config.Global.Cluster.NodeID,
+	})
+	if err != nil {
+		log.Fatal().Err(err).Msg("Tracing start")
+	}
 
 	// HTTP init
 	app := zhttp.New()
@@ -141,6 +160,14 @@ func main() {
 		// close metadata
 		err = metadata.Close()
 		log.Info().Err(err).Msgf("Metadata closed")
+		// deliver buffered error events; returns at once when sentry is off
+		sentry.Flush(2 * time.Second)
+		// export buffered spans; returns at once when tracing is off
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		if err := stopTracing(ctx); err != nil {
+			log.Error().Err(err).Msg("Tracing shutdown")
+		}
+		cancel()
 
 		done <- struct{}{}
 	})

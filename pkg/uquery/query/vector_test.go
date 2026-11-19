@@ -1,4 +1,4 @@
-/* Copyright 2026 AtomAI
+/* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -19,7 +19,9 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/vcaesar/riot"
+	"github.com/vcaesar/riot/hnsw"
 
 	"github.com/vcaesar/zedsearch/pkg/meta"
 )
@@ -31,10 +33,10 @@ func vectorMappings() *meta.Mappings {
 	m.SetProperty("embedding", p)
 	m.SetProperty("any", meta.NewProperty("vector"))
 	m.SetProperty("name", meta.NewProperty("text"))
-	hnsw := meta.NewProperty("vector")
-	hnsw.Dims = 3
-	hnsw.IndexOptions = &meta.VectorIndexOptions{M: 8, EfConstruction: 64}
-	m.SetProperty("hnsw", hnsw)
+	hnswProp := meta.NewProperty("vector")
+	hnswProp.Dims = 3
+	hnswProp.IndexOptions = &meta.VectorIndexOptions{M: 8, EfConstruction: 64}
+	m.SetProperty("hnsw", hnswProp)
 	return m
 }
 
@@ -108,6 +110,32 @@ func TestKnnQuery(t *testing.T) {
 		got, err = KnnQuery(geoQuery(t, `{"field": "hnsw", "query_vector": [1, 2, 3], "k": 3, "num_candidates": 40}`), vectorMappings(), nil)
 		assert.NoError(t, err)
 		assert.Equal(t, &riot.ANNParams{M: 8, EfConstruction: 64, EfSearch: 40}, got.(*riot.KNNQuery).ANN())
+	})
+
+	t.Run("index type selects quantization", func(t *testing.T) {
+		tests := []struct {
+			name string
+			typ  string
+			want hnsw.Quantization
+		}{
+			{name: "hnsw", typ: meta.VectorIndexHNSW, want: hnsw.QuantizationNone},
+			{name: "int8_hnsw", typ: meta.VectorIndexInt8HNSW, want: hnsw.QuantizationInt8},
+			{name: "persisted before types", typ: "", want: hnsw.QuantizationInt8},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				m := vectorMappings()
+				p, _ := m.GetProperty("hnsw")
+				p.IndexOptions = &meta.VectorIndexOptions{Type: tt.typ}
+				m.SetProperty("hnsw", p)
+				got, err := KnnQuery(geoQuery(t, `{"field": "hnsw", "query_vector": [1, 2, 3], "k": 3}`), m, nil)
+				require.NoError(t, err)
+				q, ok := got.(*riot.KNNQuery)
+				require.True(t, ok)
+				require.NotNil(t, q.ANN())
+				assert.Equal(t, tt.want, q.ANN().Quantization)
+			})
+		}
 	})
 
 	t.Run("boost", func(t *testing.T) {

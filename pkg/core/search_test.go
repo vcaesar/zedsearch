@@ -1,5 +1,5 @@
 /* Copyright 2022 Zinc Labs Inc. and Contributors
-* Copyright 2026 AtomAI
+* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -25,6 +25,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vcaesar/riot"
+	"github.com/vcaesar/riot/analysis/analyzer"
 
 	"github.com/vcaesar/zedsearch/pkg/meta"
 )
@@ -254,6 +255,8 @@ func TestIndex_Search(t *testing.T) {
 		err = StoreIndex(index)
 		assert.NoError(t, err)
 
+		// the queries search the _all field, off by default
+		index.GetMappings().SetAllEnabled(true)
 		index.GetMappings().SetProperty("address.city", meta.Property{
 			Type:          "text",
 			Index:         true,
@@ -324,7 +327,7 @@ func TestSearchV2_ResetsFieldsPerHit(t *testing.T) {
 	require.NoError(t, err)
 
 	query := &meta.ZedQuery{Source: &meta.Source{Enable: true}}
-	resp, err := searchV2(1, 1, dmi, query, meta.NewMappings())
+	resp, err := searchV2(1, 1, dmi, query, meta.NewMappings(), nil, nil)
 	require.NoError(t, err)
 	require.Len(t, resp.Hits.Hits, 2)
 
@@ -338,4 +341,406 @@ func TestSearchV2_ResetsFieldsPerHit(t *testing.T) {
 	assert.Empty(t, got[1].Index, "_index must not leak from the previous hit")
 	assert.True(t, got[1].Timestamp.IsZero(), "@timestamp must not leak from the previous hit")
 	assert.Equal(t, float64(2), got[1].Source.(map[string]interface{})["x"])
+}
+
+func TestIndex_Search_HighlightWithoutOffsets(t *testing.T) {
+	indexName := "TestIndex_Search_HighlightWithoutOffsets.index_1"
+	index, err := NewIndex(indexName, "disk", 1)
+	require.NoError(t, err)
+	require.NoError(t, StoreIndex(index))
+	defer func() { assert.NoError(t, DeleteIndex(indexName)) }()
+	index.GetMappings().SetProperty("body", meta.Property{Type: "text", Index: true, Highlightable: true})
+
+	require.NoError(t, index.CreateDocument("1", map[string]interface{}{"body": "Quick fox, quick brown fox"}, false))
+	waitForDocs(t, index, 1)
+
+	tests := []struct {
+		name  string
+		query *meta.Query
+		want  string
+	}{
+		{
+			name:  "match",
+			query: &meta.Query{Match: map[string]*meta.MatchQuery{"body": {Query: "brown"}}},
+			want:  "Quick fox, quick <b>brown</b> fox",
+		},
+		{
+			name:  "phrase marks only the phrase",
+			query: &meta.Query{MatchPhrase: map[string]*meta.MatchPhraseQuery{"body": {Query: "quick brown"}}},
+			want:  "Quick fox, <b>quick</b> <b>brown</b> fox",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, err := index.Search(&meta.ZedQuery{Query: tt.query, Size: 10, Highlight: &meta.Highlight{
+				Fields: map[string]*meta.Highlight{"body": {PreTags: []string{"<b>"}, PostTags: []string{"</b>"}}},
+			}})
+			require.NoError(t, err)
+			require.Len(t, resp.Hits.Hits, 1)
+			assert.Equal(t, []string{tt.want}, resp.Hits.Hits[0].Highlight["body"])
+		})
+	}
+}
+
+func TestIndex_Search_HighlightStoredValues(t *testing.T) {
+	indexName := "TestIndex_Search_HighlightStoredValues.index_1"
+	index, err := NewIndex(indexName, "disk", 1)
+	require.NoError(t, err)
+	require.NoError(t, StoreIndex(index))
+	defer func() { assert.NoError(t, DeleteIndex(indexName)) }()
+	index.GetMappings().SetProperty("tags", meta.Property{Type: "text", Index: true, Highlightable: true})
+	index.GetMappings().SetProperty("color", meta.Property{Type: "keyword", Index: true, Highlightable: true})
+
+	require.NoError(t, index.CreateDocument("1", map[string]interface{}{
+		"tags":  []interface{}{"brown dog", "red fox", "brown cat"},
+		"color": []interface{}{"dark brown", "red"},
+	}, false))
+	waitForDocs(t, index, 1)
+
+	tests := []struct {
+		name      string
+		query     *meta.Query
+		field     string
+		fragments int // number_of_fragments of tags, 0 takes the default
+		want      []string
+	}{
+		{
+			name:  "number_of_fragments counts over the array",
+			query: &meta.Query{Match: map[string]*meta.MatchQuery{"tags": {Query: "brown"}}},
+			field: "tags", fragments: 1, want: []string{"<b>brown</b> dog"},
+		},
+		{
+			name:  "first element of an array",
+			query: &meta.Query{Match: map[string]*meta.MatchQuery{"tags": {Query: "dog"}}},
+			field: "tags", want: []string{"brown <b>dog</b>"},
+		},
+		{
+			name:  "every matched element of an array",
+			query: &meta.Query{Match: map[string]*meta.MatchQuery{"tags": {Query: "brown"}}},
+			field: "tags", want: []string{"<b>brown</b> dog", "<b>brown</b> cat"},
+		},
+		{
+			name:  "keyword",
+			query: &meta.Query{Term: map[string]*meta.TermQuery{"color": {Value: "dark brown"}}},
+			field: "color", want: []string{"<b>dark brown</b>"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, err := index.Search(&meta.ZedQuery{Query: tt.query, Size: 10, Highlight: &meta.Highlight{
+				PreTags: []string{"<b>"}, PostTags: []string{"</b>"},
+				Fields: map[string]*meta.Highlight{"tags": {NumberOfFragments: tt.fragments}, "color": {}},
+			}})
+			require.NoError(t, err)
+			require.Len(t, resp.Hits.Hits, 1)
+			assert.Equal(t, map[string]interface{}{tt.field: tt.want}, resp.Hits.Hits[0].Highlight)
+		})
+	}
+}
+
+func TestIndex_Search_HighlightFromSource(t *testing.T) {
+	indexName := "TestIndex_Search_HighlightFromSource.index_1"
+	index, err := NewIndex(indexName, "disk", 1)
+	require.NoError(t, err)
+	require.NoError(t, StoreIndex(index))
+	defer func() { assert.NoError(t, DeleteIndex(indexName)) }()
+	// as Elasticsearch, no field is highlightable or stored
+	for _, f := range []string{"body", "tags", "meta.note", "items.0.text", "code"} {
+		index.GetMappings().SetProperty(f, meta.Property{Type: "text", Index: true})
+	}
+
+	require.NoError(t, index.CreateDocument("1", map[string]interface{}{
+		"code":  123.0,
+		"body":  "Quick fox, quick brown fox",
+		"tags":  []interface{}{"red fox", "brown dog"},
+		"meta":  map[string]interface{}{"note": "a brown note"},
+		"items": []interface{}{map[string]interface{}{"text": "a brown item"}},
+	}, false))
+	waitForDocs(t, index, 1)
+
+	tags := map[string]*meta.Highlight{"body": {}, "tags": {}, "meta.note": {}, "items.0.text": {}, "title": {}}
+	resp, err := index.Search(&meta.ZedQuery{
+		Query: &meta.Query{QueryString: &meta.QueryStringQuery{Query: "body:brown tags:brown meta.note:brown items.0.text:brown"}},
+		Size:  10, Highlight: &meta.Highlight{PreTags: []string{"<b>"}, PostTags: []string{"</b>"}, Fields: tags},
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.Hits.Hits, 1)
+	h := resp.Hits.Hits[0].Highlight
+	assert.Equal(t, []string{"Quick fox, quick <b>brown</b> fox"}, h["body"])
+	assert.Equal(t, []string{"<b>brown</b> dog"}, h["tags"])
+	assert.Equal(t, []string{"a <b>brown</b> note"}, h["meta.note"])
+	assert.Equal(t, []string{"a <b>brown</b> item"}, h["items.0.text"])
+	assert.NotContains(t, h, "title")
+	assert.NotNil(t, resp.Hits.Hits[0].Source)
+
+	resp, err = index.Search(&meta.ZedQuery{
+		Query: &meta.Query{Match: map[string]*meta.MatchQuery{"body": {Query: "brown"}}},
+		Size:  10, Highlight: &meta.Highlight{Fields: map[string]*meta.Highlight{"tags": {}}},
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.Hits.Hits, 1)
+	assert.Empty(t, resp.Hits.Hits[0].Highlight, "tags did not match")
+
+	// a number in a text field is indexed, and highlighted, as its string
+	resp, err = index.Search(&meta.ZedQuery{
+		Query: &meta.Query{Match: map[string]*meta.MatchQuery{"code": {Query: "123"}}},
+		Size:  10, Highlight: &meta.Highlight{PreTags: []string{"<b>"}, PostTags: []string{"</b>"}, Fields: map[string]*meta.Highlight{"code": {}}},
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.Hits.Hits, 1)
+	assert.Equal(t, []string{"<b>123</b>"}, resp.Hits.Hits[0].Highlight["code"])
+
+	// number_of_fragments counts over the values of the field
+	resp, err = index.Search(&meta.ZedQuery{
+		Query: &meta.Query{QueryString: &meta.QueryStringQuery{Query: "tags:fox tags:dog"}},
+		Size:  10, Highlight: &meta.Highlight{PreTags: []string{"<b>"}, PostTags: []string{"</b>"}, Fields: map[string]*meta.Highlight{"tags": {NumberOfFragments: 1}}},
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.Hits.Hits, 1)
+	assert.Equal(t, []string{"red <b>fox</b>"}, resp.Hits.Hits[0].Highlight["tags"])
+}
+
+// A stored text field that another searched index maps as a vector is still
+// highlighted: collecting vectors must not take the value away.
+func TestSearchV2_HighlightFieldMappedAsVectorElsewhere(t *testing.T) {
+	a := &Index{ref: &meta.Index{Name: "a", Mappings: meta.NewMappings()}}
+	a.ref.Mappings.SetProperty("body", meta.NewProperty("vector"))
+	b := &Index{ref: &meta.Index{Name: "b", Mappings: meta.NewMappings()}}
+	b.ref.Mappings.SetProperty("body", meta.Property{Type: "text", Index: true, Highlightable: true})
+	b.ref.Mappings.SetSourceEnabled(false)
+
+	w, err := riot.OpenWriter(riot.InMemoryOnlyConfig())
+	require.NoError(t, err)
+	defer func() { assert.NoError(t, w.Close()) }()
+	batch := riot.NewBatch()
+	doc := riot.NewDocument("1").
+		AddField(riot.NewTextField("body", "brown fox").SearchTermPositions().StoreValue()).
+		AddField(riot.NewStoredOnlyField("_index", []byte("b")))
+	batch.Update(doc.ID(), doc)
+	require.NoError(t, w.Batch(batch))
+	r, err := w.Reader()
+	require.NoError(t, err)
+	defer func() { assert.NoError(t, r.Close()) }()
+	req := riot.NewTopNSearch(10, riot.NewTermQuery("fox").SetField("body")).IncludeLocations().WithStandardAggregations()
+	dmi, err := r.Search(context.Background(), req)
+	require.NoError(t, err)
+
+	query := &meta.ZedQuery{Source: &meta.Source{Enable: true}, Highlight: &meta.Highlight{
+		PreTags: []string{"<b>"}, PostTags: []string{"</b>"}, Fields: map[string]*meta.Highlight{"body": {NumberOfFragments: 1}},
+	}}
+	resp, err := searchV2(1, 1, dmi, query, a.GetMappings(), nil, map[string]*Index{"a": a, "b": b})
+	require.NoError(t, err)
+	require.Len(t, resp.Hits.Hits, 1)
+	assert.Equal(t, []string{"brown <b>fox</b>"}, resp.Hits.Hits[0].Highlight["body"])
+}
+
+func TestSourceStrings(t *testing.T) {
+	doc := map[string]interface{}{
+		"a":   "x",
+		"b":   []interface{}{"y", 1.0, "z"},
+		"c":   map[string]interface{}{"d": "w", "e": map[string]interface{}{"f": "v"}},
+		"g.h": "dotted",
+		"n":   1.0,
+		"items": []interface{}{
+			map[string]interface{}{"text": "brown"},
+			map[string]interface{}{"text": "fox", "tags": []interface{}{"t1", "t2"}},
+		},
+		"m": []interface{}{[]interface{}{"p", "q"}},
+	}
+	tests := []struct {
+		field string
+		want  []string
+	}{
+		{"a", []string{"x"}},
+		{"b", []string{"y", "z"}},
+		{"c.d", []string{"w"}},
+		{"c.e.f", []string{"v"}},
+		{"g.h", []string{"dotted"}},
+		{"n", nil},
+		{"c", nil},
+		{"missing.x", nil},
+		{"items.0.text", []string{"brown"}},
+		{"items.1.text", []string{"fox"}},
+		{"items.1.tags", []string{"t1", "t2"}},
+		{"items.2.text", nil},
+		{"items.x.text", nil},
+		{"m.0", []string{"p", "q"}},
+		{"b.0", []string{"y"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.field, func(t *testing.T) {
+			assert.Equal(t, tt.want, sourceStrings(doc, tt.field, false))
+		})
+	}
+
+	// a text or keyword field indexes numbers and booleans as strings
+	doc["flag"] = true
+	terms := []struct {
+		field string
+		want  []string
+	}{
+		{"n", []string{"1"}},
+		{"b", []string{"y", "1", "z"}},
+		{"flag", []string{"true"}},
+		{"c", nil},
+	}
+	for _, tt := range terms {
+		t.Run("terms "+tt.field, func(t *testing.T) {
+			assert.Equal(t, tt.want, sourceStrings(doc, tt.field, true))
+		})
+	}
+}
+
+func TestSourceField(t *testing.T) {
+	mappings := meta.NewMappings()
+	body := meta.NewProperty("text")
+	body.AddField("raw", meta.NewProperty("keyword"))
+	mappings.SetProperty("body", body)
+	mappings.SetProperty("body.raw", meta.NewProperty("keyword"))
+	mappings.SetProperty("meta.note", meta.NewProperty("text"))
+	for field, want := range map[string]string{
+		"body":      "body",
+		"body.raw":  "body",
+		"body.x":    "body.x",
+		"meta.note": "meta.note",
+		"missing.y": "missing.y",
+	} {
+		assert.Equal(t, want, sourceField(mappings, field), field)
+	}
+}
+
+func TestIndex_Search_HighlightMultiField(t *testing.T) {
+	indexName := "TestIndex_Search_HighlightMultiField.index_1"
+	index, err := NewIndex(indexName, "disk", 1)
+	require.NoError(t, err)
+	require.NoError(t, StoreIndex(index))
+	defer func() { assert.NoError(t, DeleteIndex(indexName)) }()
+	// keyword fields keep no term locations, a text multi-field does
+	raw := meta.Property{Type: "text", Index: true, Analyzer: "keyword"}
+	body := meta.Property{Type: "text", Index: true}
+	body.AddField("raw", raw)
+	index.GetMappings().SetProperty("body", body)
+	index.GetMappings().SetProperty("body.raw", raw)
+
+	require.NoError(t, index.CreateDocument("1", map[string]interface{}{"body": "QuickFox"}, false))
+	waitForDocs(t, index, 1)
+
+	resp, err := index.Search(&meta.ZedQuery{
+		Query: &meta.Query{Term: map[string]*meta.TermQuery{"body.raw": {Value: "QuickFox"}}},
+		Size:  10, Highlight: &meta.Highlight{PreTags: []string{"<b>"}, PostTags: []string{"</b>"},
+			Fields: map[string]*meta.Highlight{"body.raw": {}}},
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.Hits.Hits, 1)
+	assert.Equal(t, []string{"<b>QuickFox</b>"}, resp.Hits.Hits[0].Highlight["body.raw"])
+}
+
+// TestSearchV2_HighlightPerIndex checks that each hit is highlighted and its
+// fields are formatted with the mappings of its own index, not of the index
+// the mappings came from.
+func TestSearchV2_HighlightPerIndex(t *testing.T) {
+	indexName := "TestSearchV2_HighlightPerIndex.index_1"
+	index, err := NewIndex(indexName, "disk", 1)
+	require.NoError(t, err)
+	require.NoError(t, StoreIndex(index))
+	defer func() { assert.NoError(t, DeleteIndex(indexName)) }()
+	index.GetMappings().SetProperty("body", meta.Property{Type: "text", Index: true, Analyzer: "keyword"})
+	index.GetMappings().SetProperty("day", meta.Property{Type: "date", Index: true, Format: "2006-01-02"})
+
+	w, err := riot.OpenWriter(riot.InMemoryOnlyConfig())
+	require.NoError(t, err)
+	defer func() { assert.NoError(t, w.Close()) }()
+	batch := riot.NewBatch()
+	doc := riot.NewDocument("1").
+		AddField(riot.NewTextField("body", "BrownFox").WithAnalyzer(analyzer.NewKeywordAnalyzer()).SearchTermPositions()).
+		AddField(riot.NewStoredOnlyField("_source", []byte(`{"body":"BrownFox","day":"2026-01-02"}`))).
+		AddField(riot.NewStoredOnlyField("_index", []byte(indexName)))
+	batch.Update(doc.ID(), doc)
+	require.NoError(t, w.Batch(batch))
+
+	r, err := w.Reader()
+	require.NoError(t, err)
+	defer func() { assert.NoError(t, r.Close()) }()
+	req := riot.NewTopNSearch(10, riot.NewTermQuery("BrownFox").SetField("body")).IncludeLocations().WithStandardAggregations()
+	dmi, err := r.Search(context.Background(), req)
+	require.NoError(t, err)
+
+	// mappings of another index, where body uses the standard analyzer and day is not a date
+	other := meta.NewMappings()
+	other.SetProperty("body", meta.Property{Type: "text", Index: true})
+	query := &meta.ZedQuery{Source: &meta.Source{Enable: true}, Highlight: &meta.Highlight{
+		PreTags: []string{"<b>"}, PostTags: []string{"</b>"}, Fields: map[string]*meta.Highlight{"body": {NumberOfFragments: 1}},
+	}, Fields: []*meta.Field{{Field: "day", Format: "02/01/2006"}}}
+	resp, err := searchV2(1, 1, dmi, query, other, nil, map[string]*Index{indexName: index})
+	require.NoError(t, err)
+	require.Len(t, resp.Hits.Hits, 1)
+	assert.Equal(t, []string{"<b>BrownFox</b>"}, resp.Hits.Hits[0].Highlight["body"])
+	assert.Equal(t, []interface{}{"02/01/2026"}, resp.Hits.Hits[0].Fields["day"])
+}
+
+func TestIndex_Search_TopHitsRestoresVectors(t *testing.T) {
+	indexName := "TestIndex_Search_TopHitsRestoresVectors.index_1"
+	index, err := NewIndex(indexName, "disk", 1)
+	require.NoError(t, err)
+	exclude := true
+	require.NoError(t, index.SetSettings(&meta.IndexSettings{ExcludeSourceVectors: &exclude}))
+	require.NoError(t, StoreIndex(index))
+	defer func() { assert.NoError(t, DeleteIndex(indexName)) }()
+	index.GetMappings().SetProperty("emb", meta.NewProperty("vector"))
+	index.GetMappings().SetProperty("name", meta.NewProperty("keyword"))
+
+	require.NoError(t, index.CreateDocument("1", map[string]interface{}{"name": "x", "emb": []interface{}{1.0, 2.0}}, false))
+	waitForDocs(t, index, 1)
+
+	resp, err := index.Search(&meta.ZedQuery{
+		Query:        &meta.Query{MatchAll: &meta.MatchAllQuery{}},
+		Size:         10,
+		Aggregations: map[string]meta.Aggregations{"top": {TopHits: &meta.AggregationTopHits{Size: 1}}},
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.Hits.Hits, 1)
+	assert.Equal(t, []interface{}{1.0, 2.0}, resp.Hits.Hits[0].Source.(map[string]interface{})["emb"])
+	top := resp.Aggregations["top"].Hits
+	require.NotNil(t, top)
+	require.Len(t, top.Hits, 1)
+	assert.Equal(t, []interface{}{1.0, 2.0}, top.Hits[0].Source.(map[string]interface{})["emb"])
+}
+
+func TestIndex_Search_SourceDisabled(t *testing.T) {
+	indexName := "TestIndex_Search_SourceDisabled.index_1"
+	index, err := NewIndex(indexName, "disk", 1)
+	require.NoError(t, err)
+	require.NoError(t, StoreIndex(index))
+	defer func() { assert.NoError(t, DeleteIndex(indexName)) }()
+
+	mappings := meta.NewMappings()
+	mappings.SetSourceEnabled(false)
+	mappings.SetProperty("body", meta.Property{Type: "text", Index: true, Highlightable: true})
+	require.NoError(t, index.SetMappings(mappings))
+	assert.False(t, index.GetMappings().SourceEnabled())
+
+	nested := meta.NewMappings()
+	nested.SetProperty("items", meta.NewProperty("nested"))
+	assert.Error(t, index.SetMappings(nested), "nested needs _source")
+
+	require.NoError(t, index.CreateDocument("1", map[string]interface{}{"body": "quick brown fox"}, false))
+	waitForDocs(t, index, 1)
+
+	resp, err := index.Search(&meta.ZedQuery{
+		Query: &meta.Query{Match: map[string]*meta.MatchQuery{"body": {Query: "brown"}}},
+		Size:  10,
+		Highlight: &meta.Highlight{Fields: map[string]*meta.Highlight{
+			"body": {PreTags: []string{"<b>"}, PostTags: []string{"</b>"}},
+		}},
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.Hits.Hits, 1)
+	hit := resp.Hits.Hits[0]
+	assert.Equal(t, "1", hit.ID)
+	assert.Nil(t, hit.Source)
+	assert.Equal(t, []string{"quick <b>brown</b> fox"}, hit.Highlight["body"])
+
+	got, err := index.GetDocument("1")
+	require.NoError(t, err)
+	assert.Nil(t, got.Source)
 }

@@ -1,4 +1,5 @@
 /* Copyright 2022 Zinc Labs Inc. and Contributors
+* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -11,7 +12,14 @@
 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 * See the License for the specific language governing permissions and
 * limitations under the License.
- */
+*
+Part of this work fall under the AtomAI Enterprise Edition (EE)
+and are licensed under the Business Source License 1.1,
+if you are the Cloud companies or your companies with revenue greater than $1M,
+please refer to [AGPL-3.0](./LICENSE-EE)) and LICENSE-EE for details,
+and production use of the Licensed Work requires a commercial license agreement with Zedsearch.
+Contact info@atomai.cc for licensing.
+*/
 
 package elastic
 
@@ -19,6 +27,7 @@ import (
 	"bytes"
 	"sync"
 
+	"github.com/vcaesar/zedsearch/pkg/meta"
 	"github.com/vcaesar/zedsearch/pkg/zutils/json"
 )
 
@@ -28,6 +37,15 @@ type Mappings struct {
 
 	// Properties holds the index properties.
 	Properties map[string]Property `json:"properties,omitempty"`
+	// Source is the `_source` mapping, nil when _source is stored by default.
+	Source *SourceMapping `json:"_source,omitempty"`
+	// All is the `_all` mapping, nil when it follows zed_all_field.
+	All *SourceMapping `json:"_all,omitempty"`
+}
+
+// SourceMapping is the `_source` mapping.
+type SourceMapping struct {
+	Enabled bool `json:"enabled"`
 }
 
 // NewMappings returns a initialized Mappings object.
@@ -92,6 +110,22 @@ func (t *Mappings) MarshalJSON() ([]byte, error) {
 	}
 
 	b.Write(p)
+	if t.Source != nil {
+		b.WriteString(`,"_source":`)
+		src, err := json.Marshal(t.Source)
+		if err != nil {
+			return nil, err
+		}
+		b.Write(src)
+	}
+	if t.All != nil {
+		b.WriteString(`,"_all":`)
+		all, err := json.Marshal(t.All)
+		if err != nil {
+			return nil, err
+		}
+		b.Write(all)
+	}
 	b.WriteByte('}')
 
 	return b.Bytes(), nil
@@ -115,6 +149,10 @@ type Property struct {
 	SearchAnalyzer string `json:"search_analyzer,omitempty"`
 	// Format holds the property format.
 	Format string `json:"format,omitempty"`
+	// Dims, IndexOptions and Similarity are the options of a vector field.
+	Dims         int                      `json:"dims,omitempty"`
+	IndexOptions *meta.VectorIndexOptions `json:"index_options,omitempty"`
+	Similarity   string                   `json:"similarity,omitempty"`
 }
 
 // NewProperty returns a new Property object.

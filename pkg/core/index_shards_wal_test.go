@@ -24,8 +24,8 @@ import (
 	"github.com/stretchr/testify/require"
 	blugeindex "github.com/vcaesar/riot/index"
 
-	"github.com/vcaesar/zedsearch/pkg/config"
 	"github.com/vcaesar/zedsearch/pkg/meta"
+	"github.com/vcaesar/zedsearch/pkg/zutils/json"
 )
 
 func Test_walMergeDocs_WriteTo(t *testing.T) {
@@ -161,8 +161,6 @@ func TestIndexShard_ConsumeWALSkipsInvalidEntry(t *testing.T) {
 	shard := anyShard(index)
 	require.NoError(t, shard.OpenWAL())
 	ZED_INDEX_SHARD_WAL_LIST.Remove(shard.GetShardName())
-	t.Cleanup(func() { ZED_INDEX_SHARD_WAL_LIST.Add(shard) })
-	time.Sleep(2 * config.Global.WalSyncInterval)
 
 	require.NoError(t, shard.writeWAL([]byte(`{}`)))
 	require.True(t, shard.ConsumeWAL())
@@ -187,11 +185,8 @@ func TestIndexShard_ConsumeWALKeepsOrderAcrossShards(t *testing.T) {
 
 	shard := anyShard(index)
 	require.NoError(t, shard.OpenWAL())
-	// consume by hand only, let a background pass in flight finish; closing
-	// the index needs the consumer back
+	// Consume by hand after any background pass in flight has finished.
 	ZED_INDEX_SHARD_WAL_LIST.Remove(shard.GetShardName())
-	t.Cleanup(func() { ZED_INDEX_SHARD_WAL_LIST.Add(shard) })
-	time.Sleep(2 * config.Global.WalSyncInterval)
 
 	doc := map[string]interface{}{"name": "test"}
 	require.NoError(t, index.CreateDocument("1", doc, false))
@@ -241,4 +236,44 @@ func TestIndexShard_writeWALClosed(t *testing.T) {
 	require.NoError(t, shard.writeWAL([]byte(`{}`)))
 	require.NoError(t, index.Close())
 	assert.ErrorIs(t, shard.writeWAL([]byte(`{}`)), ErrIndexReadOnly)
+}
+
+// Entries count as applied, which Refresh waits for, only once the time range
+// that searches pick shards by covers their documents.
+func TestIndexShard_writeWALDocsPublishesDocTime(t *testing.T) {
+	name := "TestIndexShard_writeWALDocsPublishesDocTime.index_1"
+	index, err := NewIndex(name, "disk", 1)
+	require.NoError(t, err)
+	require.NoError(t, StoreIndex(index))
+	t.Cleanup(func() { _ = DeleteIndex(name) })
+
+	shard := anyShard(index)
+	require.NoError(t, shard.OpenWAL())
+	ZED_INDEX_SHARD_WAL_LIST.Remove(shard.GetShardName())
+
+	day1 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	day2 := day1.Add(24 * time.Hour)
+	require.NoError(t, index.CreateDocument("1", map[string]interface{}{"name": "a", "@timestamp": day1.Format(time.RFC3339)}, false))
+	require.True(t, shard.ConsumeWAL())
+
+	require.NoError(t, index.CreateDocument("2", map[string]interface{}{"name": "b", "@timestamp": day2.Format(time.RFC3339)}, false))
+	last, err := shard.wal.LastIndex()
+	require.NoError(t, err)
+	entry, err := shard.wal.Read(last)
+	require.NoError(t, err)
+	doc := make(map[string]interface{})
+	require.NoError(t, json.Unmarshal(entry, &doc))
+	docs := make(walMergeDocs)
+	require.NoError(t, docs.AddDocument(doc))
+	require.True(t, shard.writeWALDocs(docs, blugeindex.NewBatch(), last, last))
+
+	committed, err := shard.committedIndex()
+	require.NoError(t, err)
+	require.Equal(t, last, committed)
+	readers, err := index.GetReaders(day2.Add(-time.Hour).UnixNano(), 0)
+	require.NoError(t, err)
+	for _, r := range readers {
+		assert.NoError(t, r.Close())
+	}
+	assert.Len(t, readers, 1, "a search from day 2 must not skip the shard")
 }

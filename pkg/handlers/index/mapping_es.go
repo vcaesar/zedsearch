@@ -1,3 +1,26 @@
+/*
+* Copyright 2026 AtomAI.
+*
+* Licensed under the Apache License, Version 2.0 (the "License");
+* you may not use this file except in compliance with the License.
+* You may obtain a copy of the License at
+*
+*     http://www.apache.org/licenses/LICENSE-2.0
+*
+* Unless required by applicable law or agreed to in writing, software
+* distributed under the License is distributed on an "AS IS" BASIS,
+* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+* See the License for the specific language governing permissions and
+* limitations under the License.
+*
+Part of this work fall under the AtomAI Enterprise Edition (EE)
+and are licensed under the Business Source License 1.1,
+if you are the Cloud companies or your companies with revenue greater than $1M,
+please refer to [AGPL-3.0](./LICENSE-EE)) and LICENSE-EE for details,
+and production use of the Licensed Work requires a commercial license agreement with Zedsearch.
+Contact info@atomai.cc for licensing.
+*/
+
 package index
 
 import (
@@ -60,6 +83,12 @@ func GetESMapping(c zhttp.Context) {
 func convertToESMapping(mappings *meta.Mappings) *elastic.Mappings {
 	orig := mappings.DeepClone()
 	m := elastic.NewMappings()
+	if orig.Source != nil {
+		m.Source = &elastic.SourceMapping{Enabled: orig.Source.Enabled}
+	}
+	if orig.All != nil {
+		m.All = &elastic.SourceMapping{Enabled: orig.All.Enabled}
+	}
 
 	// we first have to remove the automatically added property field mappings
 	for k, v := range orig.Properties {
@@ -139,6 +168,11 @@ func convertToESProperty(p meta.Property) elastic.Property {
 	prop.Analyzer = p.Analyzer
 	prop.SearchAnalyzer = p.SearchAnalyzer
 	prop.Format = p.Format
+	// a client recreating the index from this response keeps the dimension
+	// check and the ANN configuration
+	prop.Dims = p.Dims
+	prop.IndexOptions = p.IndexOptions
+	prop.Similarity = string(p.Similarity)
 
 	if p.Fields != nil {
 		for k, v := range p.Fields {

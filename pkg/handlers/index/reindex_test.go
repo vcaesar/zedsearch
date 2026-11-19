@@ -1,4 +1,4 @@
-/* Copyright 2026 AtomAI
+/* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -21,7 +21,9 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
+	"github.com/vcaesar/zedsearch/pkg/config"
 	"github.com/vcaesar/zedsearch/pkg/core"
 	"github.com/vcaesar/zedsearch/pkg/meta"
 	"github.com/vcaesar/zedsearch/pkg/meta/elastic"
@@ -164,4 +166,64 @@ func TestReindex(t *testing.T) {
 		assert.NoError(t, core.DeleteIndex(destName))
 		assert.NoError(t, core.DeleteIndex(limitedName))
 	})
+}
+
+// A document indexed without @timestamp (zed_auto_timestamp off) is reindexed
+// without one, not with the zero time; its own @timestamp is carried over.
+func TestReindex_Timestamp(t *testing.T) {
+	defer func(v bool) { config.Global.AutoTimestamp = v }(config.Global.AutoTimestamp)
+	config.Global.AutoTimestamp = false
+
+	searchOne := func(t *testing.T, index *core.Index) meta.Hit {
+		var hit meta.Hit
+		require.Eventually(t, func() bool {
+			res, err := index.Search(&meta.ZedQuery{Size: 10})
+			if err != nil || len(res.Hits.Hits) != 1 {
+				return false
+			}
+			hit = res.Hits.Hits[0]
+			return true
+		}, 10*time.Second, 100*time.Millisecond, "document not indexed")
+		return hit
+	}
+
+	own := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	tests := []struct {
+		name string
+		doc  map[string]interface{}
+		want time.Time
+	}{
+		{name: "none", doc: map[string]interface{}{"name": "zed"}},
+		{name: "own", doc: map[string]interface{}{"name": "zed", meta.TimeFieldName: own.Format(time.RFC3339)}, want: own},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sourceName := "TestReindex_Timestamp.index_" + tt.name + "_1"
+			destName := "TestReindex_Timestamp.index_" + tt.name + "_2"
+			source, err := core.NewIndex(sourceName, "disk", 1)
+			require.NoError(t, err)
+			require.NoError(t, core.StoreIndex(source))
+			defer func() {
+				assert.NoError(t, core.DeleteIndex(sourceName))
+				if _, exists := core.GetIndex(destName); exists {
+					assert.NoError(t, core.DeleteIndex(destName))
+				}
+			}()
+			require.NoError(t, source.CreateDocument("1", tt.doc, false))
+			require.True(t, tt.want.Equal(searchOne(t, source).Timestamp))
+
+			c, w := utils.NewContext()
+			utils.SetRequestData(c, `{"source":{"index":"`+sourceName+`"},"dest":{"index":"`+destName+`"}}`)
+			Reindex(c)
+			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+			dest, exists := core.GetIndex(destName)
+			require.True(t, exists)
+			hit := searchOne(t, dest)
+			assert.True(t, tt.want.Equal(hit.Timestamp), "reindexed @timestamp %s", hit.Timestamp)
+			if tt.want.IsZero() {
+				assert.NotContains(t, hit.Source, meta.TimeFieldName)
+			}
+		})
+	}
 }

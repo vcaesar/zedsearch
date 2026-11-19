@@ -1,4 +1,4 @@
-/* Copyright 2026 AtomAI. and Contributors
+/* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -101,6 +101,40 @@ func TestMultiSearch(t *testing.T) {
 				assert.Equal(t, uint64(tt.wantTotal), dmi.Aggregations().Count())
 			}
 		})
+	}
+}
+
+func TestMultiSearchKeepsQuery(t *testing.T) {
+	readers := shardReaders(t, 3, 5)
+	mappings := meta.NewMappings()
+	mappings.SetProperty("n", meta.NewProperty("numeric"))
+	query := &meta.ZedQuery{
+		Query: map[string]interface{}{"match_all": map[string]interface{}{}},
+		Sort:  "-n",
+		From:  4,
+		Size:  3,
+	}
+	for range 2 {
+		dmi, err := MultiSearch(context.Background(), query, mappings, nil, readers...)
+		require.NoError(t, err)
+		var ids []string
+		for {
+			// an error comes without a hit
+			next, err := dmi.Next()
+			require.NoError(t, err)
+			if next == nil {
+				break
+			}
+			require.NoError(t, next.VisitStoredFields(func(field string, value []byte) bool {
+				if field == "_id" {
+					ids = append(ids, string(value))
+				}
+				return true
+			}))
+		}
+		assert.Equal(t, []string{"2-0", "1-4", "1-3"}, ids)
+		assert.Equal(t, 4, query.From)
+		assert.Equal(t, 3, query.Size)
 	}
 }
 

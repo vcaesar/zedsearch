@@ -1,4 +1,5 @@
 /* Copyright 2022 Zinc Labs Inc. and Contributors
+* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -29,7 +30,11 @@ import (
 	"github.com/vcaesar/zedsearch/pkg/zhttp"
 )
 
-const metricsPath = "/metrics"
+const (
+	metricsPath = "/metrics"
+	// unmatchedRoute labels requests no route matched, keeping 404 scans to one series.
+	unmatchedRoute = "<unmatched>"
+)
 
 var (
 	requestsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -58,7 +63,7 @@ func SetPrometheus(app *zhttp.Engine) {
 	}
 
 	registerMetrics.Do(func() {
-		for _, c := range []prometheus.Collector{requestsTotal, requestDuration, responseSize, core.ZED_METRICS} {
+		for _, c := range []prometheus.Collector{requestsTotal, requestDuration, responseSize, core.ZED_METRICS, core.RiotCollector} {
 			if err := prometheus.Register(c); err != nil {
 				log.Error().Err(err).Msg("prometheus: register metric")
 			}
@@ -74,12 +79,22 @@ func SetPrometheus(app *zhttp.Engine) {
 		start := time.Now()
 		c.Next()
 
+		// The route pattern, not the raw path: ids in the path would make one series per document.
+		route := c.FullPath()
+		if route == "" {
+			route = unmatchedRoute
+		}
 		status := strconv.Itoa(c.ResponseStatus())
-		requestDuration.WithLabelValues(status, c.Method(), c.Path()).Observe(time.Since(start).Seconds())
-		requestsTotal.WithLabelValues(status, c.Method(), c.Path()).Inc()
+		requestDuration.WithLabelValues(status, c.Method(), route).Observe(time.Since(start).Seconds())
+		requestsTotal.WithLabelValues(status, c.Method(), route).Inc()
 		responseSize.Observe(float64(c.ResponseSize()))
 	})
 
 	metrics := promhttp.Handler()
-	app.GET(metricsPath, func(c zhttp.Context) { c.ServeHTTP(metrics) })
+	serve := func(c zhttp.Context) { c.ServeHTTP(metrics) }
+	if config.Global.PrometheusAuth {
+		app.GET(metricsPath, AuthMiddleware("metrics"), serve)
+		return
+	}
+	app.GET(metricsPath, serve)
 }

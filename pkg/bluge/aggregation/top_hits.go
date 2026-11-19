@@ -1,4 +1,4 @@
-/* Copyright 2026 AtomAI
+/* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -11,7 +11,14 @@
 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 * See the License for the specific language governing permissions and
 * limitations under the License.
- */
+*
+Part of this work fall under the AtomAI Enterprise Edition (EE)
+and are licensed under the Business Source License 1.1,
+if you are the Cloud companies or your companies with revenue greater than $1M,
+please refer to [AGPL-3.0](./LICENSE-EE)) and LICENSE-EE for details,
+or production use of the Licensed Work requires a commercial license agreement with Zedsearch.
+Contact info@atomai.cc for licensing.
+*/
 
 package aggregation
 
@@ -30,6 +37,8 @@ type TopHit struct {
 	Index  string
 	Score  float64
 	Source []byte
+	// Stored holds copies of the stored fields named by SetStoredFields.
+	Stored map[string][]byte
 
 	sortKey []byte // doc value of the sort field, nil when sorting by _score
 }
@@ -47,6 +56,7 @@ type TopHitsAggregation struct {
 
 	sourceEnable bool
 	sourceFields []string
+	storedFields map[string]struct{}
 }
 
 // NewTopHitsAggregation returns the aggregation backing [top_hits].
@@ -58,6 +68,15 @@ func NewTopHitsAggregation(size, from int, sortField string, sortDesc bool) *Top
 // aggregation layer only carries the spec, the response layer applies it.
 func (a *TopHitsAggregation) SetSource(enable bool, fields []string) {
 	a.sourceEnable, a.sourceFields = enable, fields
+}
+
+// SetStoredFields names the stored fields kept with each hit besides _source,
+// e.g. vectors the response layer restores into _source.
+func (a *TopHitsAggregation) SetStoredFields(fields []string) {
+	a.storedFields = make(map[string]struct{}, len(fields))
+	for _, f := range fields {
+		a.storedFields[f] = struct{}{}
+	}
 }
 
 func (a *TopHitsAggregation) Fields() []string {
@@ -75,6 +94,7 @@ func (a *TopHitsAggregation) Calculator() search.Calculator {
 		sortDesc:     a.sortDesc,
 		sourceEnable: a.sourceEnable,
 		sourceFields: a.sourceFields,
+		storedFields: a.storedFields,
 	}
 }
 
@@ -89,6 +109,7 @@ type TopHitsCalculator struct {
 
 	sourceEnable bool
 	sourceFields []string
+	storedFields map[string]struct{}
 
 	hits  []TopHit
 	total uint64
@@ -114,6 +135,13 @@ func (c *TopHitsCalculator) Consume(d *search.DocumentMatch) {
 			hit.Index = string(value)
 		case "_source":
 			hit.Source = append([]byte(nil), value...)
+		default:
+			if _, ok := c.storedFields[field]; ok {
+				if hit.Stored == nil {
+					hit.Stored = make(map[string][]byte)
+				}
+				hit.Stored[field] = append([]byte(nil), value...)
+			}
 		}
 		return true
 	})
@@ -163,6 +191,15 @@ func (c *TopHitsCalculator) less(i, j int) bool {
 	}
 	return cmp < 0
 }
+
+// // StoredFields returns the names set by SetStoredFields.
+// func (c *TopHitsCalculator) StoredFields() []string {
+//     fields := make([]string, 0, len(c.storedFields))
+//     for f := range c.storedFields {
+//         fields = append(fields, f)
+//     }
+//     return fields
+// }
 
 // Err reports the first stored field error seen while collecting.
 func (c *TopHitsCalculator) Err() error { return c.err }

@@ -16,11 +16,45 @@
 package core
 
 import (
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+// NewShard appends second shards under the index lock, so every reader of
+// the slice must take it too; run with -race.
+func TestIndexShard_NewShardConcurrentReads(t *testing.T) {
+	name := t.Name() + ".index_1"
+	index, err := NewIndex(name, StorageTypeDisk, 1)
+	require.NoError(t, err)
+	require.NoError(t, StoreIndex(index))
+	t.Cleanup(func() { assert.NoError(t, DeleteIndex(name)) })
+	shard := anyShard(index)
+	require.NoError(t, shard.OpenWAL())
+	ZED_INDEX_SHARD_WAL_LIST.Remove(shard.GetShardName())
+
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	wg.Go(func() {
+		for range 3 {
+			assert.NoError(t, shard.NewShard())
+		}
+	})
+	for range 20 {
+		readers, err := shard.GetReaders(0, 0)
+		require.NoError(t, err)
+		for _, r := range readers {
+			require.NoError(t, r.Close())
+		}
+		index.UpdateStatsBySecondShard(shard.GetID(), 0)
+	}
+	wg.Wait()
+	require.NoError(t, shard.Close())
+	assert.Empty(t, index.openWriterStats())
+}
 
 func TestIndex_Shards(t *testing.T) {
 	type args struct {

@@ -1,5 +1,5 @@
 /* Copyright 2022 Zinc Labs Inc. and Contributors
-* Copyright 2026 AtomAI
+* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -12,13 +12,22 @@
 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 * See the License for the specific language governing permissions and
 * limitations under the License.
- */
+*
+Part of this work fall under the AtomAI Enterprise Edition (EE)
+and are licensed under the Business Source License 1.1,
+if you are the Cloud companies or your companies with revenue greater than $1M,
+please refer to [AGPL-3.0](./LICENSE-EE)) and LICENSE-EE for details,
+and production use of the Licensed Work requires a commercial license agreement with Zedsearch.
+Contact info@atomai.cc for licensing.
+*/
 
 package core
 
 import (
 	"context"
 	"fmt"
+	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -33,10 +42,9 @@ import (
 )
 
 func MultiSearch(indexNames []string, query *meta.ZedQuery) (*meta.SearchResponse, error) {
-	var mappings *meta.Mappings
-	var analyzers map[string]*analysis.Analyzer
 	var readers []*riot.Reader
 	var shardNum int64
+	indexes := make(map[string]*Index)
 
 	timeMin, timeMax := timerange.Query(query.Query)
 	isMatched := false
@@ -61,11 +69,7 @@ func MultiSearch(indexNames []string, query *meta.ZedQuery) (*meta.SearchRespons
 		}
 		readers = append(readers, reader...)
 		shardNum += index.GetShardNum()
-		if mappings == nil {
-			mappings = index.GetMappings()
-			analyzers = index.GetAnalyzers()
-		}
-
+		indexes[index.GetName()] = index
 	}
 
 	if len(readers) == 0 {
@@ -80,6 +84,8 @@ func MultiSearch(indexNames []string, query *meta.ZedQuery) (*meta.SearchRespons
 			reader.Close()
 		}
 	}()
+
+	mappings, analyzers := unionMappings(indexes)
 
 	// nested and join queries are resolved before query is parsed, and hidden
 	// nested documents are excluded from results.
@@ -113,7 +119,49 @@ func MultiSearch(indexNames []string, query *meta.ZedQuery) (*meta.SearchRespons
 		return nil, err
 	}
 
-	return searchV2(shardNum, int64(len(readers)), dmi, query, mappings)
+	return searchV2(shardNum, int64(len(readers)), dmi, query, mappings, analyzers, indexes)
+}
+
+// unionMappings returns the mappings and analyzers the query of a search over
+// indexes is parsed with: the fields and analyzers of every index, so default
+// fields, aggregations and top_hits cover them all. An index earlier by name
+// wins a name the indexes define differently, and _all is searched only when
+// every index has it. Hits are still rendered with their own index.
+func unionMappings(indexes map[string]*Index) (*meta.Mappings, map[string]*analysis.Analyzer) {
+	names := make([]string, 0, len(indexes))
+	for name := range indexes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	if len(names) == 1 {
+		return indexes[names[0]].GetMappings(), indexes[names[0]].GetAnalyzers()
+	}
+
+	mappings := meta.NewMappings()
+	analyzers := make(map[string]*analysis.Analyzer)
+	all := true
+	var shadowed []string // vector fields a name defined earlier hides
+	for _, name := range names {
+		m := indexes[name].GetMappings()
+		all = all && m.AllEnabled()
+		m.RangeProperty(func(field string, prop meta.Property) bool {
+			first, ok := mappings.Properties[field]
+			if !ok {
+				mappings.Properties[field] = prop
+			} else if prop.Type == "vector" && prop.Index && (first.Type != "vector" || !first.Index) && !slices.Contains(shadowed, field) {
+				shadowed = append(shadowed, field)
+			}
+			return true
+		})
+		for name, zer := range indexes[name].GetAnalyzers() {
+			if _, ok := analyzers[name]; !ok {
+				analyzers[name] = zer
+			}
+		}
+	}
+	mappings.SetAllEnabled(all)
+	mappings.AddVectorFields(shadowed...)
+	return mappings, analyzers
 }
 
 // isMatchIndex("abc", "a")  false

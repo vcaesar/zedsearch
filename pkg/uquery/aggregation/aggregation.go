@@ -1,5 +1,5 @@
 /* Copyright 2022 Zinc Labs Inc. and Contributors
-* Copyright 2026 AtomAI
+* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rs/zerolog/log"
 	"github.com/vcaesar/riot/search"
 	"github.com/vcaesar/riot/search/aggregations"
 
@@ -470,7 +471,7 @@ func Request(req zedaggregation.SearchAggregation, aggs map[string]meta.Aggregat
 			}
 			req.AddAggregation(name, subreq)
 		case agg.TopHits != nil:
-			subreq, err := topHitsAggregation(agg.TopHits)
+			subreq, err := topHitsAggregation(agg.TopHits, mappings)
 			if err != nil {
 				return err
 			}
@@ -560,7 +561,7 @@ func singleOrder(kind string, order map[string]string) (string, bool, error) {
 //
 // Deviation from elasticsearch: only a single sort key is supported, and the
 // hits carry _id, _index, _score and _source but no sort values.
-func topHitsAggregation(agg *meta.AggregationTopHits) (*zedaggregation.TopHitsAggregation, error) {
+func topHitsAggregation(agg *meta.AggregationTopHits, mappings *meta.Mappings) (*zedaggregation.TopHitsAggregation, error) {
 	if agg.Size < 0 || agg.From < 0 {
 		return nil, errors.New(errors.ErrorTypeParsingException, "[top_hits] aggregation size and from must not be negative")
 	}
@@ -579,6 +580,10 @@ func topHitsAggregation(agg *meta.AggregationTopHits) (*zedaggregation.TopHitsAg
 
 	rv := zedaggregation.NewTopHitsAggregation(size, agg.From, sortField, sortDesc)
 	rv.SetSource(src.Enable, src.Fields)
+	// the stored vectors are only copied for hits whose _source they are restored into
+	if src.Enable && mappings != nil {
+		rv.SetStoredFields(meta.NewSourceVectors(mappings.VectorFields()).Fields())
+	}
 	return rv, nil
 }
 
@@ -781,7 +786,15 @@ func topHitsResponse(name string, c *zedaggregation.TopHitsCalculator) (*meta.Ag
 			Score: hits[i].Score,
 		}
 		if len(hits[i].Source) > 0 {
-			hit.Source = source.Response(src, hits[i].Source)
+			// each hit names its own excluded vectors, so hits merged from
+			// several indexes need no shared field list
+			value, err := meta.RestoreSourceVectors(hits[i].Source, hits[i].Stored)
+			if err != nil {
+				// as search hits: keep the stored _source, without the vector
+				log.Error().Err(err).Str("aggregation", name).Str("id", hits[i].ID).Msg("top_hits: restore _source vectors")
+				value = hits[i].Source
+			}
+			hit.Source = source.Response(src, value)
 		}
 		rv.Hits = append(rv.Hits, hit)
 	}

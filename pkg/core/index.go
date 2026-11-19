@@ -1,5 +1,5 @@
 /* Copyright 2022 Zinc Labs Inc. and Contributors
-* Copyright 2026 AtomAI
+* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -12,7 +12,14 @@
 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 * See the License for the specific language governing permissions and
 * limitations under the License.
- */
+*
+Part of this work fall under the AtomAI Enterprise Edition (EE)
+and are licensed under the Business Source License 1.1,
+if you are the Cloud companies or your companies with revenue greater than $1M,
+please refer to [AGPL-3.0](./LICENSE-EE)) and LICENSE-EE for details,
+and production use of the Licensed Work requires a commercial license agreement with Zedsearch.
+Contact info@atomai.cc for licensing.
+*/
 
 package core
 
@@ -25,6 +32,7 @@ import (
 	"github.com/vcaesar/riot/analysis"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/vcaesar/zedsearch/pkg/config"
 	"github.com/vcaesar/zedsearch/pkg/logs"
 	"github.com/vcaesar/zedsearch/pkg/meta"
 	zedanalysis "github.com/vcaesar/zedsearch/pkg/uquery/analysis"
@@ -104,6 +112,22 @@ func (index *Index) GetSettings() *meta.IndexSettings {
 	s := index.ref.Settings
 	index.lock.RUnlock()
 	return s
+}
+
+// ExcludeSourceVectors reports whether new documents keep their vector
+// fields out of the stored _source.
+func (index *Index) ExcludeSourceVectors() bool {
+	// SetSettings sets the pointer once, under the lock; its value never changes
+	index.lock.RLock()
+	var exclude *bool
+	if s := index.ref.Settings; s != nil {
+		exclude = s.ExcludeSourceVectors
+	}
+	index.lock.RUnlock()
+	if exclude != nil {
+		return *exclude
+	}
+	return config.Global.ExcludeSourceVectors
 }
 
 func (index *Index) GetStats() meta.IndexStat {
@@ -196,6 +220,10 @@ func (index *Index) SetSettings(settings *meta.IndexSettings) error {
 	}
 	if settings.NumberOfShards > 0 && index.ref.Settings.NumberOfShards == 0 {
 		index.ref.Settings.NumberOfShards = settings.NumberOfShards
+	}
+	if settings.ExcludeSourceVectors != nil && index.ref.Settings.ExcludeSourceVectors == nil {
+		v := *settings.ExcludeSourceVectors
+		index.ref.Settings.ExcludeSourceVectors = &v
 	}
 	if settings.Tier != "" {
 		index.ref.Settings.Tier = settings.Tier
@@ -292,6 +320,38 @@ func (index *Index) SetMappings(mappings *meta.Mappings) error {
 	if index.ref.Mappings == nil {
 		index.ref.Mappings = meta.NewMappings()
 	}
+	sourceEnabled := index.ref.Mappings.SourceEnabled()
+	if mappings.Source != nil {
+		sourceEnabled = mappings.Source.Enabled
+	}
+	if !sourceEnabled {
+		// nested documents are rebuilt from the stored _source on update and delete
+		for field, prop := range mappings.ListProperty() {
+			if prop.Type == "nested" {
+				index.lock.Unlock()
+				return fmt.Errorf("[mappings] nested field [%s] requires _source", field)
+			}
+		}
+		if len(nestedPaths(index.ref.Mappings)) > 0 {
+			index.lock.Unlock()
+			return fmt.Errorf("[mappings] nested fields require _source")
+		}
+	}
+	// vectors excluded from _source are restored from the stored values of
+	// indexed vector fields, so an indexed vector field must stay one
+	for field, prop := range mappings.ListProperty() {
+		old, ok := index.ref.Mappings.GetProperty(field)
+		if ok && old.Type == "vector" && old.Index && (prop.Type != "vector" || !prop.Index) {
+			index.lock.Unlock()
+			return fmt.Errorf("[mappings] indexed vector field [%s] cannot change its type or disable index", field)
+		}
+	}
+	if mappings.Source != nil {
+		index.ref.Mappings.SetSourceEnabled(mappings.Source.Enabled)
+	}
+	if mappings.All != nil {
+		index.ref.Mappings.SetAllEnabled(mappings.All.Enabled)
+	}
 	for field, prop := range mappings.ListProperty() {
 		index.ref.Mappings.SetProperty(field, prop)
 	}
@@ -365,8 +425,14 @@ func (index *Index) UpdateMetadataByShard(id string) {
 	}
 
 	// update latest shard docTime
-	secondShard := shard.shards[shard.GetLatestShardID()]
+	index.publishDocTime(shard)
+}
+
+// publishDocTime copies the time range of the documents written to shard to
+// its latest second layer shard, where GetReaders reads it.
+func (index *Index) publishDocTime(shard *IndexShard) {
 	index.lock.Lock()
+	secondShard := shard.shards[shard.GetLatestShardID()]
 	atomic.StoreInt64(&secondShard.ref.Stats.DocTimeMin, atomic.LoadInt64(&shard.ref.Stats.DocTimeMin))
 	atomic.StoreInt64(&secondShard.ref.Stats.DocTimeMax, atomic.LoadInt64(&shard.ref.Stats.DocTimeMax))
 	index.lock.Unlock()
@@ -375,9 +441,9 @@ func (index *Index) UpdateMetadataByShard(id string) {
 // UpdateStatsBySecondShard update second layer shard stats, mainly docNum and storageSize
 func (index *Index) UpdateStatsBySecondShard(id string, secondIndex int64) {
 	shard := index.shards[id]
-	shard.lock.RLock()
+	index.lock.RLock()
 	secondShard := shard.shards[secondIndex]
-	shard.lock.RUnlock()
+	index.lock.RUnlock()
 
 	secondShard.lock.RLock()
 	w := secondShard.writer

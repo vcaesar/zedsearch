@@ -20,6 +20,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 
 	"github.com/vcaesar/zedsearch/pkg/config"
@@ -106,14 +108,44 @@ func TestSetPrometheus(t *testing.T) {
 	e = zhttp.New()
 	SetPrometheus(e)
 	e.GET("/healthz", func(c zhttp.Context) { c.Status(http.StatusOK) })
+	e.GET("/api/:target/_doc/:id", func(c zhttp.Context) { c.Status(http.StatusOK) })
 	core.SetMetricStatsByIndex("TestSetPrometheus.index", "docs", 3)
 
+	// the counters are process-global, so assert the delta to stay repeatable under -count
+	docRequests := requestsTotal.WithLabelValues("200", http.MethodGet, "/api/:target/_doc/:id")
+	before := testutil.ToFloat64(docRequests)
 	assert.Equal(t, http.StatusOK, serve(e, httptest.NewRequest(http.MethodGet, "/healthz", nil)).Code)
+	for _, id := range []string{"a1", "b2", "c3"} {
+		assert.Equal(t, http.StatusOK, serve(e, httptest.NewRequest(http.MethodGet, "/api/logs/_doc/"+id, nil)).Code)
+	}
+	assert.Equal(t, http.StatusNotFound, serve(e, httptest.NewRequest(http.MethodGet, "/no/such/x1", nil)).Code)
 	w := serve(e, httptest.NewRequest(http.MethodGet, metricsPath, nil))
 	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Contains(t, w.Body.String(), `zed_requests_total{code="200",method="GET",url="/healthz"}`)
+	body := w.Body.String()
+	assert.Contains(t, body, `zed_requests_total{code="200",method="GET",url="/healthz"}`)
+	assert.Contains(t, body, `zed_requests_total{code="200",method="GET",url="/api/:target/_doc/:id"}`)
+	assert.Equal(t, before+3, testutil.ToFloat64(docRequests))
+	assert.Contains(t, body, `zed_requests_total{code="404",method="GET",url="<unmatched>"}`)
+	assert.NotContains(t, body, "/api/logs/_doc/a1")
+	assert.NotContains(t, body, "/no/such/x1")
 	assert.Contains(t, w.Body.String(), "zed_request_duration_seconds")
 	assert.Contains(t, w.Body.String(), `zed_index_stats{field="docs",index="TestSetPrometheus.index"} 3`)
+
+	// the riot writer stats are served from the same registry
+	var registered prometheus.AlreadyRegisteredError
+	assert.ErrorAs(t, prometheus.Register(core.RiotCollector), &registered)
+}
+
+func TestSetPrometheusAuth(t *testing.T) {
+	prevEnable, prevAuth := config.Global.PrometheusEnable, config.Global.PrometheusAuth
+	t.Cleanup(func() { config.Global.PrometheusEnable, config.Global.PrometheusAuth = prevEnable, prevAuth })
+
+	config.Global.PrometheusEnable, config.Global.PrometheusAuth = true, true
+	e := zhttp.New()
+	SetPrometheus(e)
+	w := serve(e, httptest.NewRequest(http.MethodGet, metricsPath, nil))
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+	assert.NotContains(t, w.Body.String(), "zed_requests_total")
 }
 
 func TestSetPProf(t *testing.T) {

@@ -1,5 +1,5 @@
 /* Copyright 2022 Zinc Labs Inc. and Contributors
-* Copyright 2026 AtomAI
+* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -12,7 +12,14 @@
 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 * See the License for the specific language governing permissions and
 * limitations under the License.
- */
+*
+Part of this work fall under the AtomAI Enterprise Edition (EE)
+and are licensed under the Business Source License 1.1,
+if you are the Cloud companies or your companies with revenue greater than $1M,
+please refer to [AGPL-3.0](./LICENSE-EE)) and LICENSE-EE for details,
+or production use of the Licensed Work requires a commercial license agreement with Zedsearch.
+Contact info@atomai.cc for licensing.
+*/
 
 package aggregation
 
@@ -100,7 +107,7 @@ func (t *HistogramAggregation) Calculator() search.Calculator {
 		desc:           t.desc,
 		lessFunc:       t.lessFunc,
 		sortFunc:       t.sortFunc,
-		bucketsMap:     make(map[string]*search.Bucket),
+		bucketsMap:     make(map[uint64]*search.Bucket),
 	}
 }
 
@@ -123,9 +130,11 @@ type HistogramCalculator struct {
 	aggregations map[string]search.Aggregation
 
 	bucketsList []*search.Bucket
-	bucketsMap  map[string]*search.Bucket
-	total       int
-	other       int
+	// bucketsMap is keyed by the bits of the bucket's start, see bucketStart:
+	// the key name is only formatted when a bucket is created
+	bucketsMap map[uint64]*search.Bucket
+	total      int
+	other      int
 
 	desc     bool
 	lessFunc func(a, b *search.Bucket) bool
@@ -142,16 +151,14 @@ func (a *HistogramCalculator) Consume(d *search.DocumentMatch) {
 		if term > a.maxValue {
 			a.maxValue = term
 		}
-		termStr := a.bucketKey(term)
-		bucket, ok := a.bucketsMap[termStr]
-		if ok {
-			bucket.Consume(d)
-		} else {
-			newBucket := search.NewBucket(termStr, a.aggregations)
-			newBucket.Consume(d)
-			a.bucketsMap[termStr] = newBucket
-			a.bucketsList = append(a.bucketsList, newBucket)
+		start := a.bucketStart(term)
+		bucket, ok := a.bucketsMap[start]
+		if !ok {
+			bucket = search.NewBucket(bucketName(start), a.aggregations)
+			a.bucketsMap[start] = bucket
+			a.bucketsList = append(a.bucketsList, bucket)
 		}
+		bucket.Consume(d)
 	}
 }
 
@@ -159,6 +166,9 @@ func (a *HistogramCalculator) Merge(other search.Calculator) {
 	if other, ok := other.(*HistogramCalculator); ok {
 		// first sum to the totals and others
 		a.total += other.total
+		// gaps are filled over the values of both
+		a.minValue = min(a.minValue, other.minValue)
+		a.maxValue = max(a.maxValue, other.maxValue)
 		// now, walk all of the other buckets
 		// if we have a local match, merge otherwise append
 		for i := range other.bucketsList {
@@ -199,10 +209,17 @@ func (a *HistogramCalculator) Finish() {
 	}
 	// check bucket
 	if a.minDocCount == 0 {
+		// the list tells which buckets exist: merged buckets and the gaps
+		// of an earlier Finish are not in bucketsMap
+		names := make(map[string]struct{}, len(a.bucketsList))
+		for _, bucket := range a.bucketsList {
+			names[bucket.Name()] = struct{}{}
+		}
 		for value := a.minValue; value < a.maxValue; value += a.interval {
-			termStr := a.bucketKey(value)
-			if _, ok := a.bucketsMap[termStr]; !ok {
-				a.bucketsList = append(a.bucketsList, search.NewBucket(termStr, a.aggregations))
+			name := bucketName(a.bucketStart(value))
+			if _, ok := names[name]; !ok {
+				names[name] = struct{}{}
+				a.bucketsList = append(a.bucketsList, search.NewBucket(name, a.aggregations))
 			}
 		}
 	} else {
@@ -259,7 +276,12 @@ func (a *HistogramCalculator) Swap(i, j int) {
 	a.bucketsList[i], a.bucketsList[j] = a.bucketsList[j], a.bucketsList[i]
 }
 
-func (a *HistogramCalculator) bucketKey(value float64) string {
-	f := math.Floor((value-a.offset)/a.interval)*a.interval + a.offset
-	return strconv.FormatFloat(f, 'f', -1, 64)
+// bucketStart returns the bits of the start of value's bucket.
+func (a *HistogramCalculator) bucketStart(value float64) uint64 {
+	return math.Float64bits(math.Floor((value-a.offset)/a.interval)*a.interval + a.offset)
+}
+
+// bucketName is the key of the bucket starting at bucketStart's start.
+func bucketName(start uint64) string {
+	return strconv.FormatFloat(math.Float64frombits(start), 'f', -1, 64)
 }

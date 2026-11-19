@@ -1,5 +1,5 @@
 /* Copyright 2022 Zinc Labs Inc. and Contributors
-* Copyright 2026 AtomAI
+* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -12,7 +12,14 @@
 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 * See the License for the specific language governing permissions and
 * limitations under the License.
- */
+*
+Part of this work fall under the AtomAI Enterprise Edition (EE)
+and are licensed under the Business Source License 1.1,
+if you are the Cloud companies or your companies with revenue greater than $1M,
+please refer to [AGPL-3.0](./LICENSE-EE)) and LICENSE-EE for details,
+or production use of the Licensed Work requires a commercial license agreement with Zedsearch.
+Contact info@atomai.cc for licensing.
+*/
 
 package mappings
 
@@ -54,6 +61,17 @@ func Request(analyzers map[string]*analysis.Analyzer, data map[string]interface{
 		return Request(analyzers, map[string]interface{}{"properties": properties})
 	}
 
+	source, err := sourceMapping("_source", data["_source"])
+	if err != nil {
+		return nil, err
+	}
+	all, err := sourceMapping("_all", data["_all"])
+	if err != nil {
+		return nil, err
+	}
+	if data["properties"] == nil && (source != nil || all != nil) && len(data) == btoi(source != nil)+btoi(all != nil) {
+		data = map[string]interface{}{"properties": map[string]interface{}{}}
+	}
 	if data["properties"] == nil {
 		return nil, errors.New(errors.ErrorTypeParsingException, "[mappings] properties should be defined")
 	}
@@ -64,6 +82,8 @@ func Request(analyzers map[string]*analysis.Analyzer, data map[string]interface{
 	}
 
 	mappings := meta.NewMappings()
+	mappings.Source = source
+	mappings.All = all
 	for field, prop := range properties {
 		var propFields map[string]interface{}
 
@@ -174,6 +194,9 @@ func Request(analyzers map[string]*analysis.Analyzer, data map[string]interface{
 			return nil, errors.New(errors.ErrorTypeXContentParseException, fmt.Sprintf("[mappings] properties [%s] doesn't support type [%s]", field, propTypeStr))
 		}
 
+		var indexOptionsKey string
+		var indexOptionsTyped bool
+		var compression, mode interface{}
 		for k, v := range prop {
 			switch k {
 			case "type":
@@ -199,12 +222,18 @@ func Request(analyzers map[string]*analysis.Analyzer, data map[string]interface{
 				}
 				newProp.Dims = dims
 			case "index_options", "method":
+				// whichever the map yields last would win
+				if indexOptionsKey != "" {
+					return nil, errors.New(errors.ErrorTypeParsingException, fmt.Sprintf("[mappings] properties [%s] index_options and method cannot be combined", field))
+				}
 				opts, err := parseVectorIndexOptions(field, k, v)
 				if err != nil {
 					return nil, err
 				}
-				newProp.IndexOptions = opts
-				if m, ok := v.(map[string]interface{}); ok && k == "method" && m["space_type"] != nil {
+				newProp.IndexOptions, indexOptionsKey = opts, k
+				m, _ := v.(map[string]interface{})
+				indexOptionsTyped = k == "index_options" && m["type"] != nil
+				if k == "method" && m["space_type"] != nil {
 					if newProp.Similarity, err = parseVectorSimilarity(field, m["space_type"]); err != nil {
 						return nil, err
 					}
@@ -219,6 +248,10 @@ func Request(analyzers map[string]*analysis.Analyzer, data map[string]interface{
 					return nil, err
 				}
 				newProp.Similarity = metric
+			case "compression_level":
+				compression = v
+			case "mode":
+				mode = v
 			case "store":
 				newProp.Store = v.(bool)
 			case "sortable":
@@ -235,6 +268,12 @@ func Request(analyzers map[string]*analysis.Analyzer, data map[string]interface{
 
 		if newProp.Highlightable {
 			newProp.Store = true
+		}
+
+		if newProp.Type == "vector" && (compression != nil || mode != nil) {
+			if err := applyVectorCompression(field, &newProp, indexOptionsKey != "", indexOptionsTyped, compression, mode); err != nil {
+				return nil, err
+			}
 		}
 
 		if newProp.Type == "vector" {
@@ -276,6 +315,37 @@ func Request(analyzers map[string]*analysis.Analyzer, data map[string]interface{
 	}
 
 	return mappings, nil
+}
+
+// sourceMapping parses the Elasticsearch `_source` or `_all` mapping, only "enabled".
+func sourceMapping(name string, v interface{}) (*meta.SourceMapping, error) {
+	if v == nil {
+		return nil, nil
+	}
+	m, ok := v.(map[string]interface{})
+	if !ok {
+		return nil, errors.New(errors.ErrorTypeParsingException, "[mappings] "+name+" should be an object")
+	}
+	source := &meta.SourceMapping{Enabled: true}
+	for k, v := range m {
+		if k != "enabled" {
+			return nil, errors.New(errors.ErrorTypeParsingException, fmt.Sprintf("[mappings] %s does not support [%s]", name, k))
+		}
+		enabled, err := zutils.ToBool(v)
+		// ToBool takes any nonzero number for true
+		if _, number := v.(float64); err != nil || number {
+			return nil, errors.New(errors.ErrorTypeParsingException, "[mappings] "+name+".enabled should be a boolean")
+		}
+		source.Enabled = enabled
+	}
+	return source, nil
+}
+
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // newNestedProperty returns property of "nested" type. Nested property holds
@@ -327,8 +397,9 @@ func parseVectorSimilarity(field string, v interface{}) (riot.Metric, error) {
 var vectorIndexLimits = map[string][2]int{"m": {2, 512}, "ef_construction": {1, 3200}}
 
 // parseVectorIndexOptions parses the HNSW parameters of a vector field from
-// Elasticsearch index_options {"type": "hnsw", "m": 16, "ef_construction": 100}
+// Elasticsearch index_options {"type": "int8_hnsw", "m": 16, "ef_construction": 100}
 // or OpenSearch method {"name": "hnsw", "parameters": {"m": 16, "ef_construction": 100}}.
+// Elasticsearch defaults to int8_hnsw, OpenSearch hnsw to float32 graphs.
 // Flat (brute force) types return nil, keeping exact search for the field.
 func parseVectorIndexOptions(field, key string, v interface{}) (*meta.VectorIndexOptions, error) {
 	fail := func(msg string) error {
@@ -347,19 +418,26 @@ func parseVectorIndexOptions(field, key string, v interface{}) (*meta.VectorInde
 			}
 		}
 	}
+	opts := &meta.VectorIndexOptions{Type: meta.VectorIndexInt8HNSW}
+	if key == "method" {
+		opts.Type = meta.VectorIndexHNSW
+	}
 	if t, ok := raw[kind]; ok {
 		name, err := zutils.ToString(t)
 		if err != nil {
 			return nil, fail(kind + " must be a string")
 		}
 		switch name = strings.ToLower(name); {
-		case strings.HasSuffix(name, "flat"):
+		case name == "flat" || name == "int8_flat":
 			return nil, nil
-		case !strings.HasSuffix(name, "hnsw"):
-			return nil, fail(fmt.Sprintf("unsupported %s [%s], expected hnsw or flat", kind, name))
+		case name == meta.VectorIndexHNSW || (key != "method" && name == meta.VectorIndexInt8HNSW):
+			opts.Type = name
+		case key == "method":
+			return nil, fail(fmt.Sprintf("unsupported %s [%s], expected hnsw", kind, name))
+		default:
+			return nil, fail(fmt.Sprintf("unsupported %s [%s], expected hnsw, int8_hnsw, flat or int8_flat", kind, name))
 		}
 	}
-	opts := new(meta.VectorIndexOptions)
 	for name, dst := range map[string]*int{"m": &opts.M, "ef_construction": &opts.EfConstruction} {
 		pv, ok := params[name]
 		if !ok {
@@ -373,6 +451,56 @@ func parseVectorIndexOptions(field, key string, v interface{}) (*meta.VectorInde
 		*dst = n
 	}
 	return opts, nil
+}
+
+// vectorCompressionTypes maps OpenSearch compression_level to index types;
+// riot graphs hold float32 vectors or int8 codes.
+var vectorCompressionTypes = map[string]string{"1x": meta.VectorIndexHNSW, "4x": meta.VectorIndexInt8HNSW}
+
+// applyVectorCompression applies OpenSearch knn_vector compression_level
+// and mode to prop. Without compression_level, mode on_disk takes 4x, the
+// highest riot supports, and in_memory 1x. Either enables HNSW search.
+// hasOptions tells index_options or method was given, typed that
+// index_options named its type: a default type yields to the compression.
+func applyVectorCompression(field string, prop *meta.Property, hasOptions, typed bool, compression, mode interface{}) error {
+	fail := func(msg string) error {
+		return errors.New(errors.ErrorTypeParsingException, fmt.Sprintf("[mappings] properties [%s] %s", field, msg))
+	}
+	level := "1x"
+	if mode != nil {
+		name, err := zutils.ToString(mode)
+		switch name = strings.ToLower(name); {
+		case err != nil || (name != "in_memory" && name != "on_disk"):
+			return fail(fmt.Sprintf("unsupported mode [%v], expected in_memory or on_disk", mode))
+		case name == "on_disk":
+			level = "4x"
+		}
+	}
+	if compression != nil {
+		name, err := zutils.ToString(compression)
+		if err != nil {
+			return fail("compression_level must be a string")
+		}
+		level = strings.ToLower(name)
+	}
+	typ, ok := vectorCompressionTypes[level]
+	switch {
+	case ok:
+	case level == "2x" || level == "8x" || level == "16x" || level == "32x":
+		return fail(fmt.Sprintf("compression_level [%s] is not supported, expected 1x or 4x", level))
+	default:
+		return fail(fmt.Sprintf("invalid compression_level [%s], expected 1x or 4x", level))
+	}
+	switch {
+	case hasOptions && prop.IndexOptions == nil:
+		return fail("compression_level and mode require an hnsw index")
+	case prop.IndexOptions == nil:
+		prop.IndexOptions = &meta.VectorIndexOptions{}
+	case typed && prop.IndexOptions.Type != typ:
+		return fail(fmt.Sprintf("compression_level [%s] conflicts with index_options type [%s]", level, prop.IndexOptions.Type))
+	}
+	prop.IndexOptions.Type = typ
+	return nil
 }
 
 // parseRelations parses relations of "join" property, mapping name of parent
