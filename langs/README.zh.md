@@ -26,6 +26,29 @@ ZedSearch 是一个进行全文索引的搜索引擎。它是 Elasticsearch 的�
 
 <!-- [![Zed Youtube](../screenshots/zed-youtube.jpg)](https://www.youtube.com/watch?v=aZXtuVjt1ow) -->
 
+## Homebrew
+
+macOS 和 Linux，通过 [vcaesar/homebrew-tap](https://github.com/vcaesar/homebrew-tap) 安装：
+
+```sh
+brew install vcaesar/tap/zedsearch
+```
+
+## Docker
+
+镜像发布在 [Docker Hub](https://hub.docker.com/r/riotgo/zedsearch)，名称为 `riotgo/zedsearch`（linux/amd64、linux/arm64、linux/arm/v7）：
+
+运行前，请将环境变量 `ZED_FIRST_ADMIN_PASSWORD` 设置为所选密码：
+
+```sh
+docker run -d --name zedsearch -p 4080:4080 \
+    -v zedsearch-data:/data -e ZED_DATA_PATH=/data \
+    -e ZED_FIRST_ADMIN_USER=admin -e "ZED_FIRST_ADMIN_PASSWORD=${ZED_FIRST_ADMIN_PASSWORD:?Set ZED_FIRST_ADMIN_PASSWORD}" \
+    riotgo/zedsearch:latest
+```
+
+命名卷 `zedsearch-data` 可由容器用户（uid 10001）写入；如需改用宿主机目录，请先运行 `mkdir -p ./data && sudo chown 10001:10001 ./data`，再挂载 `-v "$PWD/data:/data"`。
+
 # 为什么选择 ZedSearch
 
 虽然 Elasticsearch 是一款非常优秀的产品，但它复杂、需要大量资源，而且已有十多年历史。我构建 ZedSearch 是为了让大家无需做大量工作就能更轻松地使用全文搜索索引。
@@ -101,29 +124,6 @@ go + gin + react
 ZedSearch 已有数百个生产环境部署。
 
 各平台的二进制文件见 [Releases 页面](https://github.com/vcaesar/zedsearch/releases/latest)。默认归档文件未使用 UPX 压缩；为了更小的下载体积，所有 Linux 版本和 Windows amd64 版本还额外提供经 [UPX](https://upx.github.io/) 压缩的 `*_upx.tar.gz`（启动略慢，且部分杀毒软件可能会误报压缩过的 `.exe` 文件）。
-
-## Homebrew
-
-macOS 和 Linux，通过 [vcaesar/homebrew-tap](https://github.com/vcaesar/homebrew-tap) 安装：
-
-```sh
-brew install vcaesar/tap/zedsearch
-```
-
-## Docker
-
-镜像发布在 [Docker Hub](https://hub.docker.com/r/riotgo/zedsearch)，名称为 `riotgo/zedsearch`（linux/amd64、linux/arm64、linux/arm/v7）：
-
-运行前，请将环境变量 `ZED_FIRST_ADMIN_PASSWORD` 设置为所选密码：
-
-```sh
-docker run -d --name zedsearch -p 4080:4080 \
-    -v zedsearch-data:/data -e ZED_DATA_PATH=/data \
-    -e ZED_FIRST_ADMIN_USER=admin -e "ZED_FIRST_ADMIN_PASSWORD=${ZED_FIRST_ADMIN_PASSWORD:?Set ZED_FIRST_ADMIN_PASSWORD}" \
-    riotgo/zedsearch:latest
-```
-
-命名卷 `zedsearch-data` 可由容器用户（uid 10001）写入；如需改用宿主机目录，请先运行 `mkdir -p ./data && sudo chown 10001:10001 ./data`，再挂载 `-v "$PWD/data:/data"`。
 
 ## 构建
 
