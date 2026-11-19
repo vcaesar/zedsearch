@@ -7,7 +7,7 @@ import Login from './views/Login';
 import Search from './views/Search';
 import Index from './views/Index';
 import Template from './views/Template';
-// import Fleet from './views/Fleet'; // TODO: restore with the fleet backend
+// import Fleet from './views/Fleet';
 import User from './views/User';
 import Role from './views/Role';
 import About from './views/About';
@@ -42,7 +42,7 @@ function Console() {
       <div className="rail-utilities">
         <button className="rail-link" type="button" aria-label="Settings" title="Settings" onClick={() => setEditingSettings(true)}><Icon name="settings" /></button>
         <a className="rail-link" href={`${apiEndpoint}/swagger/index.html`} target="_blank" rel="noreferrer" aria-label={t('menu.openapi')} title={t('menu.openapi')}><Icon name="openapi" /></a>
-        <a className="rail-link" href="https://github.com/vcaesar/zedsearch/blob/main/docs/web/index.md" target="_blank" rel="noreferrer" aria-label={t('menu.documentation')} title={t('menu.documentation')}><Icon name="documentation" /></a>
+        <a className="rail-link" href="https://github.com/vcaesar/zedsearch/blob/dev/docs/web/index.md" target="_blank" rel="noreferrer" aria-label={t('menu.documentation')} title={t('menu.documentation')}><Icon name="documentation" /></a>
         <button className="rail-link" type="button" aria-label={t('menu.signOut')} title={t('menu.signOut')} onClick={() => setCredentials(null)}><Icon name="signOut" /></button>
       </div>
     </aside>}
@@ -67,7 +67,10 @@ function Console() {
         <Routes>
           <Route index element={<Navigate to="/search" replace />} />
           {Object.keys(retainedPages).map(key => <Route key={key} path={key} element={null} />)}
-          {/* <Route path="/fleet" element={<Fleet />} /> */}<Route path="/user" element={<User />} /><Route path="/role" element={<Role />} /><Route path="/about" element={<About />} />
+          {/* <Route path="/fleet" element={<Fleet />} /> */}
+          <Route path="/user" element={<User />} />
+          <Route path="/role" element={<Role />} />
+          <Route path="/about" element={<About />} />
           <Route path="*" element={<section className="card"><h1>404</h1><p>Sorry, nothing here…</p><Link to="/search">Go Home</Link></section>} />
         </Routes>
       </main>

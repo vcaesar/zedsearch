@@ -48,7 +48,7 @@ it('keeps rail and section navigation in sync and supports collapsing the rail',
   expect(screen.getByRole('link', { name: 'Index' })).toHaveAttribute('aria-current', 'page');
   expect(screen.getByRole('link', { name: 'Skip to content' })).toHaveAttribute('href', '#workspace');
   expect(screen.getByRole('main')).toHaveAttribute('id', 'workspace');
-  expect(screen.getByRole('link', { name: 'Docs' })).toHaveAttribute('href', 'https://github.com/vcaesar/zedsearch/blob/main/docs/web/index.md');
+  expect(screen.getByRole('link', { name: 'Docs' })).toHaveAttribute('href', 'https://github.com/vcaesar/zedsearch/blob/dev/docs/web/index.md');
   await user.click(screen.getByRole('button', { name: 'Settings' }));
   expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument();
   await user.click(screen.getByRole('button', { name: 'Close' }));
