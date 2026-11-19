@@ -118,3 +118,30 @@ func TestRebalanceKeepsInSyncOwner(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "n1", current[0].Owner)
 }
+
+func TestInSyncFailures(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("get fails", func(t *testing.T) {
+		assigner := NewAssigner(newFaultStore(failOn(errFault, "/test/insync", "Get")), "/test/", 8)
+		_, _, err := assigner.ListInSync(ctx)
+		assert.ErrorIs(t, err, errFault)
+		assert.ErrorIs(t, assigner.UpdateInSync(ctx, "idx", []string{"a"}), errFault)
+	})
+	t.Run("bad value", func(t *testing.T) {
+		store := NewMemoryStore()
+		assigner := NewAssigner(store, "/test/", 8)
+		_, err := store.Put(ctx, assigner.InSyncKey(), []byte("["), NoLease)
+		require.NoError(t, err)
+		_, _, err = assigner.ListInSync(ctx)
+		assert.Error(t, err)
+	})
+	t.Run("swap fails", func(t *testing.T) {
+		assigner := NewAssigner(newFaultStore(failOn(errFault, "/test/insync", "CompareAndSwap")), "/test/", 8)
+		assert.ErrorIs(t, assigner.UpdateInSync(ctx, "idx", []string{"a"}), errFault)
+	})
+	t.Run("swap keeps losing", func(t *testing.T) {
+		assigner := NewAssigner(newFaultStore(failOn(errLose, "/test/insync", "CompareAndSwap")), "/test/", 8)
+		assert.ErrorContains(t, assigner.UpdateInSync(ctx, "idx", []string{"a"}), "kept changing")
+	})
+}

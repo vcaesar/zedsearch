@@ -201,3 +201,64 @@ func TestFenceWatchTracksHandoff(t *testing.T) {
 	assert.False(t, fence.IsLocalOwner(index))
 	assert.Error(t, fence.CheckEpoch(index, first.Epoch))
 }
+
+func TestFenceDefaultsAndError(t *testing.T) {
+	fence := NewFence(NewAssigner(NewMemoryStore(), "/test/", 0), "node-a", 0)
+	assert.Equal(t, DefaultPartitions, fence.partitions)
+	assert.Equal(t, "node-a", fence.NodeID())
+
+	err := &EpochError{Index: "logs", Owner: "node-b", Have: 3, Want: 5}
+	assert.Equal(t, `cluster: partition of index "logs" moved to "node-b" (epoch 5, presented 3)`, err.Error())
+}
+
+func TestFenceRefreshReplicasFails(t *testing.T) {
+	store := newFaultStore(failOn(errFault, "/test/replicas", "Get"))
+	fence, _ := newTestFence(t, store, "node-a")
+	assert.ErrorIs(t, fence.Refresh(context.Background()), errFault)
+}
+
+func TestFenceRunLogsFailures(t *testing.T) {
+	store := newFaultStore(failOn(errFault, "/test/", "Watch", "List"))
+	fence, _ := newTestFence(t, store, "node-a")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	fence.Run(ctx, 5*time.Millisecond)
+	assert.Empty(t, fence.Assignments())
+}
+
+func TestFenceRunStopsOnClosedWatch(t *testing.T) {
+	store := NewMemoryStore()
+	fence, _ := newTestFence(t, store, "node-a")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		fence.Run(ctx, time.Minute)
+	}()
+	// closing the store ends both watch streams, Run keeps going until ctx ends
+	require.Eventually(t, func() bool {
+		store.mu.Lock()
+		defer store.mu.Unlock()
+		return len(store.watchers) == 2
+	}, time.Second, time.Millisecond)
+	require.NoError(t, store.Close())
+	time.Sleep(10 * time.Millisecond)
+	cancel()
+	<-done
+}
+
+func TestFenceApplyIgnoresBadEvents(t *testing.T) {
+	fence, assigner := newTestFence(t, NewMemoryStore(), "node-a")
+	prefix := assigner.AssignPrefix()
+
+	fence.apply(Event{Type: EventPut, KV: KV{Key: prefix, Revision: 1}})
+	fence.apply(Event{Type: EventPut, KV: KV{Key: prefix + "x", Revision: 2}})
+	fence.apply(Event{Type: EventPut, KV: KV{Key: prefix + "1", Value: []byte("{"), Revision: 3}})
+	assert.Empty(t, fence.Assignments())
+
+	fence.applyReplicas(Event{Type: EventPut, KV: KV{Key: "/other", Value: []byte(`{"1":["b"]}`)}})
+	fence.applyReplicas(Event{Type: EventPut, KV: KV{Key: assigner.ReplicasKey(), Value: []byte("{")}})
+	fence.mu.RLock()
+	defer fence.mu.RUnlock()
+	assert.Empty(t, fence.replicas)
+}

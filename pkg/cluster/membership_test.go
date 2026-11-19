@@ -208,3 +208,99 @@ func TestMembershipWatch(t *testing.T) {
 		t.Fatal("no membership event")
 	}
 }
+
+func TestMembershipFailures(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("grant fails", func(t *testing.T) {
+		store := newFaultStore(failOn(errFault, "", "Grant"))
+		assert.ErrorIs(t, testMembership(store, "a", time.Minute).Join(ctx), errFault)
+	})
+	t.Run("put fails and the lease is revoked", func(t *testing.T) {
+		store := newFaultStore(failOn(errFault, "/test/", "Put"))
+		assert.ErrorIs(t, testMembership(store, "a", time.Minute).Join(ctx), errFault)
+	})
+	t.Run("put and revoke fail", func(t *testing.T) {
+		store := newFaultStore(func(op, key string) error {
+			if op == "Put" || op == "Revoke" {
+				return errFault
+			}
+			return nil
+		})
+		assert.ErrorIs(t, testMembership(store, "a", time.Minute).Join(ctx), errFault)
+	})
+	t.Run("keepalive error is returned", func(t *testing.T) {
+		store := newFaultStore(nil)
+		m := testMembership(store, "a", time.Minute)
+		require.NoError(t, m.Join(ctx))
+		store.setRule(failOn(errFault, "", "KeepAlive"))
+		assert.ErrorIs(t, m.KeepAlive(ctx), errFault)
+	})
+	t.Run("list fails", func(t *testing.T) {
+		store := newFaultStore(failOn(errFault, "/test/", "List"))
+		m := testMembership(store, "a", time.Minute)
+		_, err := m.ListNodes(ctx)
+		assert.ErrorIs(t, err, errFault)
+		assert.ErrorIs(t, m.Refresh(ctx), errFault)
+	})
+}
+
+func TestMembershipKeepAliveWithoutLeaseJoins(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	m := testMembership(store, "a", time.Minute)
+
+	require.NoError(t, m.Leave(ctx), "leaving without a lease is a no-op")
+	require.NoError(t, m.KeepAlive(ctx))
+	assert.NotEqual(t, NoLease, m.Lease())
+	assert.True(t, m.Live())
+}
+
+func TestMembershipListSkipsBadRecord(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	m := testMembership(store, "a", time.Minute)
+	require.NoError(t, m.Join(ctx))
+	_, err := store.Put(ctx, m.NodesPrefix()+"broken", []byte("{"), NoLease)
+	require.NoError(t, err)
+
+	nodes, err := m.ListNodes(ctx)
+	require.NoError(t, err)
+	require.Len(t, nodes, 1)
+	assert.Equal(t, "a", nodes[0].ID)
+}
+
+func TestMembershipApply(t *testing.T) {
+	m := testMembership(NewMemoryStore(), "a", time.Minute)
+	prefix := m.NodesPrefix()
+
+	// events before the first Refresh start the cache
+	m.apply(Event{Type: EventPut, KV: KV{Key: prefix + "b", Value: []byte(`{"id":"b","addr":"http://b"}`)}})
+	addr, ok := m.Addr("b")
+	require.True(t, ok)
+	assert.Equal(t, "http://b", addr)
+
+	m.apply(Event{Type: EventPut, KV: KV{Key: prefix}})                           // no id
+	m.apply(Event{Type: EventPut, KV: KV{Key: prefix + "c", Value: []byte("{")}}) // bad record
+	m.apply(Event{Type: EventDelete, KV: KV{Key: prefix + "b"}})
+	_, ok = m.Addr("b")
+	assert.False(t, ok)
+	_, ok = m.Addr("c")
+	assert.False(t, ok)
+}
+
+func TestMembershipRunFailures(t *testing.T) {
+	store := newFaultStore(failOn(errFault, "/test/", "List", "Watch"))
+	m := testMembership(store, "a", time.Minute)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		m.Run(ctx, 5*time.Millisecond)
+	}()
+	time.Sleep(30 * time.Millisecond) // a few failing refresh ticks
+	cancel()
+	<-done
+	_, ok := m.Addr("a")
+	assert.False(t, ok)
+}
