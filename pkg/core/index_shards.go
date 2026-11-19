@@ -229,10 +229,12 @@ func (s *IndexShard) GetWriters() ([]*riot.Writer, error) {
 // GetReaders return all shard readers
 func (s *IndexShard) GetReaders(timeMin, timeMax int64) ([]*riot.Reader, error) {
 	rs := make([]*riot.Reader, 0, 1)
-	chs := make(chan *riot.Reader, s.GetShardNum())
+	// one snapshot: a concurrent NewShard must not add senders beyond the buffer
+	shardNum := s.GetShardNum()
+	chs := make(chan *riot.Reader, shardNum)
 	eg := errgroup.Group{}
 	eg.SetLimit(config.Global.Shard.GoroutineNum)
-	for i := s.GetLatestShardID(); i >= 0; i-- {
+	for i := shardNum - 1; i >= 0; i-- {
 		i := i
 		s.root.lock.RLock()
 		secondShard := s.shards[i]
