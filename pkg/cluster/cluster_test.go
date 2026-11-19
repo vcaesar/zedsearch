@@ -18,6 +18,7 @@ package cluster
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -197,8 +198,8 @@ func TestClusterConcurrentStart(t *testing.T) {
 }
 
 func TestKeyPrefix(t *testing.T) {
-	previous := config.Global
-	t.Cleanup(func() { config.Global = previous })
+	etcd, cluster := config.Global.Etcd, config.Global.Cluster
+	t.Cleanup(func() { config.Global.Etcd, config.Global.Cluster = etcd, cluster })
 
 	config.Global.Etcd.Prefix = "/zed"
 	config.Global.Cluster.Name = "prod"
@@ -210,4 +211,141 @@ func TestKeyPrefix(t *testing.T) {
 	config.Global.Etcd.Prefix = ""
 	config.Global.Cluster.Name = ""
 	assert.Equal(t, "/zed/cluster/zedsearch/", KeyPrefix())
+}
+
+// startFaultCluster brings the package global up on a faultStore.
+func startFaultCluster(t *testing.T, ttl, interval time.Duration) *faultStore {
+	t.Helper()
+	previous := config.Global.Cluster
+	config.Global.Cluster.Name = "test-cluster"
+	config.Global.Cluster.NodeID = "node-a"
+	config.Global.Cluster.AdvertiseAddr = "https://node-a:4080/"
+	config.Global.Cluster.Partitions = 4
+	config.Global.Cluster.HeartbeatTTL = ttl
+	config.Global.Cluster.HeartbeatInterval = interval
+
+	store := newFaultStore(nil)
+	require.NoError(t, StartWith(context.Background(), store))
+	t.Cleanup(func() {
+		store.setRule(nil)
+		Stop()
+		config.Global.Cluster = previous
+	})
+	return store
+}
+
+func TestClusterStopLogsFailures(t *testing.T) {
+	store := startFaultCluster(t, 15*time.Second, 10*time.Millisecond)
+	require.Eventually(t, IsLeader, 3*time.Second, 5*time.Millisecond)
+
+	store.setRule(failOn(errFault, "", "Revoke", "Close"))
+	Stop()
+	assert.False(t, Enabled())
+}
+
+func TestClusterFailedStartLeaveFails(t *testing.T) {
+	previous := config.Global.Cluster
+	t.Cleanup(func() { config.Global.Cluster = previous })
+	config.Global.Cluster.Name = "test-cluster"
+	config.Global.Cluster.NodeID = "node-a"
+
+	store := newFaultStore(func(op, key string) error {
+		if op == "Revoke" || op == "List" && strings.HasPrefix(key, KeyPrefix()+"assign/") {
+			return errFault
+		}
+		return nil
+	})
+	assert.ErrorIs(t, StartWith(context.Background(), store), errFault)
+	assert.False(t, Enabled())
+}
+
+func TestClusterHeartbeatFailureIsLogged(t *testing.T) {
+	store := startFaultCluster(t, 15*time.Second, 5*time.Millisecond)
+	store.setRule(failOn(errFault, "", "KeepAlive"))
+	time.Sleep(30 * time.Millisecond)
+	store.setRule(nil)
+	assert.True(t, Enabled())
+}
+
+func TestClusterReadFailures(t *testing.T) {
+	store := startFaultCluster(t, 15*time.Second, 10*time.Millisecond)
+	local := Local()
+	require.NotNil(t, local)
+	assert.Equal(t, "https://node-a:4080", local.Addr, "the trailing slash is dropped")
+
+	_, ok := NodeAddr("ghost")
+	assert.False(t, ok, "an unknown node has no address after a refresh")
+
+	store.setRule(failOn(errFault, KeyPrefix()+"nodes/", "List"))
+	_, ok = NodeAddr("ghost")
+	assert.False(t, ok)
+
+	nodes := Nodes()
+	require.Len(t, nodes, 1, "a failed list falls back to the local node")
+	assert.Equal(t, "node-a", nodes[0].ID)
+}
+
+func TestClusterNotLive(t *testing.T) {
+	// a long ttl keeps the heartbeat from re-joining during the test
+	startFaultCluster(t, time.Hour, 30*time.Minute)
+	require.NoError(t, get().membership.Leave(context.Background()))
+
+	assert.ErrorIs(t, CheckEpoch("logs", 0), ErrNotLive)
+	assert.False(t, IsLocalOwner("logs"))
+}
+
+func TestClusterReplicasAndInSync(t *testing.T) {
+	ctx := context.Background()
+	assert.Nil(t, Replicas("logs"))
+	assert.False(t, IsLocalReplica("logs"))
+	assert.NoError(t, UpdateInSync(ctx, "logs", []string{"node-b"}))
+	insync, err := InSync(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, insync)
+
+	startTestCluster(t, "node-a", "", 4)
+	assert.Empty(t, Replicas("logs"))
+	assert.False(t, IsLocalReplica("logs"))
+
+	require.NoError(t, UpdateInSync(ctx, "logs", []string{"node-b"}))
+	insync, err = InSync(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, map[string][]string{"logs": {"node-b"}}, insync)
+
+	_, ok := NodeAddr("node-a")
+	assert.False(t, ok, "a node without an advertise address cannot be routed to")
+}
+
+func TestNodeIDDefaultsToHostname(t *testing.T) {
+	previous := config.Global.Cluster.NodeID
+	t.Cleanup(func() { config.Global.Cluster.NodeID = previous })
+	config.Global.Cluster.NodeID = ""
+
+	host, err := os.Hostname()
+	require.NoError(t, err)
+	assert.Equal(t, host, nodeID())
+}
+
+func TestHeartbeatDefaults(t *testing.T) {
+	previous := config.Global.Cluster
+	t.Cleanup(func() { config.Global.Cluster = previous })
+
+	tests := []struct {
+		name              string
+		ttl, interval     time.Duration
+		wantTTL, wantTick time.Duration
+	}{
+		{"unset", 0, 0, 15 * time.Second, 5 * time.Second},
+		{"interval above ttl", 6 * time.Second, 10 * time.Second, 6 * time.Second, 2 * time.Second},
+		{"valid", 6 * time.Second, time.Second, 6 * time.Second, time.Second},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config.Global.Cluster.HeartbeatTTL = tt.ttl
+			config.Global.Cluster.HeartbeatInterval = tt.interval
+			ttl, interval := heartbeat()
+			assert.Equal(t, tt.wantTTL, ttl)
+			assert.Equal(t, tt.wantTick, interval)
+		})
+	}
 }

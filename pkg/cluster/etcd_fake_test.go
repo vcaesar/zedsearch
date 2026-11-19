@@ -62,13 +62,16 @@ func startFakeEtcd(t *testing.T) *fakeEtcd {
 	pb.RegisterKVServer(server, fake)
 	pb.RegisterLeaseServer(server, fake)
 	pb.RegisterWatchServer(server, fake)
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		if err := server.Serve(lis); err != nil {
 			t.Logf("fake etcd: %v", err)
 		}
 	}()
 	t.Cleanup(func() {
 		server.Stop()
+		<-done
 		require.NoError(t, fake.mem.Close())
 	})
 	return fake

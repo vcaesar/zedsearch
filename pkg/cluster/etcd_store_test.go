@@ -283,18 +283,29 @@ func TestEtcdStoreWatch(t *testing.T) {
 	assert.Equal(t, []byte("v"), put.KV.Value)
 
 	require.NoError(t, store.Delete(ctx, "/watch/k"))
-	for event := range events {
-		if event.Type == EventDelete {
-			assert.Equal(t, "/watch/k", event.KV.Key)
-			break
+	timeout := time.After(5 * time.Second)
+	for deleted := false; !deleted; {
+		select {
+		case event, open := <-events:
+			require.True(t, open, "the stream closed before the delete event")
+			if event.Type == EventDelete {
+				assert.Equal(t, "/watch/k", event.KV.Key)
+				deleted = true
+			}
+		case <-timeout:
+			require.FailNow(t, "no delete event within five seconds")
 		}
 	}
 
 	cancel()
-	require.Eventually(t, func() bool {
-		_, open := <-events
-		return !open
-	}, 5*time.Second, time.Millisecond, "the stream closes with its context")
+	closeTimeout := time.After(5 * time.Second)
+	for open := true; open; {
+		select {
+		case _, open = <-events:
+		case <-closeTimeout:
+			require.FailNow(t, "the stream did not close with its context")
+		}
+	}
 }
 
 func TestEtcdStoreErrors(t *testing.T) {
@@ -325,10 +336,10 @@ func TestEtcdStoreErrors(t *testing.T) {
 func clusterOnFakeEtcd(t *testing.T) *fakeEtcd {
 	t.Helper()
 	fake := startFakeEtcd(t)
-	previous := config.Global
+	etcd, cluster := config.Global.Etcd, config.Global.Cluster
 	t.Cleanup(func() {
 		Stop()
-		config.Global = previous
+		config.Global.Etcd, config.Global.Cluster = etcd, cluster
 	})
 	config.Global.Etcd.Endpoints = []string{fake.addr}
 	config.Global.Etcd.Username = ""
