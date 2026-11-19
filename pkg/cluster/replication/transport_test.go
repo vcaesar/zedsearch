@@ -254,8 +254,10 @@ func TestWriteSnapshotErrors(t *testing.T) {
 
 	locked := filepath.Join(src, "locked.seg")
 	require.NoError(t, os.WriteFile(locked, []byte("x"), 0o000))
-	if _, err := os.Open(locked); err == nil {
-		t.Skip("running as root, permissions are not enforced")
+	t.Cleanup(func() { assert.NoError(t, os.Chmod(locked, 0o640)) })
+	if f, err := os.Open(locked); err == nil {
+		require.NoError(t, f.Close())
+		t.Skip("permissions are not enforced")
 	}
 	assert.Error(t, WriteSnapshot(io.Discard, info, src), "an unreadable file")
 }
