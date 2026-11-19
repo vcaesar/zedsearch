@@ -147,3 +147,46 @@ func TestNestedAggregation(t *testing.T) {
 		})
 	}
 }
+
+func TestFilterCalculatorMerge(t *testing.T) {
+	agg := NewFilterAggregation(cityIs("sf"))
+	a := agg.Calculator().(*FilterCalculator)
+	b := agg.Calculator().(*FilterCalculator)
+	for _, d := range filterDocs(t, "sf", "la") {
+		a.Consume(d)
+	}
+	for _, d := range filterDocs(t, "sf", "sf") {
+		b.Consume(d)
+	}
+	a.Merge(b)
+	a.Merge(NewMissingAggregation(search.Field("city")).Calculator())
+	a.Finish()
+	assert.Equal(t, uint64(3), a.DocCount())
+	assert.Equal(t, "filter", a.Bucket().Name())
+	assert.Equal(t, uint64(3), a.Bucket().Count())
+}
+
+func TestFiltersAggregationFields(t *testing.T) {
+	agg := NewFiltersAggregation("")
+	agg.AddFilter("bay", cityIs("sf"))
+	agg.AddAggregation("avg_age", aggregations.Avg(search.Field("age")))
+	assert.ElementsMatch(t, []string{"city", "age"}, agg.Fields())
+}
+
+func TestFiltersCalculatorMerge(t *testing.T) {
+	agg := NewFiltersAggregation("other")
+	agg.AddFilter("bay", cityIs("sf"))
+	agg.AddFilter("socal", cityIs("la"))
+	a := agg.Calculator().(*FiltersCalculator)
+	b := agg.Calculator().(*FiltersCalculator)
+	for _, d := range filterDocs(t, "sf", "nyc") {
+		a.Consume(d)
+	}
+	for _, d := range filterDocs(t, "sf", "la", "nyc") {
+		b.Consume(d)
+	}
+	a.Merge(b)
+	a.Merge(NewMissingAggregation(search.Field("city")).Calculator())
+	a.Finish()
+	assert.Equal(t, map[string]uint64{"bay": 2, "socal": 1, "other": 2}, bucketCounts(a.NamedBuckets()))
+}
