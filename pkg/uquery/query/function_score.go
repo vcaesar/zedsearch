@@ -515,7 +515,10 @@ func (q *functionScoreQuery) Searcher(i search.Reader, options search.SearcherOp
 		return nil, err
 	}
 
-	fs := &functionScoreSearcher{Searcher: s, query: q, filters: make([]*filterCursor, len(q.functions))}
+	fs := &functionScoreSearcher{Searcher: s, query: q, filters: make([]*filterCursor, len(q.functions)), reader: i}
+	if len(q.fields) > 0 {
+		fs.values, fs.valuesCtx = &search.DocumentMatch{}, search.NewSearchContext(0, 0)
+	}
 	for idx, f := range q.functions {
 		if f.filter == nil {
 			continue
@@ -570,6 +573,14 @@ type functionScoreSearcher struct {
 	search.Searcher
 	query   *functionScoreQuery
 	filters []*filterCursor
+	// values holds the function fields of the current match. They are loaded
+	// through a private context: search.Context caches one doc value reader
+	// per segment whatever the fields, so loading them on the shared context
+	// would hide the collector's fields (aggregations, sort) and load the
+	// function fields into the match twice.
+	reader    search.Reader
+	values    *search.DocumentMatch
+	valuesCtx *search.Context
 }
 
 func (s *functionScoreSearcher) Next(ctx *search.Context) (*search.DocumentMatch, error) {
@@ -632,8 +643,12 @@ func (s *functionScoreSearcher) DocumentMatchPoolSize() int {
 // min_score.
 func (s *functionScoreSearcher) score(ctx *search.Context, dm *search.DocumentMatch) (bool, error) {
 	q := s.query
-	if len(q.fields) > 0 {
-		if err := dm.LoadDocumentValues(ctx, q.fields); err != nil {
+	values := dm
+	if s.values != nil {
+		values = s.values.Reset()
+		values.SetReader(s.reader)
+		values.Number = dm.Number
+		if err := values.LoadDocumentValues(s.valuesCtx, q.fields); err != nil {
 			return false, err
 		}
 	}
@@ -652,7 +667,7 @@ func (s *functionScoreSearcher) score(ctx *search.Context, dm *search.DocumentMa
 		}
 		value := 1.0
 		if f.compute != nil {
-			value = f.compute(dm)
+			value = f.compute(values)
 		}
 		weight := 1.0
 		if f.hasWeight {
