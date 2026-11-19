@@ -26,6 +26,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/vcaesar/zedsearch/pkg/config"
 	"github.com/vcaesar/zedsearch/pkg/core"
 )
 
@@ -37,6 +38,7 @@ type fakeTopology struct {
 	replicas  map[string][]string
 	insync    map[string][]string
 	insyncErr error
+	listErr   error
 }
 
 func newFakeTopology(local string) *fakeTopology {
@@ -100,6 +102,9 @@ func (f *fakeTopology) UpdateInSync(_ context.Context, index string, nodes []str
 func (f *fakeTopology) InSync(context.Context) (map[string][]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
 	out := make(map[string][]string, len(f.insync))
 	for k, v := range f.insync {
 		out[k] = append([]string{}, v...)
@@ -158,6 +163,49 @@ func (l *loopTransport) recoveries() []string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return append([]string(nil), l.recovered...)
+}
+
+// funcTransport answers with the functions it is given.
+type funcTransport struct {
+	replicate func(node string, batch *Batch) (Ack, error)
+	recover   func(node, index string) error
+	snapshot  func(owner string, req *SnapshotRequest, dir string) (*SnapshotInfo, error)
+}
+
+func (f *funcTransport) Replicate(_ context.Context, node string, batch *Batch) (Ack, error) {
+	return f.replicate(node, batch)
+}
+
+func (f *funcTransport) Recover(_ context.Context, node, index string) error {
+	if f.recover == nil {
+		return nil
+	}
+	return f.recover(node, index)
+}
+
+func (f *funcTransport) Snapshot(_ context.Context, owner string, req *SnapshotRequest, dir string) (*SnapshotInfo, error) {
+	return f.snapshot(owner, req, dir)
+}
+
+// activate makes m the running manager for the test.
+func activate(t *testing.T, m *manager) {
+	t.Helper()
+	activeMu.Lock()
+	active = m
+	activeMu.Unlock()
+	t.Cleanup(func() {
+		activeMu.Lock()
+		active = nil
+		activeMu.Unlock()
+	})
+}
+
+// useDataPath points the data path at path for the test.
+func useDataPath(t *testing.T, path string) {
+	t.Helper()
+	previous := config.Global.DataPath
+	config.Global.DataPath = path
+	t.Cleanup(func() { config.Global.DataPath = previous })
 }
 
 // newManager builds a manager without the background loop or core hooks.
