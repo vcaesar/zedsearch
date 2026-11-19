@@ -26,6 +26,7 @@ import (
 	stdjson "encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/vcaesar/zedsearch/pkg/meta"
@@ -139,7 +140,7 @@ func otlpDocument(rec otlpLogRecord, resource map[string]interface{}) (map[strin
 		ts = rec.ObservedTimeUnixNano
 	}
 	if ts != "" && ts != "0" {
-		ns, err := strconv.ParseInt(ts.String(), 10, 64)
+		ns, err := parseProtoInt(ts.String())
 		if err != nil {
 			return nil, fmt.Errorf("invalid timeUnixNano [%s]", ts)
 		}
@@ -195,7 +196,7 @@ func (a *otlpAnyValue) value() (interface{}, error) {
 	case a.BoolValue != nil:
 		return *a.BoolValue, nil
 	case a.IntValue != "":
-		return strconv.ParseInt(a.IntValue.String(), 10, 64)
+		return parseProtoInt(a.IntValue.String())
 	case a.DoubleValue != nil:
 		return *a.DoubleValue, nil
 	case a.BytesValue != nil:
@@ -214,4 +215,56 @@ func (a *otlpAnyValue) value() (interface{}, error) {
 		return otlpAttributes(a.KvlistValue.Values)
 	}
 	return nil, nil
+}
+
+// maxProtoExp bounds exponents so digit arithmetic can't overflow.
+const maxProtoExp = 1 << 20
+
+// parseProtoInt parses a ProtoJSON int64, which may use decimal or exponent
+// notation ("1e3", "1.5E2") when the value is integral. It is exact: no
+// float64 rounding.
+func parseProtoInt(s string) (int64, error) {
+	if n, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return n, nil
+	}
+	invalid := fmt.Errorf("invalid integer [%s]", s)
+	mant, exp := s, 0
+	if i := strings.IndexAny(s, "eE"); i >= 0 {
+		var err error
+		if exp, err = strconv.Atoi(s[i+1:]); err != nil || exp > maxProtoExp || exp < -maxProtoExp {
+			return 0, invalid
+		}
+		mant = s[:i]
+	}
+	sign := ""
+	if mant != "" && (mant[0] == '-' || mant[0] == '+') {
+		sign, mant = mant[:1], mant[1:]
+	}
+	intPart, frac, _ := strings.Cut(mant, ".")
+	digits := intPart + frac
+	if digits == "" || strings.Trim(digits, "0123456789") != "" {
+		return 0, invalid
+	}
+	exp -= len(frac)
+	digits = strings.TrimLeft(digits, "0")
+	switch {
+	case digits == "":
+		return 0, nil
+	case exp < 0:
+		// the dropped digits must all be zero for the value to be integral
+		if -exp > len(digits) || strings.TrimRight(digits[len(digits)+exp:], "0") != "" {
+			return 0, invalid
+		}
+		digits = digits[:len(digits)+exp]
+	case exp > 0:
+		if len(digits)+exp > 19 { // beyond int64, and keeps huge exponents cheap
+			return 0, invalid
+		}
+		digits += strings.Repeat("0", exp)
+	}
+	n, err := strconv.ParseInt(sign+digits, 10, 64)
+	if err != nil {
+		return 0, invalid
+	}
+	return n, nil
 }

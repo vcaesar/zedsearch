@@ -66,9 +66,11 @@ func setupClusterEnvWith(t *testing.T, ttl time.Duration, wrap func(cluster.Stor
 
 	env := &clusterTestEnv{requests: make(chan *http.Request, 4)}
 	env.peer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// read before the send, so a test may swap it once it received r
+		respond := env.respond
 		env.requests <- r.Clone(context.Background())
-		if env.respond != nil {
-			env.respond(w, r)
+		if respond != nil {
+			respond(w, r)
 			return
 		}
 		// a node answers with the trace id it was handed, like Tracing
@@ -76,7 +78,7 @@ func setupClusterEnvWith(t *testing.T, ttl time.Duration, wrap func(cluster.Stor
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, err := w.Write([]byte(`{"served_by":"node-b"}`))
-		require.NoError(t, err)
+		assert.NoError(t, err)
 	}))
 	t.Cleanup(env.peer.Close)
 
@@ -273,12 +275,18 @@ func TestClusterRouteRejectsWriteWhenNotLive(t *testing.T) {
 		called = true
 		c.JSON(http.StatusCreated, zhttp.H{"written": true})
 	})
+	env.engine.POST("/api/:target/v1/logs", func(c zhttp.Context) {
+		called = true
+		c.JSON(http.StatusOK, zhttp.H{})
+	})
 
 	flaky.fail.Store(true)
 	time.Sleep(ttl + 100*time.Millisecond)
 
 	w := env.do(httptest.NewRequest(http.MethodPost, "/api/"+localIndex+"/_write", nil))
 	assert.Equal(t, http.StatusConflict, w.Code)
+	w = env.do(httptest.NewRequest(http.MethodPost, "/api/"+localIndex+"/v1/logs", nil))
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code, "OTLP exporters retry 503, not 409")
 	assert.False(t, called, "the write must not run")
 	assert.False(t, cluster.IsLocalOwner(localIndex))
 }

@@ -75,14 +75,16 @@ func (env *clusterTestEnv) received(t *testing.T) *http.Request {
 func TestScatterSearchMerges(t *testing.T) {
 	env := setupClusterEnv(t)
 	withSearchRoutes(t, env)
-	var payload map[string]interface{}
+	payloads := make(chan map[string]interface{}, 1)
 	env.respond = func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]interface{}
 		data, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
-		require.NoError(t, json.Unmarshal(data, &payload))
+		assert.NoError(t, err)
+		assert.NoError(t, json.Unmarshal(data, &payload))
+		payloads <- payload
 		w.Header().Set("Content-Type", "application/json")
 		_, err = w.Write([]byte(`{"took":3,"hits":{"total":{"value":1},"hits":[{"_index":"` + remoteIndex + `","_id":"doc-1","_score":2},{"_index":"` + remoteIndex + `","_id":"doc-2","_score":1}]}}`))
-		require.NoError(t, err)
+		assert.NoError(t, err)
 	}
 
 	req := httptest.NewRequest(http.MethodPost, "/es/"+remoteIndex+"*/_search", strings.NewReader(`{"from":1,"size":3}`))
@@ -96,6 +98,7 @@ func TestScatterSearchMerges(t *testing.T) {
 	assert.Equal(t, InternalSearchPath, forwarded.URL.Path)
 	assert.Equal(t, "node-a", forwarded.Header.Get(ForwardedByHeader))
 	assert.Equal(t, "Basic dXNlcjpwYXNz", forwarded.Header.Get("Authorization"))
+	payload := <-payloads
 	assert.Equal(t, []interface{}{remoteIndex}, payload["indexes"])
 	query, ok := payload["query"].(map[string]interface{})
 	require.True(t, ok)
@@ -148,7 +151,7 @@ func TestScatterSearchErrors(t *testing.T) {
 	t.Run("owner answers garbage", func(t *testing.T) {
 		env.respond = func(w http.ResponseWriter, r *http.Request) {
 			_, err := w.Write([]byte("not json"))
-			require.NoError(t, err)
+			assert.NoError(t, err)
 		}
 		w := env.do(httptest.NewRequest(http.MethodPost, path, nil))
 		assert.Equal(t, http.StatusBadGateway, w.Code)

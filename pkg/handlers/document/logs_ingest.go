@@ -17,11 +17,12 @@ package document
 
 import (
 	"compress/gzip"
+	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/vcaesar/zedsearch/pkg/config"
@@ -52,7 +53,7 @@ func LogsJSON(c zhttp.Context) {
 	}
 	status, err := IngestLogs(c.Param("target"), docs)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, meta.HTTPResponseError{Error: err.Error()})
+		c.JSON(ingestErrorStatus(err), meta.HTTPResponseError{Error: err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, logs.IngestResponse{Code: http.StatusOK, Status: []logs.StreamStatus{status}})
@@ -84,7 +85,7 @@ func LogsHEC(c zhttp.Context) {
 	}
 	status, err := IngestLogs(c.Param("target"), docs)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, zhttp.H{"text": err.Error(), "code": 8})
+		c.JSON(ingestErrorStatus(err), zhttp.H{"text": err.Error(), "code": 8})
 		return
 	}
 	if status.Failed > 0 {
@@ -114,7 +115,7 @@ func LokiPush(c zhttp.Context) {
 	}
 	status, err := IngestLogs(c.Param("target"), docs)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, meta.HTTPResponseError{Error: err.Error()})
+		c.JSON(ingestErrorStatus(err), meta.HTTPResponseError{Error: err.Error()})
 		return
 	}
 	if status.Failed > 0 {
@@ -138,7 +139,7 @@ func LokiPush(c zhttp.Context) {
 // @Failure 400 {object} meta.HTTPResponseError
 // @Router /api/{index}/v1/logs [post]
 func OTLPLogs(c zhttp.Context) {
-	if ct := c.GetHeader("Content-Type"); ct != "" && !strings.Contains(ct, "json") {
+	if ct := c.GetHeader("Content-Type"); ct != "" && !isJSONMediaType(ct) {
 		c.JSON(http.StatusUnsupportedMediaType, meta.HTTPResponseError{Error: "only OTLP/HTTP JSON is supported"})
 		return
 	}
@@ -148,7 +149,7 @@ func OTLPLogs(c zhttp.Context) {
 	}
 	status, err := IngestLogs(c.Param("target"), docs)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, meta.HTTPResponseError{Error: err.Error()})
+		c.JSON(ingestErrorStatus(err), meta.HTTPResponseError{Error: err.Error()})
 		return
 	}
 	if status.Failed > 0 {
@@ -158,10 +159,29 @@ func OTLPLogs(c zhttp.Context) {
 	c.JSON(http.StatusOK, zhttp.H{})
 }
 
+// isJSONMediaType reports whether ct is application/json, parameters and
+// case aside.
+func isJSONMediaType(ct string) bool {
+	mediaType, _, err := mime.ParseMediaType(ct)
+	return err == nil && strings.EqualFold(mediaType, "application/json")
+}
+
+// ingestErrorStatus answers 503 for a storage failure so log shippers retry
+// the batch, 500 otherwise.
+func ingestErrorStatus(err error) int {
+	var storageErr *core.StorageError
+	if errors.As(err, &storageErr) {
+		return http.StatusServiceUnavailable
+	}
+	return http.StatusInternalServerError
+}
+
 // IngestLogs writes records to target, creating it as a logs index when it
 // doesn't exist and no template sets its index_type. Invalid records, including
 // those outside the configured ingestion window, are counted as failed and
-// don't stop the rest.
+// don't stop the rest. A storage failure stops the batch and is returned: the
+// client retries it whole, so delivery is at least once and records written
+// before the failure may be stored twice.
 func IngestLogs(target string, docs []map[string]interface{}) (logs.StreamStatus, error) {
 	status := logs.StreamStatus{Name: target}
 	index, err := getOrCreateLogsIndex(target)
@@ -173,6 +193,10 @@ func IngestLogs(target string, docs []map[string]interface{}) (logs.StreamStatus
 		err := checkLogWindow(index, doc, upto, future)
 		if err == nil {
 			err = index.CreateDocument(ider.Generate(), doc, false)
+		}
+		var storageErr *core.StorageError
+		if errors.As(err, &storageErr) {
+			return status, err
 		}
 		if err != nil {
 			status.Failed++
@@ -198,27 +222,19 @@ func checkLogWindow(index *core.Index, doc map[string]interface{}, upto, future 
 	return logs.CheckWindow(ts, now, upto, future)
 }
 
-// logsIndexLock keeps a request from ingesting into an index that another
-// one has created but not yet set as a logs index.
-var logsIndexLock sync.Mutex
-
+// getOrCreateLogsIndex types a new index as logs before it is stored and
+// published, unless a template already set its index_type.
 func getOrCreateLogsIndex(name string) (*core.Index, error) {
 	if name == "" {
 		return nil, fmt.Errorf("index is required")
 	}
-	logsIndexLock.Lock()
-	defer logsIndexLock.Unlock()
-	index, exists, err := core.GetOrCreateIndex(name, "", 0)
-	if err != nil || exists {
-		return index, err
-	}
-	if settings := index.GetSettings(); settings != nil && settings.IndexType != "" {
-		return index, nil // set by a template
-	}
-	if err := index.SetSettings(&meta.IndexSettings{IndexType: meta.IndexTypeLogs}); err != nil {
-		return nil, err
-	}
-	return index, core.StoreIndex(index)
+	index, _, err := core.GetOrCreateIndexWith(name, "", 0, func(index *core.Index) error {
+		if settings := index.GetSettings(); settings != nil && settings.IndexType != "" {
+			return nil
+		}
+		return index.SetSettings(&meta.IndexSettings{IndexType: meta.IndexTypeLogs})
+	})
+	return index, err
 }
 
 func parseLogsBody(c zhttp.Context, parse func([]byte) ([]map[string]interface{}, error)) ([]map[string]interface{}, bool) {

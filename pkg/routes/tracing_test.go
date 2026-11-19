@@ -29,9 +29,9 @@ import (
 )
 
 func TestTracing(t *testing.T) {
-	var downstream string
+	downstream := make(chan string, 1)
 	node := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		downstream = tracing.TraceID(tracing.Extract(context.Background(), r.Header.Get))
+		downstream <- tracing.TraceID(tracing.Extract(context.Background(), r.Header.Get))
 	}))
 	defer node.Close()
 
@@ -56,7 +56,7 @@ func TestTracing(t *testing.T) {
 		assert.Equal(t, http.StatusOK, w.Code)
 		assert.Equal(t, traceID, w.Header().Get(tracing.TraceIDHeader))
 		assert.Equal(t, traceID, handlerID)
-		assert.Equal(t, traceID, downstream)
+		assert.Equal(t, traceID, <-downstream)
 	})
 
 	t.Run("starts a trace", func(t *testing.T) {
@@ -65,7 +65,7 @@ func TestTracing(t *testing.T) {
 		assert.Len(t, id, 32)
 		assert.NotEqual(t, "00000000000000000000000000000000", id)
 		assert.Equal(t, id, handlerID)
-		assert.Equal(t, id, downstream)
+		assert.Equal(t, id, <-downstream)
 	})
 }
 

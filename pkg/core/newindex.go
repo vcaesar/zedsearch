@@ -262,7 +262,7 @@ func storeIndex(index *Index) error {
 	}
 	err = metadata.Index.Set(index.GetName(), data)
 	if err != nil {
-		return fmt.Errorf("core.storeIndex: index: %s, error: %s", index.ref.Name, err.Error())
+		return storageError(fmt.Errorf("core.storeIndex: index: %s, error: %w", index.ref.Name, err))
 	}
 	return nil
 }
@@ -272,5 +272,12 @@ func GetIndex(name string) (*Index, bool) {
 }
 
 func GetOrCreateIndex(name, storageType string, shardNum int64) (*Index, bool, error) {
-	return ZED_INDEX_LIST.GetOrCreate(name, storageType, shardNum)
+	return ZED_INDEX_LIST.GetOrCreate(name, storageType, shardNum, nil)
+}
+
+// GetOrCreateIndexWith is GetOrCreateIndex running init on a new index
+// before it is stored and cached, so no one sees it half set up. init runs
+// under the index list lock and must not call GetIndex or GetOrCreateIndex.
+func GetOrCreateIndexWith(name, storageType string, shardNum int64, init func(*Index) error) (*Index, bool, error) {
+	return ZED_INDEX_LIST.GetOrCreate(name, storageType, shardNum, init)
 }

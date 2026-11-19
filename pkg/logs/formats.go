@@ -68,6 +68,9 @@ func ParseJSON(body []byte) ([]map[string]interface{}, error) {
 	if err := json.Unmarshal(body, &docs); err != nil {
 		return nil, fmt.Errorf("body must be a JSON array of objects: %w", err)
 	}
+	if docs == nil { // top-level null
+		return nil, fmt.Errorf("body must be a JSON array of objects")
+	}
 	for i, doc := range docs {
 		if doc == nil {
 			return nil, fmt.Errorf("record %d must be an object", i)

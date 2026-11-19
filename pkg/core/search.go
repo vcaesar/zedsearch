@@ -259,9 +259,11 @@ func searchV2(shardNum, readerNum int64, dmi search.DocumentMatchIterator, query
 			ID:        id,
 			Score:     next.Score,
 			Timestamp: timestamp,
-			Source:    sourceData,
 			Fields:    fieldsData,
 			Highlight: highlightData,
+		}
+		if sourceData != nil { // a nil map would be encoded as "_source":null
+			hit.Source = sourceData
 		}
 		Hits = append(Hits, hit)
 

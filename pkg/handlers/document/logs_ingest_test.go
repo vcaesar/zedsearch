@@ -18,6 +18,7 @@ package document
 import (
 	"bytes"
 	"compress/gzip"
+	"fmt"
 	"io"
 	"net/http"
 	"sync"
@@ -80,11 +81,56 @@ func TestLogsJSON(t *testing.T) {
 	assert.Equal(t, meta.IndexTypeLogs, index.GetIndexType(), "missing index is created as logs")
 	waitDocCount(t, name, 2)
 
-	for _, tt := range []struct{ target, body string }{{"", `[]`}, {name, `not json`}} {
-		c, _ := logsRequest(t, tt.target, tt.body)
-		LogsJSON(c)
-		assert.Equal(t, http.StatusBadRequest, c.ResponseStatus(), tt.body)
+	for _, tt := range []struct{ name, target, body string }{
+		{"no target", "", `[]`},
+		{"not json", name, `not json`},
+		{"top-level null", name, `null`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c, _ := logsRequest(t, tt.target, tt.body)
+			LogsJSON(c)
+			assert.Equal(t, http.StatusBadRequest, c.ResponseStatus())
+		})
 	}
+}
+
+// A WAL or metadata failure is retryable: the batch stops and the client
+// gets 503, invalid records stay rejected records.
+func TestIngestLogsStorageFailure(t *testing.T) {
+	name := "TestIngestLogsStorageFailure.index_1"
+	cleanupIndex(t, name)
+	_, err := getOrCreateLogsIndex(name)
+	require.NoError(t, err)
+	core.WriteGuard = func(string) error { return assert.AnError }
+	t.Cleanup(func() { core.WriteGuard = nil })
+
+	status, err := IngestLogs(name, []map[string]interface{}{{"@timestamp": "bad"}, {"message": "a"}, {"message": "b"}})
+	var storageErr *core.StorageError
+	require.ErrorAs(t, err, &storageErr)
+	assert.Equal(t, 1, status.Failed, "the invalid record before the failure")
+	assert.Equal(t, 0, status.Successful)
+
+	for _, tt := range []struct {
+		name   string
+		handle func(zhttp.Context)
+		body   string
+	}{
+		{"json", LogsJSON, `[{"message":"a"}]`},
+		{"hec", LogsHEC, `{"event":"a"}`},
+		{"loki", LokiPush, `{"streams":[{"stream":{},"values":[["1704067200000000000","a"]]}]}`},
+		{"otlp", OTLPLogs, `{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"body":{"stringValue":"a"}}]}]}]}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c, body := logsRequest(t, name, tt.body)
+			tt.handle(c)
+			assert.Equal(t, http.StatusServiceUnavailable, c.ResponseStatus(), body.String())
+		})
+	}
+}
+
+func TestIngestErrorStatus(t *testing.T) {
+	assert.Equal(t, http.StatusServiceUnavailable, ingestErrorStatus(fmt.Errorf("wrap: %w", &core.StorageError{Err: assert.AnError})))
+	assert.Equal(t, http.StatusInternalServerError, ingestErrorStatus(assert.AnError))
 }
 
 // Concurrent first requests for a new stream all get it as a logs index, none
@@ -153,15 +199,17 @@ func TestLogsHEC(t *testing.T) {
 	assert.JSONEq(t, `{"text":"Success","code":0}`, body.String())
 	waitDocCount(t, name, 2)
 
-	c, body = logsRequest(t, name, `{"event":{"@timestamp":"bad"}}`)
-	LogsHEC(c)
-	assert.Equal(t, http.StatusBadRequest, c.ResponseStatus())
-	assert.Contains(t, body.String(), "@timestamp")
-
-	c, body = logsRequest(t, name, `{"event":1}`)
-	LogsHEC(c)
-	assert.Equal(t, http.StatusBadRequest, c.ResponseStatus())
-	assert.Contains(t, body.String(), "Invalid data format")
+	for _, tt := range []struct{ name, body, want string }{
+		{"rejected record", `{"event":{"@timestamp":"bad"}}`, "@timestamp"},
+		{"invalid event", `{"event":1}`, "Invalid data format"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c, body := logsRequest(t, name, tt.body)
+			LogsHEC(c)
+			assert.Equal(t, http.StatusBadRequest, c.ResponseStatus())
+			assert.Contains(t, body.String(), tt.want)
+		})
+	}
 }
 
 func TestLokiPush(t *testing.T) {
@@ -180,14 +228,17 @@ func TestLokiPush(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, c.ResponseStatus())
 	waitDocCount(t, name, 2)
 
-	c, _ = logsRequest(t, name, "plain text")
-	c.Request.Header.Set("Content-Encoding", "gzip")
-	LokiPush(c)
-	assert.Equal(t, http.StatusBadRequest, c.ResponseStatus(), "invalid gzip")
-
-	c, _ = logsRequest(t, name, `{"streams":[]}`)
-	LokiPush(c)
-	assert.Equal(t, http.StatusBadRequest, c.ResponseStatus())
+	for _, tt := range []struct{ name, body, encoding string }{
+		{"invalid gzip", "plain text", "gzip"},
+		{"no streams", `{"streams":[]}`, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c, _ := logsRequest(t, name, tt.body)
+			c.Request.Header.Set("Content-Encoding", tt.encoding)
+			LokiPush(c)
+			assert.Equal(t, http.StatusBadRequest, c.ResponseStatus())
+		})
+	}
 }
 
 func TestOTLPLogs(t *testing.T) {
@@ -203,10 +254,28 @@ func TestOTLPLogs(t *testing.T) {
 	assert.Contains(t, body.String(), `"rejectedLogRecords":1`)
 	waitDocCount(t, name, 1)
 
-	c, _ = logsRequest(t, name, `{}`)
-	c.Request.Header.Set("Content-Type", "application/x-protobuf")
-	OTLPLogs(c)
-	assert.Equal(t, http.StatusUnsupportedMediaType, c.ResponseStatus())
+	for _, tt := range []struct {
+		contentType string
+		want        int
+	}{
+		{"", http.StatusOK},
+		{"application/json", http.StatusOK},
+		{"application/JSON", http.StatusOK},
+		{"Application/Json; charset=utf-8", http.StatusOK},
+		{"application/x-protobuf", http.StatusUnsupportedMediaType},
+		{"application/jsonl", http.StatusUnsupportedMediaType},
+		{"text/json-ish", http.StatusUnsupportedMediaType},
+		{"application/json;;", http.StatusUnsupportedMediaType},
+	} {
+		t.Run("content type "+tt.contentType, func(t *testing.T) {
+			c, body := logsRequest(t, name, `{}`)
+			if tt.contentType != "" {
+				c.Request.Header.Set("Content-Type", tt.contentType)
+			}
+			OTLPLogs(c)
+			assert.Equal(t, tt.want, c.ResponseStatus(), body.String())
+		})
+	}
 }
 
 func TestReadLogsBodyLimit(t *testing.T) {

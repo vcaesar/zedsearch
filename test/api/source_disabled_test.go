@@ -24,6 +24,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/vcaesar/zedsearch/pkg/zutils/json"
 )
 
 func TestApiSourceDisabled(t *testing.T) {
@@ -49,7 +51,17 @@ func TestApiSourceDisabled(t *testing.T) {
 		}, 10*time.Second, 50*time.Millisecond, "document not indexed")
 
 		resp = request("POST", "/es/"+index+"/_search", bytes.NewBufferString(`{"query":{"match":{"body":"brown"}}}`))
-		assert.NotContains(t, resp.Body.String(), "quick brown fox")
+		require.Equal(t, http.StatusOK, resp.Code, resp.Body.String())
+		var result struct {
+			Hits struct {
+				Hits []map[string]interface{} `json:"hits"`
+			} `json:"hits"`
+		}
+		require.NoError(t, json.Unmarshal(resp.Body.Bytes(), &result))
+		require.Len(t, result.Hits.Hits, 1)
+		hit := result.Hits.Hits[0]
+		assert.Equal(t, "1", hit["_id"])
+		assert.NotContains(t, hit, "_source")
 	})
 
 	t.Run("cannot change _source", func(t *testing.T) {

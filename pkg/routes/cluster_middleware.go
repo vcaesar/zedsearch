@@ -160,6 +160,7 @@ func serveFenced(c zhttp.Context, target string, epoch int64) {
 }
 
 // rejectWrite answers 409 so the client retries against the current owner.
+// OTLP exporters drop a 409 batch but retry 503, so OTLP logs get 503.
 func rejectWrite(c zhttp.Context, target string, err error) {
 	owner := ""
 	var epochErr *cluster.EpochError
@@ -168,8 +169,12 @@ func rejectWrite(c zhttp.Context, target string, err error) {
 	}
 	log.Warn().Ctx(c.Context()).Err(err).Str("index", target).Str("owner", owner).
 		Msg("cluster: rejecting write, partition moved")
+	status := http.StatusConflict
+	if strings.HasSuffix(c.Path(), "/v1/logs") {
+		status = http.StatusServiceUnavailable
+	}
 	c.Abort()
-	zutils.RenderJSON(c, http.StatusConflict, zhttp.H{"error": "partition moved", "owner": owner})
+	zutils.RenderJSON(c, status, zhttp.H{"error": "partition moved", "owner": owner})
 }
 
 // rejectUnreplicated answers 503 for a write that could not be made
