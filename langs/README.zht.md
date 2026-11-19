@@ -99,6 +99,19 @@ go + gin + react
 | `match_phrase` | **10.3 ms** | 12.7 ms | 12.6 ms | — | 16.3 ms |
 | `bool` should (8 個用戶端) | **5,179 QPS** | 2,707 QPS | 2,616 QPS | — | 131 QPS |
 
+### 資源佔用
+
+Docker 映像（未壓縮）、同樣 50,000 篇文件的文字索引（`_flush` 後 ZedSearch、Elasticsearch 與 OpenSearch 皆約 25 MB），以及整個測試期間的記憶體 / CPU（100% = 1 個 vCPU），資料為三次執行的中位數。
+
+| 資源 | ZedSearch | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 | OpenObserve 1.1 |
+|---|---:|---:|---:|---:|---:|
+| Docker 映像 | **56.4 MB** | 1,195 MB | 1,311 MB | 370 MB | 434 MB |
+| 文字索引，5 萬篇文件 | 25.9 MB | 25.8 MB | 25.7 MB | 454 MB | 14.2 MB（未建立索引） |
+| 閒置記憶體 | **14 MiB** | 2,674 MiB | 2,699 MiB | 179 MiB | 387 MiB |
+| 峰值記憶體 | **388 MiB** | 3,185 MiB | 3,191 MiB | 1,014 MiB | 919 MiB |
+| 平均 CPU | **134%** | 157% | 156% | 230% | 140% |
+| 峰值 CPU | 553% | 620% | 529% | 545% | **519%** |
+
 # 文件
 
 文件位於 [docs/web](../docs/web/index.md)，API 文件：[zedsearch-docs](https://github.com/zedsearch/zedsearch-docs)

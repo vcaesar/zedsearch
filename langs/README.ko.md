@@ -99,6 +99,19 @@ go + gin + react
 | `match_phrase` | **10.3 ms** | 12.7 ms | 12.6 ms | — | 16.3 ms |
 | `bool` should (클라이언트 8개) | **5,179 QPS** | 2,707 QPS | 2,616 QPS | — | 131 QPS |
 
+### 리소스 사용량
+
+Docker 이미지(비압축), 동일한 문서 50,000개의 텍스트 인덱스(`_flush` 후 ZedSearch, Elasticsearch, OpenSearch 모두 약 25 MB), 전체 실행 동안의 메모리 / CPU(100% = vCPU 1개). 데이터는 3회 실행의 중앙값입니다.
+
+| 리소스 | ZedSearch | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 | OpenObserve 1.1 |
+|---|---:|---:|---:|---:|---:|
+| Docker 이미지 | **56.4 MB** | 1,195 MB | 1,311 MB | 370 MB | 434 MB |
+| 텍스트 인덱스, 문서 5만 개 | 25.9 MB | 25.8 MB | 25.7 MB | 454 MB | 14.2 MB (인덱싱 안 됨) |
+| 유휴 메모리 | **14 MiB** | 2,674 MiB | 2,699 MiB | 179 MiB | 387 MiB |
+| 최대 메모리 | **388 MiB** | 3,185 MiB | 3,191 MiB | 1,014 MiB | 919 MiB |
+| 평균 CPU | **134%** | 157% | 156% | 230% | 140% |
+| 최대 CPU | 553% | 620% | 529% | 545% | **519%** |
+
 # 문서
 
 문서는 [docs/web](../docs/web/index.md)에서, API 문서는 [zedsearch-docs](https://github.com/zedsearch/zedsearch-docs)에서 확인할 수 있습니다
