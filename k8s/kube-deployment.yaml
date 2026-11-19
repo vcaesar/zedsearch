@@ -1,4 +1,11 @@
 apiVersion: v1
+kind: Namespace
+metadata:
+  name: zedsearch
+
+---
+
+apiVersion: v1
 kind: Service
 metadata:
   name: z
@@ -10,7 +17,7 @@ spec:
   ports:
   - name: http
     port: 4080
-    targetPort: 4080
+    targetPort: http
 
 ---
 
@@ -35,24 +42,32 @@ spec:
         name: zedsearch
         app: zedsearch
     spec:
+      # Same uid/gid as the image's zedsearch user; fsGroup makes the volume writable.
       securityContext:
-        fsGroup: 2000
-        runAsUser: 10000
-        runAsGroup: 3000
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
         runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       # terminationGracePeriodSeconds: 0
       containers:
         - name: zedsearch
-          image: ghcr.io/vcaesar/zedsearch:latest
+          image: riotgo/zedsearch:latest
+          # First admin credentials, managed outside this file: see admin-secret.yaml.
+          envFrom:
+            - secretRef:
+                name: zedsearch-admin
           env:
-            - name: ZED_FIRST_ADMIN_USER
-              value: admin
-            - name: ZED_FIRST_ADMIN_PASSWORD
-              value: Complexpass#123
             - name: ZED_DATA_PATH
-              value: /go/bin/data
-          # command: ["/bin/bash", "-c", "while true; do sleep 1; done"]
+              value: /data
           imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           resources:
             limits:
               cpu: 1024m
@@ -63,9 +78,32 @@ spec:
           ports:
             - containerPort: 4080
               name: http
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 20
+            failureThreshold: 3
           volumeMounts:
           - name: data
-            mountPath: /go/bin/data
+            mountPath: /data
+          # The root filesystem is read-only; os.TempDir is used for object storage spooling.
+          - name: tmp
+            mountPath: /tmp
+      volumes:
+      - name: tmp
+        emptyDir: {}
   volumeClaimTemplates:
   - metadata:
       name: data
@@ -77,5 +115,3 @@ spec:
       resources:
         requests:
           storage: 10Gi
-
-

@@ -1,19 +1,19 @@
 name: Nightly
 
 on:
-  # Disabled: the push to ghcr.io/vcaesar/zedsearch-dev fails on forks with
-  # "denied: permission_denied: The requested installation does not exist"
-  # (GITHUB_TOKEN can only push packages under the repo owner). Run manually instead.
-  # push:
-  #   branches: [main]
+  push:
+    branches: [dev]
   workflow_dispatch:
+
+# Queue publishes instead of running them in parallel, so an older, slower build
+# can't push :nightly after a newer one.
+concurrency:
+  group: nightly-dev-image
+  cancel-in-progress: false
 
 permissions:
   contents: read
   packages: write
-
-env:
-  IMAGE: ghcr.io/vcaesar/zedsearch-dev
 
 jobs:
   dev-image:
@@ -33,7 +33,11 @@ jobs:
         working-directory: frontend
       - name: Compute dev version
         id: version
+        env:
+          OWNER: ${{ github.repository_owner }}
         run: |
+          # GITHUB_TOKEN can only push packages under the repo owner; ghcr requires lowercase.
+          echo "IMAGE=ghcr.io/$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')/zedsearch-dev" >> "$GITHUB_ENV"
           tag="$(git describe --tags --abbrev=0 2>/dev/null || echo v0.0.0)"
           echo "version=${tag#v}-$(git rev-parse --short HEAD)-dev" >> "$GITHUB_OUTPUT"
           echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"

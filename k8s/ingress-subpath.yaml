@@ -1,20 +1,26 @@
+# Serves ZedSearch under https://zedsearch.yourdomain.com/subpath/.
+# The API works as is; the console's assets are built for /ui/, so the UI needs
+# a frontend build with VITE_BASE_PATH=/subpath/ui/.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   annotations:
     cert-manager.io/issuer: letsencrypt-prod
-    kubernetes.io/ingress.class: nginx
     nginx.ingress.kubernetes.io/connection-proxy-header: keep-alive
-    nginx.ingress.kubernetes.io/proxy-body-size: 15m
+    # Room for bulk ingestion requests.
+    nginx.ingress.kubernetes.io/proxy-body-size: 100m
+    nginx.ingress.kubernetes.io/use-regex: "true"
     nginx.ingress.kubernetes.io/rewrite-target: /$2
   name: zedsearch
   namespace: zedsearch
 spec:
+  ingressClassName: nginx
   rules:
   - host: zedsearch.yourdomain.com
     http:
       paths:
-      - pathType: Prefix
+      # Regex paths require ImplementationSpecific (rejected for Prefix by path validation).
+      - pathType: ImplementationSpecific
         backend:
           service:
             name: z
@@ -24,4 +30,4 @@ spec:
   tls:
   - hosts:
     - zedsearch.yourdomain.com
-    secretName: playground.dev.zincsearch.com
+    secretName: zedsearch-tls

@@ -2,7 +2,7 @@
 
 Settings are applied in order:
 
-1. Built-in defaults ([`pkg/config/default.toml`](https://github.com/vcaesar/zedsearch/blob/main/pkg/config/default.toml))
+1. Built-in defaults ([`pkg/config/default.toml`](https://github.com/vcaesar/zedsearch/blob/dev/pkg/config/default.toml))
 1. The optional `conf/zed.toml` in the working directory
 1. Non-empty environment variables
 
@@ -46,12 +46,16 @@ Only list the keys you change; grouped keys keep their table header (`[Shard]`, 
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| ZED_BATCH_SIZE | 1024 | Internal batch size for bulk indexing |
+| ZED_BATCH_SIZE | 4096 | Internal batch size for bulk indexing |
 | ZED_MAX_RESULTS | 10000 | Maximum number of hits a search can return |
 | ZED_AGGREGATION_TERMS_SIZE | 1000 | Maximum buckets of a terms aggregation |
 | ZED_MAX_DOCUMENT_SIZE | 1000000 | Maximum size of a single document in bytes |
 | ZED_ENABLE_TEXT_KEYWORD_MAPPING | false | Add a `field.keyword` sub-field to every `text` field |
 | ZED_ENABLE_SQL_MAPPINGS | true | Accept MySQL `CREATE TABLE` schemas in `mappings.sql` |
+| ZED_ALL_FIELD | false | Index the `_all` field that holds the terms of every field; per index, the mapping `"_all": {"enabled": true}` overrides it. Off, as Elasticsearch 6+: terms without a field in `query_string` / `simple_query_string`, and queries on `_all`, search the indexed text, keyword, numeric and date fields instead. On makes text indexes larger |
+| ZED_ALL_FIELD_POSITIONS | true | Keep term positions in the `_all` field (with `_all` enabled). `false` makes it about 25% smaller, but phrase queries on `_all` then match nothing. Applies to documents indexed after the change |
+| ZED_AUTO_TIMESTAMP | true | Index the ingest time as `@timestamp` for documents without one. `false` indexes `@timestamp` only for documents that carry it, as Elasticsearch; logs indexes always have it |
+| ZED_VECTOR_STORAGE | disk | Where persisted HNSW graphs keep their vectors. `disk` writes a copy into each graph file and memory-maps it; `memory` writes links only and loads the vectors from the stored fields onto the heap when a graph opens: about 30% smaller vector indexes, 4 bytes per dimension and vector of heap |
 | ZED_WAL_SYNC_INTERVAL | 1000000000 (1s) | How often the WAL is flushed to the index |
 | ZED_WAL_REDOLOG_NO_SYNC | false | Skip the fsync after each redo log write; faster, but a crash can duplicate up to `ZED_BATCH_SIZE` documents |
 | ZED_OBJECT_CACHE_SIZE | 10737418240 (10 GB) | Local disk LRU cache for object storage indexes under `<data>/objcache`, 0 disables |
@@ -89,7 +93,7 @@ Used by indexes created with `storage_type` `s3`, `gcs` or `oss`.
 
 ## Cluster (`[Cluster]`)
 
-See [pkg/cluster](https://github.com/vcaesar/zedsearch/blob/main/pkg/cluster/README.md).
+See [pkg/cluster](https://github.com/vcaesar/zedsearch/blob/dev/pkg/cluster/README.md).
 
 | Variable | Default | Description |
 | --- | --- | --- |
@@ -112,6 +116,13 @@ See [pkg/cluster](https://github.com/vcaesar/zedsearch/blob/main/pkg/cluster/REA
 | ZED_TIER_ENABLE | false | Run the lifecycle checker that moves indexes between hot, warm and cold |
 | ZED_TIER_CHECK_INTERVAL | 600000000000 (10m) | How often lifecycle policies are evaluated |
 | ZED_TIER_COLD_STORAGE_TYPE | s3 | Object store for warm/cold indexes: `s3`, `gcs` or `oss` |
+
+## Logs (`[Logs]`)
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| ZED_LOGS_INGEST_ALLOWED_UPTO | 0 (disabled) | Reject log events older than now minus this on `_json`, `_hec`, Loki and OTLP endpoints, e.g. `5h` |
+| ZED_LOGS_INGEST_ALLOWED_IN_FUTURE | 0 (disabled) | Reject log events later than now plus this on the same endpoints |
 
 ## Plugins (`[Plugin.ES]`, `[Plugin.GSE]`)
 
