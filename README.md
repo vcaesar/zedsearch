@@ -102,6 +102,29 @@ ZedSearch has hundreds of production installations.
 
 Binaries for every platform are on the [releases page](https://github.com/vcaesar/zedsearch/releases/latest). The default archives are not UPX-compressed; for a smaller download, all Linux builds and the Windows amd64 build also ship a [UPX](https://upx.github.io/)-packed `*_upx.tar.gz` (slightly slower startup, and some antivirus tools may flag packed `.exe` files).
 
+## Homebrew
+
+macOS and Linux, via [vcaesar/homebrew-tap](https://github.com/vcaesar/homebrew-tap):
+
+```sh
+brew install vcaesar/tap/zedsearch
+```
+
+## Docker
+
+Images are on [Docker Hub](https://hub.docker.com/r/riotgo/zedsearch) as `riotgo/zedsearch` (linux/amd64, linux/arm64, linux/arm/v7):
+
+Set `ZED_FIRST_ADMIN_PASSWORD` in your environment to your chosen password before running:
+
+```sh
+docker run -d --name zedsearch -p 4080:4080 \
+    -v zedsearch-data:/data -e ZED_DATA_PATH=/data \
+    -e ZED_FIRST_ADMIN_USER=admin -e "ZED_FIRST_ADMIN_PASSWORD=${ZED_FIRST_ADMIN_PASSWORD:?Set ZED_FIRST_ADMIN_PASSWORD}" \
+    riotgo/zedsearch:latest
+```
+
+The named volume `zedsearch-data` is writable by the container user (uid 10001); to use a host directory instead, run `mkdir -p ./data && sudo chown 10001:10001 ./data` and mount `-v "$PWD/data:/data"`.
+
 ## Build
 
 Set `ZED_FIRST_ADMIN_USER` / `ZED_FIRST_ADMIN_PASSWORD` or configure `conf/zed.toml` (see below), then run from the repository root:
