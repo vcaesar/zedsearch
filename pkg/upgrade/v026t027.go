@@ -19,6 +19,7 @@ import (
 	"os"
 	"path"
 	"sort"
+	"strconv"
 
 	"github.com/vcaesar/zedsearch/pkg/config"
 	"github.com/vcaesar/zedsearch/pkg/ider"
@@ -93,6 +94,7 @@ func UpgradeFromV026T027(index *meta.Index) error {
 	if err != nil {
 		return err
 	}
+	first := index.Shards[firstShardName]
 	for _, f := range fs {
 		err := os.Rename(
 			path.Join(rootPath, indexName+"_old", f.Name()),
@@ -101,7 +103,19 @@ func UpgradeFromV026T027(index *meta.Index) error {
 		if err != nil {
 			return err
 		}
+		// keep every moved second-level shard reachable from metadata
+		if !f.IsDir() || len(f.Name()) != 6 {
+			continue
+		}
+		id, err := strconv.ParseInt(f.Name(), 16, 64)
+		if err != nil {
+			continue
+		}
+		for j := int64(len(first.Shards)); j <= id; j++ {
+			first.Shards = append(first.Shards, &meta.IndexSecondShard{ID: j})
+		}
 	}
+	first.ShardNum = max(first.ShardNum, int64(len(first.Shards)))
 
 	// delete empty dir
 	return os.Remove(path.Join(rootPath, indexName+"_old"))

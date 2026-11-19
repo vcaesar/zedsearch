@@ -53,11 +53,19 @@ func TestMain(m *testing.M) {
 }
 
 // mainCommand returns the test binary set up to run main() with args
-// against a fresh data dir.
+// against a fresh data dir. Inherited TLS settings are dropped and the
+// working dir is empty, so no conf/zed.toml can switch the server to TLS.
 func mainCommand(t *testing.T, args string, env ...string) *exec.Cmd {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^$")
-	cmd.Env = append(os.Environ(),
+	cmd.Dir = t.TempDir()
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "ZED_SERVER_TLS_CERTIFICATE_FILE=") &&
+			!strings.HasPrefix(kv, "ZED_SERVER_TLS_KEY_FILE=") {
+			cmd.Env = append(cmd.Env, kv)
+		}
+	}
+	cmd.Env = append(cmd.Env,
 		helperEnv+"="+args,
 		"ZED_DATA_PATH="+t.TempDir(),
 		"ZED_FIRST_ADMIN_USER=admin",
@@ -65,6 +73,7 @@ func mainCommand(t *testing.T, args string, env ...string) *exec.Cmd {
 		"ZED_TELEMETRY=false",
 		"ZED_SENTRY=false",
 		"ZED_PROFILER=false",
+		"ZED_LOG_LEVEL=info",
 	)
 	cmd.Env = append(cmd.Env, env...)
 	return cmd

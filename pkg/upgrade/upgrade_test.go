@@ -218,7 +218,11 @@ func TestUpgradeFromV026T027(t *testing.T) {
 		assert.Equal(t, int64(2), index.ShardNum)
 		ids := sortedShardIDs(index)
 		require.Len(t, ids, 2)
-		assert.Equal(t, int64(1), index.Shards[ids[0]].ShardNum)
+		first := index.Shards[ids[0]]
+		assert.Equal(t, int64(2), first.ShardNum)
+		require.Len(t, first.Shards, 2)
+		assert.Equal(t, int64(0), first.Shards[0].ID)
+		assert.Equal(t, int64(1), first.Shards[1].ID)
 		assert.Equal(t, "s0", readFile(t, root, name, ids[0], "000000", "seg"))
 		assert.Equal(t, "s1", readFile(t, root, name, ids[0], "000001", "seg"))
 		entries, err := os.ReadDir(filepath.Join(root, name, ids[1]))
@@ -241,9 +245,16 @@ func TestUpgradeFromV026T027(t *testing.T) {
 			},
 		}
 
+		writeFile(t, "x", root, name, "zzzzzz", "seg")
+		writeFile(t, "n", root, name, "000005")
+
 		require.NoError(t, UpgradeFromV026T027(index))
 		assert.Equal(t, []string{"a", "b"}, sortedShardIDs(index))
+		assert.Equal(t, int64(1), index.Shards["a"].ShardNum)
+		require.Len(t, index.Shards["a"].Shards, 1)
+		assert.Equal(t, int64(0), index.Shards["a"].Shards[0].ID)
 		assert.Equal(t, "s0", readFile(t, root, name, "a", "000000", "seg"))
+		assert.Equal(t, "x", readFile(t, root, name, "a", "zzzzzz", "seg"))
 		entries, err := os.ReadDir(filepath.Join(root, name, "b"))
 		require.NoError(t, err)
 		assert.Empty(t, entries)
