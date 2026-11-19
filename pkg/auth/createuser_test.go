@@ -75,6 +75,14 @@ func TestCreateUser(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "create user storage error",
+			args: args{
+				id:                "TestCreateUser.invalid/",
+				plaintextPassword: "***",
+			},
+			wantErr: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

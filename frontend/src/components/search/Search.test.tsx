@@ -1,7 +1,8 @@
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render as rtlRender, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { MemoryRouter, useLocation } from 'react-router';
 import Search from '../../views/Search';
-import { Activity } from 'react';
+import { Activity, type ReactElement } from 'react';
 import SearchBar from './SearchBar';
 import HighLight from './HighLight';
 import { initialTime } from './model';
@@ -11,6 +12,7 @@ const mocks = vi.hoisted(() => ({ search: vi.fn(), nameList: vi.fn(), mapping: v
 vi.mock('../../services/search', () => ({ default: { search: mocks.search } }));
 vi.mock('../../services/index', () => ({ default: { nameList: mocks.nameList, mapping: mocks.mapping } }));
 vi.mock('../../locales', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+const render = (ui: ReactElement) => rtlRender(ui, { wrapper: MemoryRouter });
 const response = (name = 'logs', count = 23): SearchResponse => ({
   took: 4, hits: { total: { value: 1234 }, hits: Array.from({ length: count }, (_, i) => ({ _id: String(i), _index: name, '@timestamp': '2026-02-15T12:00:00Z', _source: { message: `Gold ${i}`, nested: { city: 'Paris' }, tags: ['one', 'two'] } })) },
   aggregations: { histogram: { interval: '1h', buckets: [{ key: '2026-02-15T12:00:00Z', doc_count: count }] } },
@@ -28,6 +30,20 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 
 describe('Search migration', () => {
+  it('opens the index from ?index= and keeps the URL in sync', async () => {
+    function Where() {
+      const location = useLocation();
+      return <p data-testid="where">{location.search}</p>;
+    }
+    rtlRender(<MemoryRouter initialEntries={['/search?index=logs']}><Search /><Where /></MemoryRouter>);
+    await screen.findByText('Found 1,234 hits in 4 ms');
+    expect(mocks.search).toHaveBeenCalledWith(expect.objectContaining({ index: 'logs' }));
+    expect(mocks.mapping).toHaveBeenCalledWith('logs');
+    expect(screen.getByRole('combobox', { name: 'search.selectIndex' })).toHaveTextContent('logs');
+    await selectIndex('other');
+    expect(screen.getByTestId('where')).toHaveTextContent('?index=other');
+    expect(mocks.search).toHaveBeenCalledTimes(2);
+  });
   it('filters indexes from a search box inside the index dropdown', async () => {
     mocks.nameList.mockImplementation(async (name: string) => ({ data: ['logs', 'other'].filter(index => index.includes(name)) }));
     render(<Search />);
@@ -92,7 +108,7 @@ describe('Search migration', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Close' }));
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
     await waitFor(() => expect(mocks.search).toHaveBeenCalledTimes(2));
-    expect(mocks.search.mock.calls[1][0].query).toMatchObject({ size: 50, query: { bool: { must: [{ query_string: { query: 'City:Paris Gold' } }] } }, aggs: { histogram: { auto_date_histogram: { buckets: 100 } } } });
+    expect(mocks.search.mock.calls[1][0].query).toMatchObject({ size: 50, sort: ['_score', '-@timestamp'], query: { function_score: { query: { bool: { must: [{ query_string: { query: 'City:Paris Gold' } }] } } } }, aggs: { histogram: { auto_date_histogram: { buckets: 100 } } } });
     await waitFor(() => expect(container.querySelector('mark')).toHaveTextContent('Gold'));
     fireEvent.click(screen.getByRole('checkbox', { name: 'message' }));
     await selectIndex('other');

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router';
 import searchService from '../services/search';
 import indexService from '../services/index';
 import SearchBar from '../components/search/SearchBar';
@@ -21,6 +22,8 @@ export default function Search() {
   const requestId = useRef(0);
   const busy = useRef(false);
   const mappingId = useRef(0);
+  const [params, setParams] = useSearchParams();
+  const linkedIndex = params.get('index') ?? '';
   useEffect(() => {
     busy.current = false;
     setLoading(false);
@@ -68,11 +71,17 @@ export default function Search() {
     setDraft(data);
     void search(data, name, true);
   };
+  // ?index= opens an index directly, e.g. from the Fleet page.
+  useEffect(() => { if (linkedIndex) selectIndex(linkedIndex); }, [linkedIndex]);
+  const pickIndex = (name: string) => {
+    selectIndex(name);
+    setParams(name ? { index: name } : {}, { replace: true });
+  };
   return <section aria-label="Search workspace">
     <SearchBar value={draft} onChange={setDraft} onSearch={data => { void search(data); }} onRefresh={() => { void search(submitted); }} loading={loading} />
     {error && <p role="alert" className="error">{error}</p>}
     <div className="flex flex-col md:flex-row gap-4 mt-4">
-      <IndexList index={index} fields={fields} columns={columns} onIndex={selectIndex} onColumns={setColumns} />
+      <IndexList index={index} fields={fields} columns={columns} onIndex={pickIndex} onColumns={setColumns} />
       <SearchResult key={index} result={result} columns={columns} query={submitted.query} interval={interval} loading={loading} maxRecords={maxRecords} onMaxRecords={setMaxRecords} />
     </div>
   </section>;

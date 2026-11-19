@@ -70,3 +70,28 @@ func TestInitFirstUser(t *testing.T) {
 		})
 	}
 }
+
+func TestIsFirstStart(t *testing.T) {
+	_, err := CreateUser("TestIsFirstStart", "First Start", "***", "admin")
+	assert.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, DeleteUser("testisfirststart")) })
+	ZED_CACHED_USERS.Delete("testisfirststart")
+
+	first, err := isFirstStart()
+	assert.NoError(t, err)
+	assert.False(t, first)
+	_, ok := ZED_CACHED_USERS.Get("testisfirststart")
+	assert.True(t, ok)
+}
+
+func TestInitPermissionCache(t *testing.T) {
+	_, err := CreateRole("TestInitPermissionCache", "Cache Role", []string{"p1", "p2"})
+	assert.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, DeleteRole("testinitpermissioncache")) })
+	ZED_CACHED_PERMISSIONS.Delete("testinitpermissioncache")
+
+	assert.NoError(t, initPermissionCache())
+	pm, ok := ZED_CACHED_PERMISSIONS.Get("testinitpermissioncache")
+	assert.True(t, ok)
+	assert.Equal(t, map[string]struct{}{"p1": {}, "p2": {}}, pm)
+}

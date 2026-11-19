@@ -72,6 +72,20 @@ func TestCreateRole(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "create reserved admin role",
+			args: args{
+				id: "Admin",
+			},
+			wantErr: true,
+		},
+		{
+			name: "create role storage error",
+			args: args{
+				id: "TestCreateRole.invalid/",
+			},
+			wantErr: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
