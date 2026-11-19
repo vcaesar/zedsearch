@@ -16,6 +16,7 @@
 package logs
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -27,11 +28,27 @@ import (
 
 func TestCheckWindow(t *testing.T) {
 	now := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
-	assert.NoError(t, CheckWindow(now.Add(-100*time.Hour), now, 0, 0), "disabled")
-	assert.NoError(t, CheckWindow(now.Add(-time.Hour), now, 2*time.Hour, time.Hour))
-	assert.NoError(t, CheckWindow(now.Add(time.Hour), now, 2*time.Hour, time.Hour), "bound is inclusive")
-	assert.ErrorContains(t, CheckWindow(now.Add(-3*time.Hour), now, 2*time.Hour, 0), "older")
-	assert.ErrorContains(t, CheckWindow(now.Add(2*time.Hour), now, 0, time.Hour), "future")
+	for _, tt := range []struct {
+		name         string
+		ts           time.Time
+		upto, future time.Duration
+		wantErr      string
+	}{
+		{"disabled", now.Add(-100 * time.Hour), 0, 0, ""},
+		{"inside", now.Add(-time.Hour), 2 * time.Hour, time.Hour, ""},
+		{"bound is inclusive", now.Add(time.Hour), 2 * time.Hour, time.Hour, ""},
+		{"too old", now.Add(-3 * time.Hour), 2 * time.Hour, 0, "older"},
+		{"too far in future", now.Add(2 * time.Hour), 0, time.Hour, "future"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := CheckWindow(tt.ts, now, tt.upto, tt.future)
+			if tt.wantErr == "" {
+				assert.NoError(t, err)
+			} else {
+				assert.ErrorContains(t, err, tt.wantErr)
+			}
+		})
+	}
 }
 
 func TestParseJSON(t *testing.T) {
@@ -43,9 +60,23 @@ func TestParseJSON(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []map[string]interface{}{{"message": "one"}}, docs)
 
-	for _, body := range []string{``, `"x"`, `[1]`, `[null]`, `{bad`, `[{"a":1}`} {
-		_, err := ParseJSON([]byte(body))
-		assert.Error(t, err, body)
+	docs, err = ParseJSON([]byte(`[]`))
+	require.NoError(t, err)
+	assert.Empty(t, docs, "an empty batch is valid")
+
+	for _, tt := range []struct{ name, body string }{
+		{"empty body", ``},
+		{"string", `"x"`},
+		{"number record", `[1]`},
+		{"null record", `[null]`},
+		{"top-level null", `null`},
+		{"bad object", `{bad`},
+		{"unterminated array", `[{"a":1}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseJSON([]byte(tt.body))
+			assert.Error(t, err)
+		})
 	}
 }
 
@@ -142,9 +173,76 @@ func TestParseOTLP(t *testing.T) {
 		`{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"timeUnixNano":"x1"}]}]}]}`,
 		`{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"attributes":[{"key":"a","value":{"intValue":"1.5"}}]}]}]}]}`,
 		`{"resourceLogs":[{"resource":{"attributes":[{"key":"a","value":{"intValue":"z"}}]},"scopeLogs":[]}]}`,
+		`{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"timeUnixNano":"-1"}]}]}]}`,
+		`{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"observedTimeUnixNano":"x"}]}]}]}`,
 	} {
 		_, err := ParseOTLP([]byte(body))
 		assert.Error(t, err, body)
+	}
+
+	docs, err = ParseOTLP([]byte(`{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"timeUnixNano":"1.7040672e18",
+		"attributes":[{"key":"q","value":{"intValue":"1e3"}},{"key":"u","value":{"intValue":2e1}}]}]}]}]}`))
+	require.NoError(t, err, "ProtoJSON exponent notation")
+	assert.Equal(t, int64(1000), docs[0]["q"])
+	assert.Equal(t, int64(20), docs[0]["u"])
+	assert.Equal(t, "2024-01-01T00:00:00Z", docs[0][meta.TimeFieldName])
+}
+
+func TestParseOTLPTime(t *testing.T) {
+	for _, tt := range []struct{ name, record, want string }{
+		{"zero string falls back", `"timeUnixNano":"0","observedTimeUnixNano":"1704067201000000000"`, "2024-01-01T00:00:01Z"},
+		{"zero exponent falls back", `"timeUnixNano":"0e0","observedTimeUnixNano":"1704067201000000000"`, "2024-01-01T00:00:01Z"},
+		{"zero number falls back", `"timeUnixNano":0,"observedTimeUnixNano":1704067201000000000`, "2024-01-01T00:00:01Z"},
+		{"event time wins", `"timeUnixNano":"1704067200000000000","observedTimeUnixNano":"1704067201000000000"`, "2024-01-01T00:00:00Z"},
+		{"both zero", `"timeUnixNano":"0","observedTimeUnixNano":"0"`, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			docs, err := ParseOTLP([]byte(`{"resourceLogs":[{"scopeLogs":[{"logRecords":[{` + tt.record + `}]}]}]}`))
+			require.NoError(t, err)
+			require.Len(t, docs, 1)
+			if tt.want == "" {
+				assert.NotContains(t, docs[0], meta.TimeFieldName)
+			} else {
+				assert.Equal(t, tt.want, docs[0][meta.TimeFieldName])
+			}
+		})
+	}
+}
+
+func TestParseOTLPResourceNotShared(t *testing.T) {
+	docs, err := ParseOTLP([]byte(`{"resourceLogs":[{"resource":{"attributes":[{"key":"svc","value":{"stringValue":"api"}}]},
+		"scopeLogs":[{"logRecords":[{"attributes":[{"key":"svc","value":{}}]},{}]}]}]}`))
+	require.NoError(t, err)
+	require.Len(t, docs, 2)
+	assert.Equal(t, "api", docs[0]["svc"], "an empty record attribute keeps the resource value")
+	docs[0]["svc"] = "changed"
+	assert.Equal(t, "api", docs[1]["svc"], "records get their own maps")
+}
+
+func TestParseProtoInt(t *testing.T) {
+	for _, tt := range []struct {
+		in   string
+		want int64
+	}{
+		{"502", 502}, {"-7", -7}, {"1e3", 1000}, {"1E3", 1000}, {"1.5e2", 150}, {"+2e1", 20},
+		{"1500e-1", 150}, {"100e-2", 1}, {"0e5", 0}, {"-0.0", 0}, {"1.0", 1},
+		{"9223372036854775807", math.MaxInt64}, {"-9223372036854775808", math.MinInt64},
+		{"9.223372036854775807e18", math.MaxInt64}, {"-9.223372036854775808e18", math.MinInt64},
+	} {
+		t.Run(tt.in, func(t *testing.T) {
+			got, err := parseProtoInt(tt.in)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+	for _, in := range []string{
+		"", "+", "-", "e3", "1e", "1e+", "z", "1.5", "15e-2", "1e-1", "1e19", "9223372036854775808",
+		"9.223372036854775808e18", "1e1048577", "1e-1048577", "1e999999", "1_0", "0x10", "1e3.0",
+	} {
+		t.Run("invalid "+in, func(t *testing.T) {
+			_, err := parseProtoInt(in)
+			assert.Error(t, err)
+		})
 	}
 }
 

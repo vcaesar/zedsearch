@@ -215,7 +215,7 @@ func checkLogWindow(index *core.Index, doc map[string]interface{}, upto, future 
 		return nil
 	}
 	now := time.Now()
-	_, ts, err := logs.Normalize(doc, index.GetMappings(), now)
+	ts, err := logs.EventTime(doc, index.GetMappings(), now)
 	if err != nil {
 		return err
 	}
@@ -259,13 +259,17 @@ func parseLogsBody(c zhttp.Context, parse func([]byte) ([]map[string]interface{}
 // usually send it. The decompressed size is capped by zed_server_body_limit.
 func readLogsBody(c zhttp.Context) ([]byte, error) {
 	var r io.Reader = c.Body()
-	if strings.EqualFold(c.GetHeader("Content-Encoding"), "gzip") {
+	switch enc := strings.ToLower(strings.TrimSpace(c.GetHeader("Content-Encoding"))); enc {
+	case "", "identity":
+	case "gzip":
 		gz, err := gzip.NewReader(r)
 		if err != nil {
 			return nil, fmt.Errorf("invalid gzip body: %w", err)
 		}
 		defer gz.Close()
 		r = gz
+	default:
+		return nil, fmt.Errorf("unsupported Content-Encoding [%s]", enc)
 	}
 	limit := int64(config.Global.ServerBodyLimit)
 	if limit <= 0 {

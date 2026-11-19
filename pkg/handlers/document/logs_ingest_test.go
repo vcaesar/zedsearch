@@ -230,6 +230,7 @@ func TestLokiPush(t *testing.T) {
 
 	for _, tt := range []struct{ name, body, encoding string }{
 		{"invalid gzip", "plain text", "gzip"},
+		{"unsupported encoding", `{"streams":[{"stream":{},"values":[["1704067200000000000","a"]]}]}`, "zstd"},
 		{"no streams", `{"streams":[]}`, ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -289,4 +290,22 @@ func TestReadLogsBodyLimit(t *testing.T) {
 	data, err := readLogsBody(c)
 	require.NoError(t, err)
 	assert.Equal(t, "1234", string(data))
+
+	for _, tt := range []struct{ encoding, wantErr string }{
+		{"identity", ""},
+		{" GZIP ", "invalid gzip"},
+		{"br", "unsupported Content-Encoding [br]"},
+	} {
+		t.Run("encoding "+tt.encoding, func(t *testing.T) {
+			c, _ := logsRequest(t, "x", "1234")
+			c.Request.Header.Set("Content-Encoding", tt.encoding)
+			data, err := readLogsBody(c)
+			if tt.wantErr != "" {
+				assert.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, "1234", string(data))
+		})
+	}
 }

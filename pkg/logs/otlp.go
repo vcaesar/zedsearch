@@ -25,6 +25,7 @@ package logs
 import (
 	stdjson "encoding/json"
 	"fmt"
+	"maps"
 	"strconv"
 	"strings"
 	"time"
@@ -125,25 +126,24 @@ func ParseOTLP(body []byte) ([]map[string]interface{}, error) {
 	return docs, nil
 }
 
+// otlpFields is the number of fields otlpDocument and ParseOTLP add besides
+// attributes.
+const otlpFields = 9
+
 func otlpDocument(rec otlpLogRecord, resource map[string]interface{}) (map[string]interface{}, error) {
-	doc, err := otlpAttributes(rec.Attributes)
+	doc := make(map[string]interface{}, len(resource)+len(rec.Attributes)+otlpFields)
+	maps.Copy(doc, resource)
+	if err := addAttributes(doc, rec.Attributes); err != nil {
+		return nil, err
+	}
+	ns, err := otlpTime(rec.TimeUnixNano)
+	if err == nil && ns == 0 {
+		ns, err = otlpTime(rec.ObservedTimeUnixNano)
+	}
 	if err != nil {
 		return nil, err
 	}
-	for k, v := range resource {
-		if _, exists := doc[k]; !exists {
-			doc[k] = v
-		}
-	}
-	ts := rec.TimeUnixNano
-	if ts == "" || ts == "0" {
-		ts = rec.ObservedTimeUnixNano
-	}
-	if ts != "" && ts != "0" {
-		ns, err := parseProtoInt(ts.String())
-		if err != nil {
-			return nil, fmt.Errorf("invalid timeUnixNano [%s]", ts)
-		}
+	if ns != 0 {
 		doc[meta.TimeFieldName] = time.Unix(0, ns).UTC().Format(time.RFC3339Nano)
 	}
 	if level := rec.SeverityText; level != "" {
@@ -165,26 +165,45 @@ func otlpDocument(rec otlpLogRecord, resource map[string]interface{}) (map[strin
 			doc["body"] = body
 		}
 	}
-	for k, v := range map[string]string{"trace_id": rec.TraceID, "span_id": rec.SpanID, "event_name": rec.EventName} {
-		if v != "" {
-			doc[k] = v
+	for _, f := range [...][2]string{{"trace_id", rec.TraceID}, {"span_id", rec.SpanID}, {"event_name", rec.EventName}} {
+		if f[1] != "" {
+			doc[f[0]] = f[1]
 		}
 	}
 	return doc, nil
 }
 
+// otlpTime parses a fixed64 nanosecond timestamp, 0 meaning unset.
+func otlpTime(n stdjson.Number) (int64, error) {
+	if n == "" {
+		return 0, nil
+	}
+	ns, err := parseProtoInt(n.String())
+	if err != nil || ns < 0 {
+		return 0, fmt.Errorf("invalid timestamp [%s]", n)
+	}
+	return ns, nil
+}
+
 func otlpAttributes(kvs []otlpKeyValue) (map[string]interface{}, error) {
 	out := make(map[string]interface{}, len(kvs))
+	if err := addAttributes(out, kvs); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func addAttributes(dst map[string]interface{}, kvs []otlpKeyValue) error {
 	for _, kv := range kvs {
 		v, err := kv.Value.value()
 		if err != nil {
-			return nil, fmt.Errorf("attribute [%s]: %w", kv.Key, err)
+			return fmt.Errorf("attribute [%s]: %w", kv.Key, err)
 		}
 		if v != nil {
-			out[kv.Key] = v
+			dst[kv.Key] = v
 		}
 	}
-	return out, nil
+	return nil
 }
 
 func (a *otlpAnyValue) value() (interface{}, error) {
