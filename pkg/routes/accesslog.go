@@ -32,7 +32,7 @@ func AccessLog(app *zhttp.Engine) {
 		c.Next()
 
 		took := time.Since(timeStart) / time.Millisecond
-		log.Info().
+		log.Info().Ctx(c.Context()).
 			Str("method", c.Method()).
 			Int("code", c.ResponseStatus()).
 			Int("took", int(took)).

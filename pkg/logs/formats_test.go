@@ -1,0 +1,253 @@
+/* Copyright 2026 AtomAI.
+*
+* Licensed under the Apache License, Version 2.0 (the "License");
+* you may not use this file except in compliance with the License.
+* You may obtain a copy of the License at
+*
+*     http://www.apache.org/licenses/LICENSE-2.0
+*
+* Unless required by applicable law or agreed to in writing, software
+* distributed under the License is distributed on an "AS IS" BASIS,
+* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+* See the License for the specific language governing permissions and
+* limitations under the License.
+ */
+
+package logs
+
+import (
+	"math"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/vcaesar/zedsearch/pkg/meta"
+)
+
+func TestCheckWindow(t *testing.T) {
+	now := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
+	for _, tt := range []struct {
+		name         string
+		ts           time.Time
+		upto, future time.Duration
+		wantErr      string
+	}{
+		{"disabled", now.Add(-100 * time.Hour), 0, 0, ""},
+		{"inside", now.Add(-time.Hour), 2 * time.Hour, time.Hour, ""},
+		{"bound is inclusive", now.Add(time.Hour), 2 * time.Hour, time.Hour, ""},
+		{"too old", now.Add(-3 * time.Hour), 2 * time.Hour, 0, "older"},
+		{"too far in future", now.Add(2 * time.Hour), 0, time.Hour, "future"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := CheckWindow(tt.ts, now, tt.upto, tt.future)
+			if tt.wantErr == "" {
+				assert.NoError(t, err)
+			} else {
+				assert.ErrorContains(t, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestParseJSON(t *testing.T) {
+	docs, err := ParseJSON([]byte(` [{"message":"a"},{"level":"error","n":1}] `))
+	require.NoError(t, err)
+	assert.Equal(t, []map[string]interface{}{{"message": "a"}, {"level": "error", "n": float64(1)}}, docs)
+
+	docs, err = ParseJSON([]byte(`{"message":"one"}`))
+	require.NoError(t, err)
+	assert.Equal(t, []map[string]interface{}{{"message": "one"}}, docs)
+
+	docs, err = ParseJSON([]byte(`[]`))
+	require.NoError(t, err)
+	assert.Empty(t, docs, "an empty batch is valid")
+
+	for _, tt := range []struct{ name, body string }{
+		{"empty body", ``},
+		{"string", `"x"`},
+		{"number record", `[1]`},
+		{"null record", `[null]`},
+		{"top-level null", `null`},
+		{"bad object", `{bad`},
+		{"unterminated array", `[{"a":1}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseJSON([]byte(tt.body))
+			assert.Error(t, err)
+		})
+	}
+}
+
+func TestParseHEC(t *testing.T) {
+	body := `{"time":1426279439.123,"host":"web-1","source":"app","sourcetype":"json","index":"ignored","event":"hello","fields":{"env":"prod"}}
+{"time":"1426279440","event":{"message":"structured","level":"warn"}}{"event":{"k":"v"}}`
+	docs, err := ParseHEC([]byte(body))
+	require.NoError(t, err)
+	require.Len(t, docs, 3)
+	assert.Equal(t, map[string]interface{}{
+		"message": "hello", "host.name": "web-1", "source": "app", "sourcetype": "json", "env": "prod",
+		meta.TimeFieldName: "2015-03-13T20:43:59.123Z",
+	}, docs[0])
+	assert.Equal(t, map[string]interface{}{
+		"message": "structured", "level": "warn", meta.TimeFieldName: "2015-03-13T20:44:00Z",
+	}, docs[1])
+	assert.Equal(t, map[string]interface{}{"k": "v"}, docs[2])
+
+	for _, body := range []string{``, `{"time":1}`, `{"event":1}`, `{"event":"x","time":"abc"}`, `{"event":`, `[]`,
+		`{"event":"x","time":1e300}`, `{"event":"x","time":253402300800}`, `{"event":"x","time":-62167219201}`} {
+		_, err := ParseHEC([]byte(body))
+		assert.Error(t, err, body)
+	}
+}
+
+func TestParseLoki(t *testing.T) {
+	body := `{"streams":[{"stream":{"job":"api","level":"info"},"values":[
+		["1704067200123456789","first line"],
+		["1704067201000000000","second line",{"trace_id":"abc"}]]}]}`
+	docs, err := ParseLoki([]byte(body))
+	require.NoError(t, err)
+	require.Len(t, docs, 2)
+	assert.Equal(t, map[string]interface{}{
+		"job": "api", "level": "info", "message": "first line",
+		meta.TimeFieldName: "2024-01-01T00:00:00.123456789Z",
+	}, docs[0])
+	assert.Equal(t, "abc", docs[1]["trace_id"])
+	assert.Equal(t, "2024-01-01T00:00:01Z", docs[1][meta.TimeFieldName])
+
+	for _, body := range []string{
+		`{}`, `bad`,
+		`{"streams":[{"stream":{},"values":[["1"]]}]}`,
+		`{"streams":[{"stream":{},"values":[[1,"x"]]}]}`,
+		`{"streams":[{"stream":{},"values":[["abc","x"]]}]}`,
+		`{"streams":[{"stream":{},"values":[["1",2]]}]}`,
+		`{"streams":[{"stream":{},"values":[["1","x",{"a":1}]]}]}`,
+	} {
+		_, err := ParseLoki([]byte(body))
+		assert.Error(t, err, body)
+	}
+}
+
+func TestParseOTLP(t *testing.T) {
+	body := `{"resourceLogs":[{"resource":{"attributes":[
+		{"key":"service.name","value":{"stringValue":"checkout"}},
+		{"key":"host.name","value":{"stringValue":"node-1"}}]},
+	"scopeLogs":[{"scope":{"name":"lib","version":"1.0"},"logRecords":[
+		{"timeUnixNano":"1704067200123456789","severityNumber":17,"severityText":"ERROR",
+		 "body":{"stringValue":"payment failed"},
+		 "traceId":"5b8efff798038103d269b633813fc60c","spanId":"eee19b7ec3c1b174",
+		 "attributes":[{"key":"http.status","value":{"intValue":"502"}},
+		   {"key":"retry","value":{"boolValue":true}},
+		   {"key":"ratio","value":{"doubleValue":0.5}},
+		   {"key":"host.name","value":{"stringValue":"override"}},
+		   {"key":"tags","value":{"arrayValue":{"values":[{"stringValue":"a"},{"intValue":2}]}}}]},
+		{"observedTimeUnixNano":1704067201000000000,"severityNumber":10,
+		 "body":{"kvlistValue":{"values":[{"key":"k","value":{"stringValue":"v"}}]}},"eventName":"login"}
+	]}]}]}`
+	docs, err := ParseOTLP([]byte(body))
+	require.NoError(t, err)
+	require.Len(t, docs, 2)
+	assert.Equal(t, map[string]interface{}{
+		"service.name": "checkout", "host.name": "override",
+		"scope.name": "lib", "scope.version": "1.0",
+		meta.TimeFieldName: "2024-01-01T00:00:00.123456789Z",
+		"level":            "ERROR", "severity_number": 17, "message": "payment failed",
+		"trace_id": "5b8efff798038103d269b633813fc60c", "span_id": "eee19b7ec3c1b174",
+		"http.status": int64(502), "retry": true, "ratio": 0.5,
+		"tags": []interface{}{"a", int64(2)},
+	}, docs[0])
+	assert.Equal(t, "2024-01-01T00:00:01Z", docs[1][meta.TimeFieldName])
+	assert.Equal(t, "info", docs[1]["level"], "derived from severityNumber")
+	assert.Equal(t, map[string]interface{}{"k": "v"}, docs[1]["body"])
+	assert.Equal(t, "login", docs[1]["event_name"])
+	assert.Equal(t, "node-1", docs[1]["host.name"])
+	assert.NotContains(t, docs[1], "message")
+
+	docs, err = ParseOTLP([]byte(`{"resourceLogs":[{"scopeLogs":[{"logRecords":[{}]}]}]}`))
+	require.NoError(t, err)
+	assert.Equal(t, []map[string]interface{}{{}}, docs, "no time means ingestion time")
+
+	for _, body := range []string{
+		`bad`,
+		`{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"timeUnixNano":"x1"}]}]}]}`,
+		`{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"attributes":[{"key":"a","value":{"intValue":"1.5"}}]}]}]}]}`,
+		`{"resourceLogs":[{"resource":{"attributes":[{"key":"a","value":{"intValue":"z"}}]},"scopeLogs":[]}]}`,
+		`{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"timeUnixNano":"-1"}]}]}]}`,
+		`{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"observedTimeUnixNano":"x"}]}]}]}`,
+	} {
+		_, err := ParseOTLP([]byte(body))
+		assert.Error(t, err, body)
+	}
+
+	docs, err = ParseOTLP([]byte(`{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"timeUnixNano":"1.7040672e18",
+		"attributes":[{"key":"q","value":{"intValue":"1e3"}},{"key":"u","value":{"intValue":2e1}}]}]}]}]}`))
+	require.NoError(t, err, "ProtoJSON exponent notation")
+	assert.Equal(t, int64(1000), docs[0]["q"])
+	assert.Equal(t, int64(20), docs[0]["u"])
+	assert.Equal(t, "2024-01-01T00:00:00Z", docs[0][meta.TimeFieldName])
+}
+
+func TestParseOTLPTime(t *testing.T) {
+	for _, tt := range []struct{ name, record, want string }{
+		{"zero string falls back", `"timeUnixNano":"0","observedTimeUnixNano":"1704067201000000000"`, "2024-01-01T00:00:01Z"},
+		{"zero exponent falls back", `"timeUnixNano":"0e0","observedTimeUnixNano":"1704067201000000000"`, "2024-01-01T00:00:01Z"},
+		{"zero number falls back", `"timeUnixNano":0,"observedTimeUnixNano":1704067201000000000`, "2024-01-01T00:00:01Z"},
+		{"event time wins", `"timeUnixNano":"1704067200000000000","observedTimeUnixNano":"1704067201000000000"`, "2024-01-01T00:00:00Z"},
+		{"both zero", `"timeUnixNano":"0","observedTimeUnixNano":"0"`, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			docs, err := ParseOTLP([]byte(`{"resourceLogs":[{"scopeLogs":[{"logRecords":[{` + tt.record + `}]}]}]}`))
+			require.NoError(t, err)
+			require.Len(t, docs, 1)
+			if tt.want == "" {
+				assert.NotContains(t, docs[0], meta.TimeFieldName)
+			} else {
+				assert.Equal(t, tt.want, docs[0][meta.TimeFieldName])
+			}
+		})
+	}
+}
+
+func TestParseOTLPResourceNotShared(t *testing.T) {
+	docs, err := ParseOTLP([]byte(`{"resourceLogs":[{"resource":{"attributes":[{"key":"svc","value":{"stringValue":"api"}}]},
+		"scopeLogs":[{"logRecords":[{"attributes":[{"key":"svc","value":{}}]},{}]}]}]}`))
+	require.NoError(t, err)
+	require.Len(t, docs, 2)
+	assert.Equal(t, "api", docs[0]["svc"], "an empty record attribute keeps the resource value")
+	docs[0]["svc"] = "changed"
+	assert.Equal(t, "api", docs[1]["svc"], "records get their own maps")
+}
+
+func TestParseProtoInt(t *testing.T) {
+	for _, tt := range []struct {
+		in   string
+		want int64
+	}{
+		{"502", 502}, {"-7", -7}, {"1e3", 1000}, {"1E3", 1000}, {"1.5e2", 150}, {"+2e1", 20},
+		{"1500e-1", 150}, {"100e-2", 1}, {"0e5", 0}, {"-0.0", 0}, {"1.0", 1},
+		{"9223372036854775807", math.MaxInt64}, {"-9223372036854775808", math.MinInt64},
+		{"9.223372036854775807e18", math.MaxInt64}, {"-9.223372036854775808e18", math.MinInt64},
+	} {
+		t.Run(tt.in, func(t *testing.T) {
+			got, err := parseProtoInt(tt.in)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+	for _, in := range []string{
+		"", "+", "-", "e3", "1e", "1e+", "z", "1.5", "15e-2", "1e-1", "1e19", "9223372036854775808",
+		"9.223372036854775808e18", "1e1048577", "1e-1048577", "1e999999", "1_0", "0x10", "1e3.0",
+	} {
+		t.Run("invalid "+in, func(t *testing.T) {
+			_, err := parseProtoInt(in)
+			assert.Error(t, err)
+		})
+	}
+}
+
+func TestSeverityText(t *testing.T) {
+	for number, want := range map[int]string{0: "", 1: "trace", 5: "debug", 9: "info", 12: "info", 13: "warn", 17: "error", 21: "fatal", 24: "fatal", 25: ""} {
+		assert.Equal(t, want, SeverityText(number), number)
+	}
+}

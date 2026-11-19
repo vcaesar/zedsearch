@@ -77,7 +77,7 @@ func (t *IndexList) Get(name string) (*Index, bool) {
 	return idx, ok
 }
 
-func (t *IndexList) GetOrCreate(name, storageType string, shardNum int64) (*Index, bool, error) {
+func (t *IndexList) GetOrCreate(name, storageType string, shardNum int64, init func(*Index) error) (*Index, bool, error) {
 	t.lock.RLock()
 	idx, ok := t.Indexes[name]
 	t.lock.RUnlock()
@@ -98,6 +98,11 @@ func (t *IndexList) GetOrCreate(name, storageType string, shardNum int64) (*Inde
 	}
 	// check index
 	checkIndex(idx)
+	if init != nil {
+		if err = init(idx); err != nil {
+			return nil, false, err
+		}
+	}
 	if err = storeIndex(idx); err != nil {
 		return nil, false, err
 	}

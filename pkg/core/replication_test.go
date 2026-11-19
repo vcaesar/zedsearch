@@ -86,7 +86,10 @@ func TestWriteGuardAndDropLocalIndex(t *testing.T) {
 
 	WriteGuard = func(string) error { return assert.AnError }
 	t.Cleanup(func() { WriteGuard = nil })
-	assert.ErrorIs(t, index.CreateDocument("1", map[string]interface{}{"name": "one"}, false), assert.AnError)
+	err = index.CreateDocument("1", map[string]interface{}{"name": "one"}, false)
+	assert.ErrorIs(t, err, assert.AnError)
+	var storageErr *StorageError
+	assert.ErrorAs(t, err, &storageErr, "a fenced write is retryable")
 	shardID := ""
 	for id := range index.shards {
 		shardID = id

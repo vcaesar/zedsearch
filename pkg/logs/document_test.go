@@ -73,6 +73,9 @@ func TestNormalize(t *testing.T) {
 			assert.Equal(t, tt.want, timestamp)
 			assert.Equal(t, tt.want.Format(time.RFC3339Nano), doc[meta.TimeFieldName])
 			assert.Equal(t, before, tt.doc, "must not mutate input")
+			eventTime, err := EventTime(tt.doc, tt.mappings, now)
+			require.NoError(t, err)
+			assert.Equal(t, timestamp, eventTime)
 			for field, value := range before {
 				if field != meta.TimeFieldName {
 					assert.Equal(t, value, doc[field], field)

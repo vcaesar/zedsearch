@@ -41,7 +41,7 @@ func (index *Index) CreateDocument(docID string, doc map[string]interface{}, upd
 	// check WAL
 	shard := index.GetShardByDocID(routeDocID(mappings, docID, doc))
 	if err := shard.OpenWAL(); err != nil {
-		return err
+		return storageError(err)
 	}
 
 	secondShardID := ShardIDNeedLatest
@@ -169,7 +169,7 @@ func (index *Index) writeDocument(shard *IndexShard, mappings *meta.Mappings, do
 		return err
 	}
 	if err := shard.writeWAL(data); err != nil {
-		return err
+		return storageError(err)
 	}
 
 	for _, child := range children {
@@ -178,7 +178,7 @@ func (index *Index) writeDocument(shard *IndexShard, mappings *meta.Mappings, do
 			return err
 		}
 		if err := shard.writeWAL(data); err != nil {
-			return err
+			return storageError(err)
 		}
 	}
 

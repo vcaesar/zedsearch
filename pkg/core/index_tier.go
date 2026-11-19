@@ -50,6 +50,21 @@ const walFlushTimeout = 60 * time.Second
 // ErrIndexReadOnly is returned by every write path of a cold index.
 var ErrIndexReadOnly = stderrors.New("index is cold (read-only)")
 
+// StorageError marks a write that failed in the WAL or metadata store rather
+// than because of the document, so the client may retry it.
+type StorageError struct{ Err error }
+
+func (e *StorageError) Error() string { return e.Err.Error() }
+func (e *StorageError) Unwrap() error { return e.Err }
+
+// storageError wraps err as a StorageError, a read-only index is permanent.
+func storageError(err error) error {
+	if err == nil || stderrors.Is(err, ErrIndexReadOnly) {
+		return err
+	}
+	return &StorageError{Err: err}
+}
+
 // tierMoveLock serializes tier moves so two callers cannot copy the same index.
 var tierMoveLock sync.Mutex
 
