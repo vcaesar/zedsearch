@@ -10,6 +10,7 @@ on:
 concurrency:
   group: nightly-dev-image
   cancel-in-progress: false
+  queue: max
 
 permissions:
   contents: read

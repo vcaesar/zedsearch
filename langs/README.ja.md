@@ -99,6 +99,19 @@ go + gin + react
 | `match_phrase` | **10.3 ms** | 12.7 ms | 12.6 ms | — | 16.3 ms |
 | `bool` should (8 クライアント) | **5,179 QPS** | 2,707 QPS | 2,616 QPS | — | 131 QPS |
 
+### リソース使用量
+
+Docker イメージ（非圧縮）、同じ 50,000 件のドキュメントのテキストインデックス（`_flush` 後、ZedSearch・Elasticsearch・OpenSearch はいずれも約 25 MB）、実行全体のメモリ / CPU（100% = 1 vCPU）。データは 3 回の実行の中央値です。
+
+| リソース | ZedSearch | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 | OpenObserve 1.1 |
+|---|---:|---:|---:|---:|---:|
+| Docker イメージ | **56.4 MB** | 1,195 MB | 1,311 MB | 370 MB | 434 MB |
+| テキストインデックス（5 万件） | 25.9 MB | 25.8 MB | 25.7 MB | 454 MB | 14.2 MB（インデックス未作成） |
+| アイドル時メモリ | **14 MiB** | 2,674 MiB | 2,699 MiB | 179 MiB | 387 MiB |
+| ピークメモリ | **388 MiB** | 3,185 MiB | 3,191 MiB | 1,014 MiB | 919 MiB |
+| 平均 CPU | **134%** | 157% | 156% | 230% | 140% |
+| ピーク CPU | 553% | 620% | 529% | 545% | **519%** |
+
 # ドキュメント
 
 ドキュメントは [docs/web](../docs/web/index.md)、API ドキュメントは [zedsearch-docs](https://github.com/zedsearch/zedsearch-docs) で参照できます。

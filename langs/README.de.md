@@ -99,6 +99,19 @@ Die v2-Abfragen aus denselben Sitzungen, jeweils nur ein Abfragetyp. Meilisearch
 | `match_phrase` | **10.3 ms** | 12.7 ms | 12.6 ms | — | 16.3 ms |
 | `bool` should (8 Clients) | **5,179 QPS** | 2,707 QPS | 2,616 QPS | — | 131 QPS |
 
+### Ressourcenbedarf
+
+Docker-Image (unkomprimiert), Textindex derselben 50.000 Dokumente (nach `_flush` rund 25 MB für ZedSearch, Elasticsearch und OpenSearch) sowie Speicher / CPU über den gesamten Lauf (100 % = 1 vCPU), die Werte sind der Median aus drei Läufen.
+
+| Ressource | ZedSearch | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 | OpenObserve 1.1 |
+|---|---:|---:|---:|---:|---:|
+| Docker-Image | **56.4 MB** | 1,195 MB | 1,311 MB | 370 MB | 434 MB |
+| Textindex, 50k Dokumente | 25.9 MB | 25.8 MB | 25.7 MB | 454 MB | 14.2 MB (nicht indexiert) |
+| Speicher im Leerlauf | **14 MiB** | 2,674 MiB | 2,699 MiB | 179 MiB | 387 MiB |
+| Speicher-Spitze | **388 MiB** | 3,185 MiB | 3,191 MiB | 1,014 MiB | 919 MiB |
+| CPU Mittel | **134%** | 157% | 156% | 230% | 140% |
+| CPU Spitze | 553% | 620% | 529% | 545% | **519%** |
+
 # Dokumentation
 
 Die Dokumentation ist unter [docs/web](../docs/web/index.md) verfügbar, die API-Dokumentation unter [zedsearch-docs](https://github.com/zedsearch/zedsearch-docs)
