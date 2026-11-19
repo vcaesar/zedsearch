@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/vcaesar/zedsearch/pkg/core"
 	"github.com/vcaesar/zedsearch/test/utils"
@@ -97,8 +98,13 @@ func TestUpdate(t *testing.T) {
 		assert.Equal(t, http.StatusOK, w.Code)
 		assert.Contains(t, w.Body.String(), "")
 
-		// wait for WAL write to index
-		time.Sleep(time.Second)
+		// wait for WAL write to index; it syncs every zed_wal_sync_interval (1s)
+		index, ok := core.GetIndex("TestDocumentUpdate.index_1")
+		require.True(t, ok)
+		require.Eventually(t, func() bool {
+			_, err := index.GetDocument("1")
+			return err == nil
+		}, 10*time.Second, 20*time.Millisecond)
 	})
 
 	for _, tt := range tests {

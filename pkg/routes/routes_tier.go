@@ -26,7 +26,8 @@ import (
 
 // documentWritePaths are the route suffixes that add, change or remove
 // documents. ReadOnlyGuard only has to look at those.
-var documentWritePaths = []string{"/_doc", "/_create", "/_update", "/_bulk", "/_multi", "/_delete_by_query"}
+var documentWritePaths = []string{"/_doc", "/_create", "/_update", "/_bulk", "/_multi", "/_delete_by_query",
+	"/_json", "/_hec", "/loki/api/v1/push", "/v1/logs"}
 
 // ReadOnlyGuard rejects document writes to a cold index. It has to be
 // registered before the routes it protects, so SetTierRoutes runs first.

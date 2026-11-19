@@ -29,6 +29,7 @@ import (
 
 	"github.com/vcaesar/zedsearch/pkg/cluster"
 	"github.com/vcaesar/zedsearch/pkg/config"
+	"github.com/vcaesar/zedsearch/pkg/tracing"
 	"github.com/vcaesar/zedsearch/pkg/zhttp"
 	"github.com/vcaesar/zedsearch/pkg/zutils/json"
 )
@@ -47,6 +48,8 @@ type clusterTestEnv struct {
 	peer     *httptest.Server
 	engine   *zhttp.Engine
 	requests chan *http.Request
+	// respond, when set, answers for node-b instead of the default body
+	respond http.HandlerFunc
 }
 
 // setupClusterEnv makes node-a own localIndex and node-b own remoteIndex.
@@ -64,6 +67,12 @@ func setupClusterEnvWith(t *testing.T, ttl time.Duration, wrap func(cluster.Stor
 	env := &clusterTestEnv{requests: make(chan *http.Request, 4)}
 	env.peer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		env.requests <- r.Clone(context.Background())
+		if env.respond != nil {
+			env.respond(w, r)
+			return
+		}
+		// a node answers with the trace id it was handed, like Tracing
+		w.Header().Set(tracing.TraceIDHeader, tracing.TraceID(tracing.Extract(r.Context(), r.Header.Get)))
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, err := w.Write([]byte(`{"served_by":"node-b"}`))
@@ -105,6 +114,7 @@ func setupClusterEnvWith(t *testing.T, ttl time.Duration, wrap func(cluster.Stor
 	env.own(t, remoteIndex, "node-b")
 
 	env.engine = zhttp.New()
+	Tracing(env.engine)
 	env.engine.Use(ClusterRoute())
 	handler := func(c zhttp.Context) {
 		c.JSON(http.StatusOK, zhttp.H{"served_by": "node-a", "index": c.Param("target")})
@@ -170,6 +180,24 @@ func TestClusterRouteForwardsToOwner(t *testing.T) {
 		assert.Equal(t, "/api/"+remoteIndex+"/_doc/1", forwarded.URL.Path)
 		assert.Equal(t, "node-a", forwarded.Header.Get(ForwardedByHeader))
 		assert.Equal(t, "Basic dXNlcjpwYXNz", forwarded.Header.Get("Authorization"))
+	case <-time.After(3 * time.Second):
+		t.Fatal("the owner never received the request")
+	}
+}
+
+func TestClusterRouteForwardKeepsTrace(t *testing.T) {
+	env := setupClusterEnv(t)
+	const traceID = "4bf92f3577b34da6a3ce929d0e0e4736"
+
+	req := httptest.NewRequest(http.MethodGet, "/api/"+remoteIndex+"/_doc/1", nil)
+	req.Header.Set("traceparent", "00-"+traceID+"-00f067aa0ba902b7-01")
+	w := env.do(req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, []string{traceID}, w.Header().Values(tracing.TraceIDHeader))
+	select {
+	case forwarded := <-env.requests:
+		assert.Equal(t, traceID, tracing.TraceID(tracing.Extract(context.Background(), forwarded.Header.Get)))
 	case <-time.After(3 * time.Second):
 		t.Fatal("the owner never received the request")
 	}

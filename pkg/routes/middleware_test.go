@@ -23,9 +23,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
+	"github.com/vcaesar/zedsearch/pkg/auth"
 	"github.com/vcaesar/zedsearch/pkg/config"
 	"github.com/vcaesar/zedsearch/pkg/core"
+	"github.com/vcaesar/zedsearch/pkg/meta"
 	"github.com/vcaesar/zedsearch/pkg/zhttp"
 )
 
@@ -165,4 +168,67 @@ func TestAccessLog(t *testing.T) {
 	w := serve(e, httptest.NewRequest(http.MethodGet, "/version", nil))
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.NotEmpty(t, w.Header().Get("Zed"))
+}
+
+func TestAuthMiddlewareAdmits(t *testing.T) {
+	const salt = "TestAuthMiddlewareAdmits.salt"
+	users := map[string]string{
+		"testauthmiddlewareadmits.admin":  "admin",
+		"testauthmiddlewareadmits.viewer": "TestAuthMiddlewareAdmits.viewer",
+	}
+	for id, role := range users {
+		auth.ZED_CACHED_USERS.Set(id, &meta.User{ID: id, Role: role, Salt: salt, Password: auth.GeneratePassword("pass", salt)})
+	}
+	t.Cleanup(func() {
+		for id := range users {
+			auth.ZED_CACHED_USERS.Delete(id)
+		}
+	})
+
+	e := zhttp.New()
+	e.GET("/api/:target/_count", AuthMiddleware("search.Count"), func(c zhttp.Context) { c.Status(http.StatusOK) })
+
+	tests := []struct {
+		user string
+		want int
+		body string
+	}{
+		{user: "testauthmiddlewareadmits.admin", want: http.StatusOK},
+		{user: "testauthmiddlewareadmits.viewer", want: http.StatusForbidden, body: "No permission:search.Count"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.user, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/logs/_count", nil)
+			req.SetBasicAuth(tt.user, "pass")
+			w := serve(e, req)
+			assert.Equal(t, tt.want, w.Code)
+			assert.Contains(t, w.Body.String(), tt.body)
+		})
+	}
+}
+
+func TestIndexAliasMiddleware(t *testing.T) {
+	const alias = "TestIndexAliasMiddleware.alias"
+	indexes := []string{"TestIndexAliasMiddleware.index_1", "TestIndexAliasMiddleware.index_2"}
+	require.NoError(t, core.ZED_INDEX_ALIAS_LIST.AddIndexesToAlias(alias, indexes))
+	t.Cleanup(func() {
+		assert.NoError(t, core.ZED_INDEX_ALIAS_LIST.RemoveIndexesFromAlias(alias, indexes))
+	})
+
+	e := zhttp.New()
+	echo := func(c zhttp.Context) { c.Data(http.StatusOK, "text/plain", []byte(c.Param("target"))) }
+	e.GET("/es/:target/_count", IndexAliasMiddleware, echo)
+	e.GET("/es/_count", IndexAliasMiddleware, echo)
+
+	w := serve(e, httptest.NewRequest(http.MethodGet, "/es/"+alias+"/_count", nil))
+	assert.Equal(t, "TestIndexAliasMiddleware.index_1,TestIndexAliasMiddleware.index_2", w.Body.String())
+
+	w = serve(e, httptest.NewRequest(http.MethodGet, "/es/_count", nil))
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Empty(t, w.Body.String())
+
+	// an alias left without indexes keeps the target as is
+	require.NoError(t, core.ZED_INDEX_ALIAS_LIST.RemoveIndexesFromAlias(alias, indexes))
+	w = serve(e, httptest.NewRequest(http.MethodGet, "/es/"+alias+"/_count", nil))
+	assert.Equal(t, alias, w.Body.String())
 }

@@ -23,13 +23,18 @@ import (
 
 func Setup(app *zhttp.Engine) {
 	// Debug mode unless gin_mode = "release". The engine recovers panics itself.
-	if config.Global.GinMode != "release" {
+	debug := config.Global.GinMode != "release"
+	Tracing(app) // first, so every later middleware sees the trace id
+	if debug || config.Global.AccessLogEnable {
 		AccessLog(app)
+	}
+	if debug {
 		SetPProf(app)
 	}
 	SetPrometheus(app)    // Set up Prometheus.
 	SetClusterRoutes(app) // Cluster endpoints and ownership routing, must precede SetRoutes.
 	SetTierRoutes(app)    // Data tier / ILM endpoints and read-only guard, must precede SetRoutes.
 	SetSQLRoutes(app)     // ES SQL endpoints.
-	SetRoutes(app)        // Set up all API routes.
+	// SetFleetRoutes(app)   // zedagent fleet endpoints.
+	SetRoutes(app) // Set up all API routes.
 }

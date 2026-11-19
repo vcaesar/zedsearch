@@ -35,6 +35,7 @@ import (
 	"github.com/vcaesar/zedsearch/pkg/core"
 	"github.com/vcaesar/zedsearch/pkg/meta"
 	"github.com/vcaesar/zedsearch/pkg/meta/elastic"
+	"github.com/vcaesar/zedsearch/pkg/tracing"
 	"github.com/vcaesar/zedsearch/pkg/zhttp"
 	"github.com/vcaesar/zedsearch/pkg/zutils"
 	"github.com/vcaesar/zedsearch/pkg/zutils/json"
@@ -55,7 +56,15 @@ const (
 )
 
 // clusterClient is shared so node to node calls reuse connections.
-var clusterClient = &http.Client{Timeout: scatterTimeout}
+var clusterClient = &http.Client{Timeout: scatterTimeout, Transport: tracing.Transport(nil)}
+
+// The replication steps around a write, variables for tests.
+var (
+	prepareWrite     = replication.Prepare
+	commitWrite      = replication.Commit
+	prepareAllWrites = replication.PrepareAll
+	commitAllWrites  = replication.CommitAll
+)
 
 // ClusterRoute routes a request for the `:target` index to the node that
 // owns it.
@@ -124,10 +133,10 @@ func serveFenced(c zhttp.Context, target string, epoch int64) {
 	// a replica that just became owner replays what it kept first; a bulk
 	// body may name other indexes than the path
 	bulk := isBulk(c.Path())
-	prepare := func(ctx context.Context) error { return replication.Prepare(ctx, target) }
-	commit := func(ctx context.Context) error { return replication.Commit(ctx, target) }
+	prepare := func(ctx context.Context) error { return prepareWrite(ctx, target) }
+	commit := func(ctx context.Context) error { return commitWrite(ctx, target) }
 	if bulk {
-		prepare, commit = replication.PrepareAll, replication.CommitAll
+		prepare, commit = prepareAllWrites, commitAllWrites
 	}
 	if err := prepare(c.Context()); err != nil {
 		rejectUnreplicated(c, target, err)
@@ -157,7 +166,7 @@ func rejectWrite(c zhttp.Context, target string, err error) {
 	if errors.As(err, &epochErr) {
 		owner = epochErr.Owner
 	}
-	log.Warn().Err(err).Str("index", target).Str("owner", owner).
+	log.Warn().Ctx(c.Context()).Err(err).Str("index", target).Str("owner", owner).
 		Msg("cluster: rejecting write, partition moved")
 	c.Abort()
 	zutils.RenderJSON(c, http.StatusConflict, zhttp.H{"error": "partition moved", "owner": owner})
@@ -166,7 +175,7 @@ func rejectWrite(c zhttp.Context, target string, err error) {
 // rejectUnreplicated answers 503 for a write that could not be made
 // durable on the replicas: the client must not count it as stored.
 func rejectUnreplicated(c zhttp.Context, target string, err error) {
-	log.Error().Err(err).Str("index", target).Msg("cluster: write not replicated")
+	log.Error().Ctx(c.Context()).Err(err).Str("index", target).Msg("cluster: write not replicated")
 	c.Abort()
 	zutils.RenderJSON(c, http.StatusServiceUnavailable, zhttp.H{"error": "write not replicated: " + err.Error()})
 }
@@ -179,12 +188,12 @@ func serveUntargeted(c zhttp.Context) {
 		c.Next()
 		return
 	}
-	if err := replication.PrepareAll(c.Context()); err != nil {
+	if err := prepareAllWrites(c.Context()); err != nil {
 		rejectUnreplicated(c, "", err)
 		return
 	}
 	flush := c.NextBuffered()
-	if err := replication.CommitAll(c.Context()); err != nil {
+	if err := commitAllWrites(c.Context()); err != nil {
 		rejectUnreplicated(c, "", err)
 		return
 	}
@@ -238,6 +247,8 @@ func forward(c zhttp.Context, owner string, fallbacks []string) {
 
 	authorization := c.GetHeader("Authorization")
 	proxy := &httputil.ReverseProxy{
+		// traces the hop and passes the trace on in `traceparent`
+		Transport: tracing.Transport(nil),
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
 			pr.Out.Host = target.Host
@@ -246,8 +257,13 @@ func forward(c zhttp.Context, owner string, fallbacks []string) {
 				pr.Out.Header.Set("Authorization", authorization)
 			}
 		},
-		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
-			log.Error().Err(err).Str("owner", owner).Msg("cluster: forward failed")
+		// the owner answers with the same trace id, keep a single header
+		ModifyResponse: func(resp *http.Response) error {
+			resp.Header.Del(tracing.TraceIDHeader)
+			return nil
+		},
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			log.Error().Ctx(r.Context()).Err(err).Str("owner", owner).Msg("cluster: forward failed")
 			w.WriteHeader(http.StatusBadGateway)
 		},
 	}
@@ -313,7 +329,7 @@ func scatterSearch(c zhttp.Context, target string) {
 		})
 	}
 	if err := group.Wait(); err != nil {
-		log.Error().Err(err).Str("target", target).Msg("cluster: scatter search failed")
+		log.Error().Ctx(c.Context()).Err(err).Str("target", target).Msg("cluster: scatter search failed")
 		c.Abort()
 		zutils.RenderJSON(c, http.StatusBadGateway, meta.HTTPResponseError{Error: err.Error()})
 		return

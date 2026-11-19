@@ -1,4 +1,4 @@
-/* Copyright 2026 AtomAI
+/* Copyright 2026 AtomAI.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/vcaesar/zedsearch"
+	"github.com/vcaesar/zedsearch/pkg/auth"
 	"github.com/vcaesar/zedsearch/pkg/config"
 	"github.com/vcaesar/zedsearch/pkg/zhttp"
 )
@@ -36,6 +37,7 @@ func TestFrontendRoutes(t *testing.T) {
 	config.Global.ZedSwaggerEnable = true
 	r := zhttp.New()
 	SetRoutes(r)
+	assert.Contains(t, auth.GetPermissions(), "index.Flush")
 
 	tests := []struct {
 		method, path string
@@ -46,6 +48,7 @@ func TestFrontendRoutes(t *testing.T) {
 		{http.MethodGet, "/healthz", http.StatusOK, http.StatusOK},
 		{http.MethodGet, "/api/index", http.StatusUnauthorized, http.StatusUnauthorized},
 		{http.MethodGet, "/es/_cluster/health", http.StatusUnauthorized, http.StatusUnauthorized},
+		{http.MethodPost, "/es/index_1/_flush", http.StatusUnauthorized, http.StatusUnauthorized},
 		{http.MethodGet, "/ui/", http.StatusNotFound, http.StatusOK},
 		{http.MethodGet, "/ui/search?q=test", http.StatusNotFound, http.StatusOK},
 		{http.MethodGet, "/ui/assets/missing.js", http.StatusNotFound, http.StatusNotFound},

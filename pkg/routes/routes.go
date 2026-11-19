@@ -12,7 +12,14 @@
 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 * See the License for the specific language governing permissions and
 * limitations under the License.
- */
+*
+Part of this work fall under the AtomAI Enterprise Edition (EE)
+and are licensed under the Business Source License 1.1,
+if you are the Cloud companies or your companies with revenue greater than $1M,
+please refer to [AGPL-3.0](./LICENSE-EE)) and LICENSE-EE for details,
+and production use of the Licensed Work requires a commercial license agreement with Zedsearch.
+Contact info@atomai.cc for licensing.
+*/
 
 package routes
 
@@ -36,6 +43,9 @@ import (
 	"github.com/vcaesar/zedsearch/pkg/zutils"
 )
 
+// frontendAssets returns the embedded console, a variable for tests.
+var frontendAssets = zedsearch.GetFrontendAssets
+
 // SetRoutes sets up all HTTP API endpoints that can be called by front end
 func SetRoutes(r *zhttp.Engine) {
 	r.Use(CORS)
@@ -43,7 +53,7 @@ func SetRoutes(r *zhttp.Engine) {
 	r.GET("/version", meta.GetVersion)
 	r.GET("/healthz", meta.GetHealthz)
 
-	front, err := zedsearch.GetFrontendAssets()
+	front, err := frontendAssets()
 	if err != nil {
 		log.Error().Err(err).Msg("frontend assets")
 	}
@@ -142,6 +152,11 @@ func SetRoutes(r *zhttp.Engine) {
 	r.POST("/api/:target/_multi", AuthMiddleware("document.Multi"), document.Multi)
 	r.POST("/api/_bulkv2", AuthMiddleware("document.Bulk"), document.Bulkv2)         // New JSON format
 	r.POST("/api/:target/_bulkv2", AuthMiddleware("document.Bulk"), document.Bulkv2) // New JSON format
+	// OpenObserve compatible log ingestion
+	r.POST("/api/:target/_json", AuthMiddleware("document.Bulk"), document.LogsJSON)
+	r.POST("/api/:target/_hec", AuthMiddleware("document.Bulk"), document.LogsHEC)
+	r.POST("/api/:target/loki/api/v1/push", AuthMiddleware("document.Bulk"), document.LokiPush)
+	r.POST("/api/:target/v1/logs", AuthMiddleware("document.Bulk"), document.OTLPLogs)
 	// Document CRUD APIs. Update is same as create.
 	r.POST("/api/:target/_doc", AuthMiddleware("document.Create"), document.CreateUpdate)    // create
 	r.PUT("/api/:target/_doc", AuthMiddleware("document.Create"), document.CreateUpdate)     // create
@@ -227,6 +242,7 @@ func SetRoutes(r *zhttp.Engine) {
 	r.POST("/es/:target/_bulk", AuthMiddleware("document.ESBulk"), ESMiddleware, document.ESBulk)
 	r.PUT("/es/:target/_bulk", AuthMiddleware("document.ESBulk"), ESMiddleware, document.ESBulk)
 	r.POST("/es/:target/_refresh", AuthMiddleware("index.Refresh"), index.Refresh)
+	r.POST("/es/:target/_flush", AuthMiddleware("index.Flush"), index.Flush)
 	// ES Document
 	r.POST("/es/:target/_doc", AuthMiddleware("document.CreateUpdate"), ESMiddleware, document.CreateUpdate)        // create
 	r.PUT("/es/:target/_doc/:id", AuthMiddleware("document.CreateUpdate"), ESMiddleware, document.CreateUpdate)     // create or update
