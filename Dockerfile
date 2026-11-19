@@ -1,6 +1,6 @@
 # Smallest image: no compilation, the prebuilt (web + ne) binary is downloaded
 # from the GitHub release and checked against its checksums.txt.
-#   docker buildx build -f docker/Dockerfile --build-arg VERSION=1.2.3 \
+#   docker buildx build -f Dockerfile --build-arg VERSION=1.2.3 \
 #     --platform linux/amd64,linux/arm64,linux/arm/v7 -t <user>/zedsearch:1.2.3 --push .
 # Several platforms in one build need the containerd image store or a
 # docker-container builder (docker buildx create --use).
