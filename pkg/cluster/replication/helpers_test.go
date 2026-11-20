@@ -45,6 +45,8 @@ type fakeTopology struct {
 	epoch     int64
 	insyncErr error
 	listErr   error
+	// checked runs after every CheckEpoch, to move a partition between checks
+	checked func()
 }
 
 func newFakeTopology(local string) *fakeTopology {
@@ -95,6 +97,9 @@ func (f *fakeTopology) Epoch(string) int64 {
 }
 
 func (f *fakeTopology) CheckEpoch(index string, epoch int64) error {
+	if f.checked != nil {
+		defer f.checked()
+	}
 	if !f.IsOwner(index) || epoch != f.Epoch(index) {
 		return errStaleEpoch
 	}
@@ -247,6 +252,7 @@ func newManager(t *testing.T, mode string, topo topology, transport Transport) *
 		transport: transport,
 		primaries: map[string]*primary{},
 		replicas:  map[string]*replica{},
+		bulks:     map[*Bulk]struct{}{},
 		ctx:       ctx,
 		cancel:    cancel,
 	}

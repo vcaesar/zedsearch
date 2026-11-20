@@ -65,9 +65,6 @@ const (
 	// retainBytes bounds the memory those operations take per index while
 	// a replica lags or is gone.
 	retainBytes = 64 << 20
-	// retiredTTL bounds how long a retired primary waits for the bulk that
-	// wrote to it; a request outliving it already failed on its timeout.
-	retiredTTL = 5 * time.Minute
 	// commitParallelism is how many indexes of one bulk ship at a time.
 	commitParallelism = 8
 	// callTimeout bounds one node to node replication call.
@@ -144,9 +141,11 @@ type manager struct {
 	mu        sync.Mutex
 	primaries map[string]*primary
 	replicas  map[string]*replica
-	// retired keeps primaries replaced or dropped with unshipped operations,
-	// so the bulk that wrote them fails instead of skipping them
+	// retired keeps primaries replaced or dropped while a running bulk may
+	// have written to them, so that bulk fails instead of skipping them
 	retired []*primary
+	// bulks are the running bulks, from PrepareAll to Done
+	bulks map[*Bulk]struct{}
 	// recorded counts operations of every index, a bulk marks where it began
 	recorded atomic.Uint64
 
@@ -224,6 +223,7 @@ func start(ctx context.Context, mode string, interval time.Duration, topo topolo
 		transport: transport,
 		primaries: make(map[string]*primary),
 		replicas:  make(map[string]*replica),
+		bulks:     make(map[*Bulk]struct{}),
 		ctx:       runCtx,
 		cancel:    cancel,
 	}
@@ -387,7 +387,6 @@ func (m *manager) cleanup(ctx context.Context) {
 			delete(m.primaries, name)
 		}
 	}
-	m.retired = slices.DeleteFunc(m.retired, func(p *primary) bool { return time.Since(p.retiredAt) > retiredTTL })
 	for name, r := range m.replicas {
 		if !r.isRecovering() && !m.topo.IsReplica(name) && !m.topo.IsOwner(name) {
 			delete(m.replicas, name)
@@ -422,16 +421,41 @@ func Prepare(ctx context.Context, index string) error {
 	return err
 }
 
+// Bulk is a running write that names its indexes in the body (`_bulk`),
+// from PrepareAll until Done. Primaries retired while it runs are kept for
+// its CommitAll, however long the request takes. A nil Bulk is a no-op.
+type Bulk struct {
+	m    *manager
+	mark uint64 // manager.recorded when the bulk began
+}
+
+// Done ends the bulk and drops the retired primaries no running bulk
+// waits for. It must be called once the bulk returns.
+func (b *Bulk) Done() {
+	if b == nil {
+		return
+	}
+	m := b.m
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.bulks, b)
+	m.retired = slices.DeleteFunc(m.retired, func(p *primary) bool { return !m.awaited(p) })
+}
+
 // PrepareAll prepares every writable index owned here, for writes that
 // name their indexes in the body (`_bulk`): a promoted node must replay
-// what it kept before such a write lands. The mark it returns is handed to
-// CommitAll.
-func PrepareAll(ctx context.Context) (uint64, error) {
+// what it kept before such a write lands. The bulk it returns is handed to
+// CommitAll; on error it is already done.
+func PrepareAll(ctx context.Context) (*Bulk, error) {
 	m := get()
 	if m == nil {
-		return 0, nil
+		return nil, nil
 	}
-	mark := m.recorded.Load()
+	b := &Bulk{m: m}
+	m.mu.Lock()
+	b.mark = m.recorded.Load()
+	m.bulks[b] = struct{}{}
+	m.mu.Unlock()
 	var errs []error
 	for _, index := range core.ZED_INDEX_LIST.List() {
 		if name := index.GetName(); m.writable(name) {
@@ -439,7 +463,11 @@ func PrepareAll(ctx context.Context) (uint64, error) {
 			errs = append(errs, err)
 		}
 	}
-	return mark, errors.Join(errs...)
+	if err := errors.Join(errs...); err != nil {
+		b.Done()
+		return nil, err
+	}
+	return b, nil
 }
 
 // writable reports whether index is an existing writable index owned here.
@@ -471,14 +499,18 @@ func Commit(ctx context.Context, index string) error {
 
 // CommitAll commits every index with recorded operations, for writes that
 // name their indexes in the body (`_bulk`). The indexes ship side by side:
-// a bulk over many of them waits for the slowest, not for their sum. A
-// primary retired with operations recorded since mark, the PrepareAll of
-// the request, fails it: its partition moved before they were shipped.
-func CommitAll(ctx context.Context, mark uint64) error {
-	m := get()
-	if m == nil {
+// a bulk over many of them waits for the slowest, not for their sum.
+//
+// A primary retired with an operation recorded after b began fails it:
+// its partition moved and the new owner may lack that operation. WAL
+// entries carry no request, so an operation of a concurrent request counts
+// too; such a bulk gets a 409 and retries, it is never acknowledged for a
+// write the new owner did not fence.
+func CommitAll(ctx context.Context, b *Bulk) error {
+	if b == nil {
 		return nil
 	}
+	m, mark := b.m, b.mark
 	m.mu.Lock()
 	pending := make([]*primary, 0, len(m.primaries))
 	for _, p := range m.primaries {
@@ -516,7 +548,8 @@ func (m *manager) commitRecorded(ctx context.Context, p *primary) error {
 		return err
 	}
 	if !m.writable(p.index) {
-		return nil // deleted meanwhile
+		// deleted meanwhile, or moved since the check above
+		return m.topo.CheckEpoch(p.index, p.epoch)
 	}
 	if _, err := m.prepare(ctx, p.index); err != nil {
 		return err
@@ -565,7 +598,9 @@ func Current(name string) bool {
 		return true
 	}
 	m := get()
-	if m == nil || !index.Applied() || !inSync(name) {
+	// in-sync first: a catch-up restores membership after writing the WAL,
+	// before applying it
+	if m == nil || !inSync(name) || !index.Applied() {
 		return false
 	}
 	if m.mode != ModeSegment {

@@ -253,10 +253,55 @@ func TestFenceIgnoresStaleInSyncEvent(t *testing.T) {
 	assert.True(t, fence.IsLocalInSync("logs"), "a newer event applies")
 }
 
+// A failed in-sync read still publishes the ownership read before it.
 func TestFenceRefreshInSyncFails(t *testing.T) {
 	store := newFaultStore(failOn(errFault, "/test/insync", "Get"))
-	fence, _ := newTestFence(t, store, "node-a")
+	fence, assigner := newTestFence(t, store, "node-a")
+	_, ok, err := assigner.Set(context.Background(), PartitionOfN("logs", fencePartitions), "node-b", 0)
+	require.NoError(t, err)
+	require.True(t, ok)
 	assert.ErrorIs(t, fence.Refresh(context.Background()), errFault)
+	owner, _, ok := fence.Owner("logs")
+	assert.True(t, ok)
+	assert.Equal(t, "node-b", owner)
+}
+
+// A Refresh that finds the in-sync key gone clears the membership a missed
+// delete left behind, and still ignores the event that set it. A watch event
+// that lands during that read is newer than it and stays.
+func TestFenceRefreshClearsAbsentInSync(t *testing.T) {
+	tests := []struct {
+		name   string
+		during int64 // revision of an event applied while Refresh reads, 0 for none
+		want   bool
+	}{
+		{name: "missed delete", want: false},
+		{name: "event during the read", during: 6, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newFaultStore(nil)
+			fence, assigner := newTestFence(t, store, "node-b")
+			put := func(revision int64) Event {
+				return Event{Type: EventPut, KV: KV{Key: assigner.InSyncKey(), Value: []byte(`{"logs":["node-b"]}`), Revision: revision}}
+			}
+			fence.applyInSync(put(5))
+			require.True(t, fence.IsLocalInSync("logs"))
+			if tt.during > 0 {
+				store.setRule(func(op, key string) error {
+					if op == "Get" && key == assigner.InSyncKey() {
+						fence.applyInSync(put(tt.during))
+					}
+					return nil
+				})
+			}
+
+			require.NoError(t, fence.Refresh(context.Background()))
+			assert.Equal(t, tt.want, fence.IsLocalInSync("logs"))
+			fence.applyInSync(put(5))
+			assert.Equal(t, tt.want, fence.IsLocalInSync("logs"), "the queued add is older than the read")
+		})
+	}
 }
 
 func TestFenceDefaultsAndError(t *testing.T) {

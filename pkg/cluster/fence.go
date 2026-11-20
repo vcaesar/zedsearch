@@ -102,16 +102,27 @@ func (f *Fence) Refresh(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	f.mu.Lock()
+	f.assignments = assignments
+	f.replicas = replicas
+	seen := f.insyncRev
+	f.mu.Unlock()
+	// ownership is published first: a failed in-sync read must not keep
+	// routing on old assignments while the watch is down
 	insync, insyncRev, err := f.assigner.ListInSync(ctx)
 	if err != nil {
 		return err
 	}
 	f.mu.Lock()
-	f.assignments = assignments
-	f.replicas = replicas
-	// a watch event newer than this read may already be applied
-	if insyncRev >= f.insyncRev {
+	switch {
+	case insyncRev >= f.insyncRev:
+		// a watch event newer than this read may already be applied
 		f.insync, f.insyncRev = insync, insyncRev
+	case insyncRev == 0 && f.insyncRev == seen:
+		// the key is absent and no watch event landed during the read: the
+		// cached set is older than the removal. Its revision stays, so a
+		// queued event for it is still ignored.
+		f.insync = insync
 	}
 	f.mu.Unlock()
 	return nil

@@ -61,8 +61,6 @@ type primary struct {
 	uploaded uint64   // remote: last operation in the bucket
 	sums     sumCache // of the owned segments, for incremental snapshots
 
-	retiredAt time.Time // set under manager.mu once replaced or dropped
-
 	// commitMu serializes shipping, a commit that waited finds its
 	// operations already acknowledged by the one before it
 	commitMu sync.Mutex
@@ -140,16 +138,21 @@ func (p *primary) trim(replicas []string) {
 }
 
 // record is core.WALHook: it appends a local write to the operation log
-// of the index when this node owns it.
+// of the index when this node owns it. p.mu is taken before m.mu is
+// released, so a retire, which runs under m.mu, sees the operation and
+// keeps p for the bulk that wrote it.
 func (m *manager) record(index, shard string, entry []byte) {
 	if !m.topo.IsOwner(index) {
 		return
 	}
-	p := m.primaryFor(index)
+	m.mu.Lock()
+	p := m.primaryLocked(index)
 	if p == nil {
+		m.mu.Unlock()
 		return
 	}
 	p.mu.Lock()
+	m.mu.Unlock()
 	p.seq++
 	p.ops = append(p.ops, Op{Seq: p.seq, Shard: shard, Entry: append(json.RawMessage(nil), entry...)})
 	p.opsBytes += len(entry)
@@ -164,13 +167,26 @@ func (p *primary) recordedSince(mark uint64) bool {
 	return p.last > mark
 }
 
-// retire keeps a primary leaving the map while it holds unshipped
-// operations, CommitAll still finds it. m.mu must be held.
+// retire keeps a primary leaving the map while a running bulk may have
+// written to it, CommitAll of that bulk still finds it. m.mu must be held.
 func (m *manager) retire(p *primary) {
-	if p.dirty() {
-		p.retiredAt = time.Now()
+	if m.awaited(p) {
 		m.retired = append(m.retired, p)
 	}
+}
+
+// awaited reports whether a running bulk began before the latest operation
+// of p. m.mu must be held.
+func (m *manager) awaited(p *primary) bool {
+	p.mu.Lock()
+	last := p.last
+	p.mu.Unlock()
+	for b := range m.bulks {
+		if last > b.mark {
+			return true
+		}
+	}
+	return false
 }
 
 // primaryFor returns the state of an owned writable index, created on
@@ -181,6 +197,11 @@ func (m *manager) retire(p *primary) {
 func (m *manager) primaryFor(name string) *primary {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.primaryLocked(name)
+}
+
+// primaryLocked is primaryFor with m.mu held.
+func (m *manager) primaryLocked(name string) *primary {
 	epoch := m.topo.Epoch(name)
 	old, ok := m.primaries[name]
 	if ok && old.epoch == epoch {
@@ -225,6 +246,7 @@ func (m *manager) prepare(ctx context.Context, name string) (*primary, error) {
 	if p.prepErr != nil {
 		m.mu.Lock()
 		if m.primaries[name] == p {
+			m.retire(p)
 			delete(m.primaries, name)
 		}
 		m.mu.Unlock()

@@ -382,19 +382,19 @@ func TestCommitAllShipsToReplicaNotInSync(t *testing.T) {
 
 	m.record(name, "0", []byte(testEntry))
 	require.True(t, p.dirty())
-	require.NoError(t, CommitAll(ctx, 0))
+	require.NoError(t, CommitAll(ctx, &Bulk{m: m}))
 	assert.Equal(t, uint64(1), seq)
 	insync, _ := topo.inSyncOf(name)
 	assert.Equal(t, []string{"node-b"}, insync)
 
 	m.record(name, "0", []byte(testEntry))
 	m.record(name, "0", []byte(testEntry))
-	require.NoError(t, CommitAll(ctx, 0))
+	require.NoError(t, CommitAll(ctx, &Bulk{m: m}))
 	assert.Equal(t, uint64(3), seq)
 
 	shipped := calls
 	assert.False(t, p.dirty())
-	require.NoError(t, CommitAll(ctx, 0))
+	require.NoError(t, CommitAll(ctx, &Bulk{m: m}))
 	assert.Equal(t, shipped, calls, "nothing was written since the last commit")
 }
 
@@ -426,7 +426,7 @@ func TestCommitAllFailsMovedPartition(t *testing.T) {
 
 			m.record(name, "0", []byte(testEntry))
 			tt.move(topo, name)
-			assert.ErrorIs(t, CommitAll(ctx, 0), errStaleEpoch)
+			assert.ErrorIs(t, CommitAll(ctx, &Bulk{m: m}), errStaleEpoch)
 		})
 	}
 }
@@ -461,17 +461,99 @@ func TestCommitAllFailsRetiredPrimary(t *testing.T) {
 			activate(t, m)
 			ctx := context.Background()
 
-			mark, err := PrepareAll(ctx)
+			bulk, err := PrepareAll(ctx)
 			require.NoError(t, err)
 			m.record(name, "0", []byte(testEntry))
 			tt.retire(m, topo, name)
-			assert.ErrorIs(t, CommitAll(ctx, mark), errStaleEpoch)
+			m.cleanup(ctx)
+			assert.ErrorIs(t, CommitAll(ctx, bulk), errStaleEpoch, "kept however long the bulk runs")
+			bulk.Done()
+			assert.Empty(t, m.retired, "no running bulk waits for it")
 
 			later, err := PrepareAll(ctx)
 			require.NoError(t, err)
+			defer later.Done()
 			assert.NoError(t, CommitAll(ctx, later), "the next bulk did not write to it")
 		})
 	}
+}
+
+// A primary replaced while an operation is recorded on it is retired with
+// that operation: record holds m.mu until it holds p.mu, so the replacement
+// cannot find the primary clean and drop it in between.
+func TestRecordRacesRetire(t *testing.T) {
+	name := "TestRecordRacesRetire.index_1"
+	newDiskIndex(t, name)
+	topo := newFakeTopology("node-a")
+	topo.set(name, "node-a")
+	m := newManager(t, ModeDocument, topo, newLoopTransport())
+	activate(t, m)
+	ctx := context.Background()
+	bulk, err := PrepareAll(ctx)
+	require.NoError(t, err)
+	defer bulk.Done()
+	p := m.primaryFor(name)
+	require.NotNil(t, p)
+
+	p.mu.Lock() // stops the recorder once it selected p
+	var wg sync.WaitGroup
+	wg.Go(func() { m.record(name, "0", []byte(testEntry)) })
+	assert.Eventually(t, func() bool {
+		if m.mu.TryLock() {
+			m.mu.Unlock()
+			return false
+		}
+		return true
+	}, 5*time.Second, time.Millisecond, "record released m.mu before it held p.mu")
+	wg.Go(func() {
+		topo.setEpoch(topo.Epoch("") + 1)
+		m.primaryFor(name)
+	})
+	p.mu.Unlock()
+	wg.Wait()
+
+	assert.Equal(t, uint64(1), p.seq)
+	assert.Equal(t, []*primary{p}, m.retired)
+	assert.ErrorIs(t, CommitAll(ctx, bulk), errStaleEpoch)
+}
+
+// A primary dropped after a failed promotion may hold operations of a
+// running bulk, it is retired like any other and fails the bulk.
+func TestPrepareFailureRetires(t *testing.T) {
+	name := "TestPrepareFailureRetires.index_1"
+	newDiskIndex(t, name)
+	topo := newFakeTopology("node-a")
+	topo.set(name, "node-a", "node-b")
+	m := newManager(t, ModeDocument, topo, newLoopTransport())
+	activate(t, m)
+	ctx := context.Background()
+	bulk, err := PrepareAll(ctx)
+	require.NoError(t, err)
+	defer bulk.Done()
+	delete(m.primaries, name)
+
+	m.record(name, "0", []byte(testEntry))
+	topo.listErr = errors.New("etcd down")
+	err = CommitAll(ctx, bulk)
+	topo.listErr = nil
+	assert.ErrorContains(t, err, "etcd down")
+	assert.NotContains(t, m.primaries, name)
+	assert.Len(t, m.retired, 1)
+}
+
+// A partition that moves after the first epoch check still fails the
+// commit of its primary, which is no longer writable here.
+func TestCommitRecordedMovedAfterCheck(t *testing.T) {
+	name := "TestCommitRecordedMovedAfterCheck.index_1"
+	newDiskIndex(t, name)
+	topo := newFakeTopology("node-a")
+	topo.set(name, "node-a")
+	m := newManager(t, ModeDocument, topo, newLoopTransport())
+	p := m.primaryFor(name)
+	require.NotNil(t, p)
+
+	topo.checked = func() { topo.set(name, "node-c") }
+	assert.ErrorIs(t, m.commitRecorded(context.Background(), p), errStaleEpoch)
 }
 
 // The background tick promotes owned indexes, probes their replicas,
@@ -641,7 +723,7 @@ func TestCommitAllShipsIndexesInParallel(t *testing.T) {
 		p.mu.Unlock()
 		m.record(name, "0", []byte(testEntry))
 	}
-	require.NoError(t, CommitAll(ctx, 0))
+	require.NoError(t, CommitAll(ctx, &Bulk{m: m}))
 	mu.Lock()
 	assert.False(t, alone, "an index waited for another one to finish")
 	mu.Unlock()
@@ -659,7 +741,7 @@ func TestCommitAllShipsIndexesInParallel(t *testing.T) {
 	down = true
 	mu.Unlock()
 	topo.insyncErr = errors.New("etcd down")
-	err = CommitAll(ctx, 0)
+	err = CommitAll(ctx, &Bulk{m: m})
 	topo.insyncErr = nil
 	for _, name := range names {
 		assert.ErrorContains(t, err, name)
@@ -705,7 +787,7 @@ func TestActiveManagerAPI(t *testing.T) {
 	m.record(owned, "0", []byte(testEntry))
 	require.NoError(t, Commit(ctx, owned))
 	m.record(owned, "0", []byte(testEntry))
-	require.NoError(t, CommitAll(ctx, 0))
+	require.NoError(t, CommitAll(ctx, &Bulk{m: m}))
 	mu.Lock()
 	assert.Equal(t, 2, shipped)
 	mu.Unlock()
@@ -797,6 +879,17 @@ func TestCurrent(t *testing.T) {
 	entry := []byte(`{"@_id":"1","@_action":"insert","@_shard":-1,"name":"one"}`)
 	require.NoError(t, core.ApplyReplicaEntries(index, firstShard(t, index), [][]byte{entry}))
 	waitDocs(t, index, 1)
+	assert.Eventually(t, func() bool { return Current(disk) }, 30*time.Second, 10*time.Millisecond)
+
+	// a catch-up writes the WAL, then restores membership: seen in sync, the
+	// entry it wrote is not applied yet
+	caughtUp := []byte(`{"@_id":"2","@_action":"insert","@_shard":-1,"name":"two"}`)
+	inSync = func(string) bool {
+		require.NoError(t, core.ApplyReplicaEntries(index, firstShard(t, index), [][]byte{caughtUp}))
+		return true
+	}
+	assert.False(t, Current(disk), "in sync again before the caught up entry is applied")
+	inSync = func(string) bool { return member }
 	assert.Eventually(t, func() bool { return Current(disk) }, 30*time.Second, 10*time.Millisecond)
 
 	// a segment replica serves its installed files, not the operations it kept
