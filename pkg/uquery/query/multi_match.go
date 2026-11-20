@@ -18,6 +18,8 @@ package query
 
 import (
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 
 	"github.com/vcaesar/riot"
@@ -88,7 +90,11 @@ func MultiMatchQuery(query map[string]interface{}, mappings *meta.Mappings, anal
 		subq.SetBoost(value.Boost)
 	}
 	for _, field := range value.Fields {
+		field, fieldBoost := splitFieldBoost(field)
 		subqq := riot.NewMatchQuery(value.Query).SetField(field).SetOperator(operator)
+		if fieldBoost != 1 {
+			subqq.SetBoost(fieldBoost)
+		}
 		if zer != nil {
 			subqq.SetAnalyzer(zer)
 		} else {
@@ -105,4 +111,18 @@ func MultiMatchQuery(query map[string]interface{}, mappings *meta.Mappings, anal
 	}
 
 	return subq, nil
+}
+
+// splitFieldBoost splits the Elasticsearch "field^boost" syntax; a field
+// without a valid boost has boost 1.
+func splitFieldBoost(field string) (string, float64) {
+	i := strings.LastIndexByte(field, '^')
+	if i <= 0 {
+		return field, 1
+	}
+	boost, err := strconv.ParseFloat(field[i+1:], 64)
+	if err != nil || boost < 0 || math.IsNaN(boost) || math.IsInf(boost, 0) {
+		return field, 1
+	}
+	return field[:i], boost
 }

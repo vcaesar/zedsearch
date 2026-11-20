@@ -64,21 +64,28 @@ func (index *Index) Search(query *meta.ZedQuery) (*meta.SearchResponse, error) {
 		}
 	}()
 
+	// the deadline also covers preparing the query and the extension work
+	ctx := context.Background()
+	var cancel context.CancelFunc
+	if query.Timeout > 0 {
+		ctx, cancel = context.WithTimeout(context.Background(), time.Duration(query.Timeout)*time.Second)
+		defer cancel()
+	}
+
 	// nested and join queries are resolved before query is parsed, and hidden
 	// nested documents are excluded from results.
+	// rule, more_like_this and rescore need the readers before query is parsed
+	ext, err := prepareSearch(ctx, query, mappings, analyzers, readers)
+	if err != nil {
+		return searchFailed(err)
+	}
+	defer ext.restore()
 	if err := rewriteJoinQuery(query, mappings, analyzers, readers); err != nil {
 		return nil, err
 	}
 
 	if _, err = uquery.ParseQueryDSL(query, mappings, analyzers); err != nil {
 		return nil, err
-	}
-
-	ctx := context.Background()
-	var cancel context.CancelFunc
-	if query.Timeout > 0 {
-		ctx, cancel = context.WithTimeout(context.Background(), time.Duration(query.Timeout)*time.Second)
-		defer cancel()
 	}
 
 	// dmi, err := riot.MultiSearch(ctx, searchRequest, readers...)
@@ -95,7 +102,27 @@ func (index *Index) Search(query *meta.ZedQuery) (*meta.SearchResponse, error) {
 		return nil, err
 	}
 
-	return searchV2(index.GetAllShardNum(), int64(len(readers)), dmi, query, mappings, analyzers, nil)
+	resp, err := searchV2(index.GetAllShardNum(), int64(len(readers)), dmi, query, mappings, analyzers, nil)
+	if err == nil {
+		err = ext.finish(ctx, resp)
+	}
+	if err != nil {
+		return searchFailed(err)
+	}
+	return resp, nil
+}
+
+// searchFailed answers a search past its deadline with an empty timed out
+// response and fails it otherwise.
+func searchFailed(err error) (*meta.SearchResponse, error) {
+	if err == context.DeadlineExceeded {
+		return &meta.SearchResponse{
+			TimedOut: true,
+			Error:    err.Error(),
+			Hits:     meta.Hits{Hits: []meta.Hit{}},
+		}, nil
+	}
+	return nil, err
 }
 
 // searchV2 renders the hits of dmi. Highlighting and fields use the mappings

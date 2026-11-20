@@ -38,6 +38,7 @@ import (
 	zedsearch "github.com/vcaesar/zedsearch/pkg/bluge/search"
 	"github.com/vcaesar/zedsearch/pkg/meta"
 	"github.com/vcaesar/zedsearch/pkg/uquery"
+	"github.com/vcaesar/zedsearch/pkg/uquery/assoc"
 	"github.com/vcaesar/zedsearch/pkg/uquery/timerange"
 )
 
@@ -76,7 +77,17 @@ func MultiSearch(indexNames []string, query *meta.ZedQuery) (*meta.SearchRespons
 		if !hasIndex {
 			return nil, fmt.Errorf("core.MultiSearchV2: error accessing reader: no index found")
 		}
-		return &meta.SearchResponse{}, nil
+		// matched indexes without readers still validate and answer suggest
+		resp := &meta.SearchResponse{}
+		if len(query.Suggest) > 0 {
+			mappings, analyzers := unionMappings(indexes)
+			suggest, err := assoc.Suggest(context.Background(), nil, query.Suggest, mappings, analyzers)
+			if err != nil {
+				return nil, err
+			}
+			resp.Suggest = suggest
+		}
+		return resp, nil
 	}
 
 	defer func() {
@@ -87,22 +98,29 @@ func MultiSearch(indexNames []string, query *meta.ZedQuery) (*meta.SearchRespons
 
 	mappings, analyzers := unionMappings(indexes)
 
-	// nested and join queries are resolved before query is parsed, and hidden
-	// nested documents are excluded from results.
-	if err := rewriteJoinQuery(query, mappings, analyzers, readers); err != nil {
-		return nil, err
-	}
-
-	_, err := uquery.ParseQueryDSL(query, mappings, analyzers)
-	if err != nil {
-		return nil, err
-	}
-
+	// the deadline also covers preparing the query and the extension work
 	ctx := context.Background()
 	var cancel context.CancelFunc
 	if query.Timeout > 0 {
 		ctx, cancel = context.WithTimeout(context.Background(), time.Duration(query.Timeout)*time.Second)
 		defer cancel()
+	}
+
+	// nested and join queries are resolved before query is parsed, and hidden
+	// nested documents are excluded from results.
+	// rule, more_like_this and rescore need the readers before query is parsed
+	ext, err := prepareSearch(ctx, query, mappings, analyzers, readers)
+	if err != nil {
+		return searchFailed(err)
+	}
+	defer ext.restore()
+	if err := rewriteJoinQuery(query, mappings, analyzers, readers); err != nil {
+		return nil, err
+	}
+
+	_, err = uquery.ParseQueryDSL(query, mappings, analyzers)
+	if err != nil {
+		return nil, err
 	}
 
 	// dmi, err := riot.MultiSearch(ctx, searchRequest, readers...)
@@ -119,7 +137,14 @@ func MultiSearch(indexNames []string, query *meta.ZedQuery) (*meta.SearchRespons
 		return nil, err
 	}
 
-	return searchV2(shardNum, int64(len(readers)), dmi, query, mappings, analyzers, indexes)
+	resp, err := searchV2(shardNum, int64(len(readers)), dmi, query, mappings, analyzers, indexes)
+	if err == nil {
+		err = ext.finish(ctx, resp)
+	}
+	if err != nil {
+		return searchFailed(err)
+	}
+	return resp, nil
 }
 
 // unionMappings returns the mappings and analyzers the query of a search over

@@ -132,6 +132,8 @@ func TestRequestTokenFilterSingle(t *testing.T) {
 		{"regexp", map[string]interface{}{"pattern": "a"}},
 		{"pattern_replace", map[string]interface{}{"pattern": "a"}},
 		{"unicodenorm", map[string]interface{}{"form": "nfc"}},
+		{"synonym", map[string]interface{}{"synonyms": []interface{}{"a, b"}}},
+		{"synonym_graph", map[string]interface{}{"synonyms": []interface{}{"a, b"}}},
 	}
 	for _, tt := range withOptions {
 		t.Run(tt.name, func(t *testing.T) {

@@ -141,6 +141,83 @@ func TestRequestAnalyzer(t *testing.T) {
 		assert.Nil(t, got)
 	})
 
+	t.Run("synonym rules pass through the preceding filters", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			analyzer *meta.Analyzer
+			synonyms []interface{}
+			input    string
+			want     []string
+		}{
+			{
+				name:     "lowercase before synonym",
+				analyzer: &meta.Analyzer{Tokenizer: "whitespace", TokenFilter: []string{"lowercase", "my_syn"}},
+				synonyms: []interface{}{"Hello, Hi"},
+				input:    "Hello",
+				want:     []string{"hello", "hi"},
+			},
+			{
+				name:     "stop and stemmer before synonym",
+				analyzer: &meta.Analyzer{Tokenizer: "whitespace", TokenFilter: []string{"my_stop", "stemmer", "my_syn"}},
+				synonyms: []interface{}{"the running => jogging"},
+				input:    "runs",
+				want:     []string{"jog"},
+			},
+			{
+				name:     "explicit mapping normalized on both sides",
+				analyzer: &meta.Analyzer{Tokenizer: "whitespace", TokenFilter: []string{"lowercase", "my_syn"}},
+				synonyms: []interface{}{"NYC => New York"},
+				input:    "NYC",
+				want:     []string{"new", "york"},
+			},
+			{
+				name:     "builtin analyzer filters precede synonym",
+				analyzer: &meta.Analyzer{Type: "standard", TokenFilter: []string{"my_syn"}},
+				synonyms: []interface{}{"Hello, Hi"},
+				input:    "Hello",
+				want:     []string{"hello", "hi"},
+			},
+			{
+				name:     "synonym first matches raw rules",
+				analyzer: &meta.Analyzer{Tokenizer: "whitespace", TokenFilter: []string{"my_syn", "lowercase"}},
+				synonyms: []interface{}{"Hello, Hi"},
+				input:    "Hello hello",
+				want:     []string{"hello", "hi", "hello"},
+			},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				got, err := RequestAnalyzer(&meta.IndexAnalysis{
+					Analyzer: map[string]*meta.Analyzer{"a": tt.analyzer},
+					TokenFilter: map[string]interface{}{
+						"my_syn":  map[string]interface{}{"type": "synonym", "synonyms": tt.synonyms},
+						"my_stop": map[string]interface{}{"type": "stop", "stopwords": []interface{}{"the"}},
+					},
+				})
+				assert.NoError(t, err)
+				assert.Equal(t, tt.want, testutil.Terms(got["a"].Analyze([]byte(tt.input))))
+			})
+		}
+	})
+
+	t.Run("synonym first shares the filter", func(t *testing.T) {
+		got, err := RequestAnalyzer(&meta.IndexAnalysis{
+			Analyzer: map[string]*meta.Analyzer{
+				"first":  {Tokenizer: "whitespace", TokenFilter: []string{"my_syn"}},
+				"second": {Tokenizer: "whitespace", TokenFilter: []string{"my_syn", "lowercase"}},
+				"lower":  {Tokenizer: "whitespace", TokenFilter: []string{"lowercase", "my_syn"}},
+			},
+			TokenFilter: map[string]interface{}{
+				"my_syn": map[string]interface{}{"type": "synonym_graph", "synonyms": []interface{}{"Hello, Hi"}},
+			},
+		})
+		assert.NoError(t, err)
+		assert.Same(t, got["first"].TokenFilters[0], got["second"].TokenFilters[0])
+		assert.NotSame(t, got["first"].TokenFilters[0], got["lower"].TokenFilters[1])
+		assert.Equal(t, []string{"hello"}, testutil.Terms(got["first"].Analyze([]byte("hello"))))
+		assert.Equal(t, []string{"hello", "hi"}, testutil.Terms(got["lower"].Analyze([]byte("HELLO"))))
+	})
+
 	errCases := []struct {
 		name string
 		data *meta.IndexAnalysis

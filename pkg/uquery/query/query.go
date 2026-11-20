@@ -75,7 +75,7 @@ func Query(query interface{}, mappings *meta.Mappings, analyzers map[string]*ana
 				return nil, errors.New(errors.ErrorTypeXContentParseException, "[bool] failed to parse field").Cause(err)
 			}
 		case "boosting":
-			if subq, err = BoostingQuery(v); err != nil {
+			if subq, err = BoostingQuery(v, mappings, analyzers); err != nil {
 				return nil, errors.New(errors.ErrorTypeXContentParseException, "[boosting] failed to parse field").Cause(err)
 			}
 		case "constant_score":
@@ -201,6 +201,18 @@ func Query(query interface{}, mappings *meta.Mappings, analyzers map[string]*ana
 		case "geo_shape":
 			if subq, err = GeoShapeQuery(v); err != nil {
 				return nil, errors.New(errors.ErrorTypeXContentParseException, "[geo_shape] failed to parse field").Cause(err)
+			}
+		case "pinned":
+			if subq, err = PinnedQuery(v, mappings, analyzers); err != nil {
+				return nil, errors.New(errors.ErrorTypeXContentParseException, "[pinned] failed to parse field").Cause(err)
+			}
+		case "script_score":
+			if subq, err = ScriptScoreQuery(v, mappings, analyzers); err != nil {
+				return nil, errors.New(errors.ErrorTypeXContentParseException, "[script_score] failed to parse field").Cause(err)
+			}
+		case "rank_feature":
+			if subq, err = RankFeatureQuery(v); err != nil {
+				return nil, errors.New(errors.ErrorTypeXContentParseException, "[rank_feature] failed to parse field").Cause(err)
 			}
 		case "knn":
 			if subq, err = KnnQuery(v, mappings, analyzers); err != nil {

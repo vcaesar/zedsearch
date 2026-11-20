@@ -120,6 +120,10 @@ func rewriteQuery(q map[string]interface{}, exec ExecFunc) (map[string]interface
 			out[k], err = rewriteFields(v, exec, "positive", "negative")
 		case "function_score":
 			out[k], err = rewriteFunctionScore(v, exec)
+		case "script_score":
+			out[k], err = rewriteFields(v, exec, "query")
+		case "pinned":
+			out[k], err = rewriteFields(v, exec, "organic")
 		default:
 			out[k] = v
 		}

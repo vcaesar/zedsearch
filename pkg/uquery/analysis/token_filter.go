@@ -136,6 +136,8 @@ func RequestTokenFilterSingle(name string, options interface{}) (analysis.TokenF
 		return zedtoken.NewTrimTokenFilter()
 	case "stop":
 		return zedtoken.NewStopTokenFilter(options)
+	case "synonym", "synonym_graph":
+		return zedtoken.NewSynonymTokenFilter(options)
 	case "truncate":
 		return zedtoken.NewTruncateTokenFilter(options)
 	case "unicodenorm":

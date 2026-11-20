@@ -213,6 +213,48 @@ func TestTermsCalculatorMerge(t *testing.T) {
 	assert.Len(t, a.Buckets(), 2)
 }
 
+func TestTermsCalculatorKeyFilter(t *testing.T) {
+	tests := []struct {
+		name  string
+		keep  func(string) bool
+		want  map[string]uint64
+		other int
+	}{
+		{name: "no filter trims the rare key", want: map[string]uint64{"sf": 2}, other: 1},
+		{name: "kept rare key is not displaced", keep: func(k string) bool { return k == "la" },
+			want: map[string]uint64{"la": 1}, other: 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			agg := NewTermsAggregation(search.Field("city"), TextValueSource, 1)
+			if tt.keep != nil {
+				agg.SetKeyFilter(tt.keep)
+			}
+			calc := agg.Calculator().(*TermsCalculator)
+			for _, d := range filterDocs(t, "sf", "sf", "la") {
+				calc.Consume(d)
+			}
+			calc.Finish()
+			assert.Equal(t, tt.want, bucketCounts(calc.Buckets()))
+			assert.Equal(t, tt.other, calc.Other())
+		})
+	}
+
+	t.Run("merged keys are filtered", func(t *testing.T) {
+		agg := NewTermsAggregation(search.Field("city"), TextValueSource, 1)
+		agg.SetKeyFilter(func(k string) bool { return k != "sf" })
+		a, b := agg.Calculator().(*TermsCalculator), agg.Calculator().(*TermsCalculator)
+		a.Consume(filterDocs(t, "la")[0])
+		for _, d := range filterDocs(t, "sf", "sf") {
+			b.Consume(d)
+		}
+		a.Finish()
+		b.Finish()
+		a.Merge(b)
+		assert.Equal(t, map[string]uint64{"la": 1}, bucketCounts(a.Buckets()))
+	})
+}
+
 func TestTermsAggregationFields(t *testing.T) {
 	agg := NewTermsAggregation(search.Field("city"), TextValueSource, 10)
 	agg.AddAggregation("avg_age", aggregations.Avg(search.Field("age")))

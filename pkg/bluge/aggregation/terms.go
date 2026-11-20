@@ -17,6 +17,7 @@
 package aggregation
 
 import (
+	"slices"
 	"sort"
 	"strconv"
 
@@ -34,6 +35,8 @@ type TermsAggregation struct {
 	lessFunc func(a, b *search.Bucket) bool
 	desc     bool
 	sortFunc func(p sort.Interface)
+
+	keyFilter func(key string) bool
 }
 
 // NewTermsAggregation returns a termsAggregation
@@ -67,6 +70,12 @@ func (t *TermsAggregation) SetOrder(key string, asc bool) {
 	t.desc = !asc
 }
 
+// SetKeyFilter keeps only the buckets whose key matches, before the buckets
+// are trimmed to size.
+func (t *TermsAggregation) SetKeyFilter(keep func(key string) bool) {
+	t.keyFilter = keep
+}
+
 func (t *TermsAggregation) Fields() []string {
 	rv := t.src.Fields()
 	for _, agg := range t.aggregations {
@@ -84,6 +93,7 @@ func (t *TermsAggregation) Calculator() search.Calculator {
 		desc:         t.desc,
 		lessFunc:     t.lessFunc,
 		sortFunc:     t.sortFunc,
+		keyFilter:    t.keyFilter,
 		bucketsMap:   make(map[string]*search.Bucket),
 	}
 }
@@ -107,6 +117,8 @@ type TermsCalculator struct {
 	desc     bool
 	lessFunc func(a, b *search.Bucket) bool
 	sortFunc func(p sort.Interface)
+
+	keyFilter func(key string) bool
 }
 
 func (a *TermsCalculator) Consume(d *search.DocumentMatch) {
@@ -268,6 +280,9 @@ func (a *TermsCalculator) Merge(other search.Calculator) {
 }
 
 func (a *TermsCalculator) Finish() {
+	if a.keyFilter != nil {
+		a.bucketsList = slices.DeleteFunc(a.bucketsList, func(b *search.Bucket) bool { return !a.keyFilter(b.Name()) })
+	}
 	// sub-aggregations such as top_hits sort and trim in Finish
 	for _, bucket := range a.bucketsList {
 		bucket.Finish()
