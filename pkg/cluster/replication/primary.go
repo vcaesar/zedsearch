@@ -155,11 +155,12 @@ func (m *manager) record(index, shard string, entry []byte) {
 // primaryFor returns the state of an owned writable index, created on
 // first use and again once ownership moved to a new epoch: a commit still
 // running on the old one fails its in-sync write. Nil for cold indexes,
-// which take no writes.
+// which take no writes. The epoch is read under m.mu: one read before it
+// could replace the primary a later caller installed for a newer epoch.
 func (m *manager) primaryFor(name string) *primary {
-	epoch := m.topo.Epoch(name)
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	epoch := m.topo.Epoch(name)
 	if p, ok := m.primaries[name]; ok && p.epoch == epoch {
 		return p
 	}

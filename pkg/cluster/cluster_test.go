@@ -62,7 +62,7 @@ func TestClusterDisabled(t *testing.T) {
 
 	_, _, ok := Owner("anything")
 	assert.False(t, ok)
-	_, ok = NodeAddr("other")
+	_, ok = NodeAddr(context.Background(), "other")
 	assert.False(t, ok)
 
 	nodes := Nodes()
@@ -80,7 +80,7 @@ func TestClusterStartStop(t *testing.T) {
 	assert.Equal(t, "node-a", local.ID)
 	assert.Equal(t, "http://node-a:4080", local.Addr, "a bare address gets an http scheme")
 
-	addr, ok := NodeAddr("node-a")
+	addr, ok := NodeAddr(context.Background(), "node-a")
 	assert.True(t, ok)
 	assert.Equal(t, "http://node-a:4080", addr)
 
@@ -130,7 +130,7 @@ func TestClusterSecondNodeSharesPartitions(t *testing.T) {
 		return counts["node-a"] == 2 && counts["node-b"] == 2
 	}, 5*time.Second, 20*time.Millisecond, "the leader must hand half the partitions to the new node")
 
-	addr, ok := NodeAddr("node-b")
+	addr, ok := NodeAddr(context.Background(), "node-b")
 	require.True(t, ok)
 	assert.Equal(t, "http://node-b:4080", addr)
 
@@ -294,11 +294,11 @@ func TestClusterReadFailures(t *testing.T) {
 	require.NotNil(t, local)
 	assert.Equal(t, "https://node-a:4080", local.Addr, "the trailing slash is dropped")
 
-	_, ok := NodeAddr("ghost")
+	_, ok := NodeAddr(context.Background(), "ghost")
 	assert.False(t, ok, "an unknown node has no address after a refresh")
 
 	store.setRule(failOn(errFault, KeyPrefix()+"nodes/", "List"))
-	_, ok = NodeAddr("ghost")
+	_, ok = NodeAddr(context.Background(), "ghost")
 	assert.False(t, ok)
 
 	nodes := Nodes()
@@ -357,7 +357,7 @@ func TestClusterReplicasAndInSync(t *testing.T) {
 	_, backEpoch, _ := Owner("logs")
 	require.NoError(t, UpdateInSync(ctx, "logs", []string{}, backEpoch))
 
-	_, ok = NodeAddr("node-a")
+	_, ok = NodeAddr(context.Background(), "node-a")
 	assert.False(t, ok, "a node without an advertise address cannot be routed to")
 }
 

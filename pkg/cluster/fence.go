@@ -68,6 +68,7 @@ type Fence struct {
 	mu          sync.RWMutex
 	assignments map[int]Assignment
 	replicas    map[int][]string
+	insync      map[string][]string
 }
 
 // NewFence builds an empty fence, call Refresh or Run to fill it.
@@ -81,6 +82,7 @@ func NewFence(assigner *Assigner, nodeID string, partitions int) *Fence {
 		partitions:  partitions,
 		assignments: make(map[int]Assignment),
 		replicas:    make(map[int][]string),
+		insync:      make(map[string][]string),
 	}
 }
 
@@ -99,9 +101,14 @@ func (f *Fence) Refresh(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	insync, _, err := f.assigner.ListInSync(ctx)
+	if err != nil {
+		return err
+	}
 	f.mu.Lock()
 	f.assignments = assignments
 	f.replicas = replicas
+	f.insync = insync
 	f.mu.Unlock()
 	return nil
 }
@@ -119,6 +126,11 @@ func (f *Fence) Run(ctx context.Context, resync time.Duration) {
 	if err != nil {
 		log.Error().Err(err).Msg("cluster: watch replicas")
 		replicaEvents = nil
+	}
+	insyncEvents, err := f.assigner.store.Watch(ctx, f.assigner.InSyncKey())
+	if err != nil {
+		log.Error().Err(err).Msg("cluster: watch in-sync set")
+		insyncEvents = nil
 	}
 	if err := f.Refresh(ctx); err != nil {
 		log.Error().Err(err).Msg("cluster: load assignments")
@@ -146,8 +158,39 @@ func (f *Fence) Run(ctx context.Context, resync time.Duration) {
 				continue
 			}
 			f.applyReplicas(event)
+		case event, ok := <-insyncEvents:
+			if !ok {
+				insyncEvents = nil
+				continue
+			}
+			f.applyInSync(event)
 		}
 	}
+}
+
+func (f *Fence) applyInSync(event Event) {
+	if event.KV.Key != f.assigner.InSyncKey() {
+		return
+	}
+	insync := make(map[string][]string)
+	if event.Type == EventPut {
+		if err := json.Unmarshal(event.KV.Value, &insync); err != nil {
+			log.Error().Err(err).Str("key", event.KV.Key).Msg("cluster: bad in-sync map")
+			return
+		}
+	}
+	f.mu.Lock()
+	f.insync = insync
+	f.mu.Unlock()
+}
+
+// IsLocalInSync reports whether this node is in the in-sync set of
+// indexName as last seen by the watch: the owner removes a replica that
+// failed a write before acknowledging that write.
+func (f *Fence) IsLocalInSync(indexName string) bool {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return slices.Contains(f.insync[indexName], f.nodeID)
 }
 
 func (f *Fence) applyReplicas(event Event) {

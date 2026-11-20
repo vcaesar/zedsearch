@@ -228,6 +228,7 @@ func TestCommitOfOldEpochIsFenced(t *testing.T) {
 	nodes, _ = env.ownerTopo.inSyncOf(env.name)
 	assert.Empty(t, nodes)
 }
+
 // on another term is asked to recover from files.
 func TestCatchUpAndRecovery(t *testing.T) {
 	env := setupTwoNodes(t, ModeSegment, "TestCatchUpAndRecovery.index_1")

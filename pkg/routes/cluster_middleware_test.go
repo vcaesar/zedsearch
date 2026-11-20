@@ -465,20 +465,38 @@ func TestGroupByOwnerUsesLocalReplica(t *testing.T) {
 	indexes := []string{localIndex, remoteIndex}
 
 	stubReplicaReadable(t, false)
-	groups, replicas := groupByOwner(indexes)
+	groups, replicas := groupByOwner(context.Background(), indexes)
 	assert.Equal(t, map[string][]string{"node-a": {localIndex}, "node-b": {remoteIndex}}, groups)
 	assert.Empty(t, replicas)
 
 	stubReplicaReadable(t, true)
 	stubReplicaCurrent(t, false)
-	groups, replicas = groupByOwner(indexes)
+	groups, replicas = groupByOwner(context.Background(), indexes)
 	assert.Equal(t, map[string][]string{"node-a": {localIndex}, "node-b": {remoteIndex}}, groups, "a copy still applying is not asked")
 	assert.Empty(t, replicas)
 
 	stubReplicaCurrent(t, true)
-	groups, replicas = groupByOwner(indexes)
+	groups, replicas = groupByOwner(context.Background(), indexes)
 	assert.Equal(t, map[string][]string{"node-a": {localIndex, remoteIndex}}, groups)
 	assert.Empty(t, replicas)
+}
+
+// A routing pass resolves each node once, and a cancelled request stops the
+// lookup of an owner missing from the member cache instead of waiting on it.
+func TestResolverResolvesOncePerPass(t *testing.T) {
+	setupClusterEnv(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r := newResolver(ctx)
+
+	start := time.Now()
+	assert.False(t, r.reachable("node-ghost"))
+	assert.Less(t, time.Since(start), time.Second, "the cancelled request bounds the lookup")
+	assert.True(t, r.reachable(localNodeID()))
+	assert.Contains(t, r.resolved, "node-ghost")
+
+	r.resolved["node-ghost"] = true
+	assert.True(t, r.reachable("node-ghost"), "the answer of the pass is reused")
 }
 
 func TestIsMultiTarget(t *testing.T) {

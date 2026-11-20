@@ -187,7 +187,7 @@ func TestScatterSearchFallsBackToReplica(t *testing.T) {
 	t.Run("cold index", func(t *testing.T) {
 		env.setReplicas(t, remoteIndex, "node-gone-too", "node-b")
 		stubReplicaReadable(t, true)
-		groups, replicas := groupByOwner([]string{localIndex, remoteIndex})
+		groups, replicas := groupByOwner(context.Background(), []string{localIndex, remoteIndex})
 		assert.Equal(t, map[string][]string{"node-a": {localIndex}}, groups)
 		assert.Equal(t, map[string][]string{remoteIndex: {"node-b"}}, replicas)
 
@@ -208,7 +208,7 @@ func TestScatterSearchFallsBackToReplica(t *testing.T) {
 	t.Run("index without copies", func(t *testing.T) {
 		env.setReplicas(t, remoteIndex, "node-b")
 		stubReplicaReadable(t, false)
-		groups, replicas := groupByOwner([]string{remoteIndex})
+		groups, replicas := groupByOwner(context.Background(), []string{remoteIndex})
 		assert.Equal(t, map[string][]string{"node-gone": {remoteIndex}}, groups,
 			"a disk index is only on its owner while replication is off")
 		assert.Empty(t, replicas)
@@ -218,12 +218,12 @@ func TestScatterSearchFallsBackToReplica(t *testing.T) {
 		startReplication(t)
 		// this node is a replica too, but its copy is not installed
 		env.setReplicas(t, remoteIndex, "node-a", "node-b")
-		groups, replicas := groupByOwner([]string{remoteIndex})
+		groups, replicas := groupByOwner(context.Background(), []string{remoteIndex})
 		assert.Empty(t, groups)
 		assert.Equal(t, map[string][]string{remoteIndex: {"node-b"}}, replicas)
 
 		env.setReplicas(t, remoteIndex, "node-a")
-		groups, replicas = groupByOwner([]string{remoteIndex})
+		groups, replicas = groupByOwner(context.Background(), []string{remoteIndex})
 		assert.Equal(t, map[string][]string{"node-gone": {remoteIndex}}, groups)
 		assert.Empty(t, replicas)
 	})
@@ -743,6 +743,14 @@ func TestServeFencedReplication(t *testing.T) {
 		})
 	}
 
+	t.Run("commit of a moved partition is a conflict", func(t *testing.T) {
+		stubReplication(t, nil, &cluster.EpochError{Index: localIndex, Owner: "node-b", Have: 1, Want: 2})
+		w := env.do(httptest.NewRequest(http.MethodPost, "/api/"+localIndex+"/_bulk", nil))
+		assert.Equal(t, http.StatusConflict, w.Code)
+		assert.Contains(t, w.Body.String(), `"owner":"node-b"`)
+		assert.NotContains(t, w.Body.String(), "node-a", "the handler output must not leak")
+	})
+
 	t.Run("flush fails", func(t *testing.T) {
 		stubReplication(t, nil, nil)
 		w := failingWriter{httptest.NewRecorder()}
@@ -791,6 +799,9 @@ func TestServeUntargetedReplication(t *testing.T) {
 		{name: "internal calls are not replicated", path: "/api/_internal/ping", prepare: failed, want: http.StatusOK, body: "pong"},
 		{name: "prepare fails", path: "/api/_bulk", prepare: failed, want: http.StatusServiceUnavailable, body: "write not replicated"},
 		{name: "commit fails", path: "/api/_bulk", commit: failed, want: http.StatusServiceUnavailable, body: "write not replicated"},
+		{name: "commit of a moved partition is a conflict", path: "/api/_bulk", want: http.StatusConflict, body: `"owner":"node-b"`,
+			commit: fmt.Errorf("bulk: %w", &cluster.EpochError{Index: localIndex, Owner: "node-b", Have: 1, Want: 2})},
+		{name: "commit without a live lease is a conflict", path: "/api/_bulk", commit: cluster.ErrNotLive, want: http.StatusConflict, body: "partition moved"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

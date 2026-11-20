@@ -104,7 +104,7 @@ func ClusterRoute() zhttp.HandlerFunc {
 		}
 		if owner != localNodeID() {
 			read := !isMutating(c.Method(), c.Path())
-			if read && servesReplica(target, owner) {
+			if read && servesReplica(target, owner, newResolver(c.Context()).reachable) {
 				c.Next() // warm replica of a cold index, or a copy that holds every write
 				return
 			}
@@ -182,8 +182,14 @@ func rejectWrite(c zhttp.Context, target string, err error) {
 }
 
 // rejectUnreplicated answers 503 for a write that could not be made
-// durable on the replicas: the client must not count it as stored.
+// durable on the replicas: the client must not count it as stored. A commit
+// that failed because the partition moved is a 409 like any fenced write.
 func rejectUnreplicated(c zhttp.Context, target string, err error) {
+	var epochErr *cluster.EpochError
+	if errors.As(err, &epochErr) || errors.Is(err, cluster.ErrNotLive) {
+		rejectWrite(c, target, err)
+		return
+	}
 	log.Error().Ctx(c.Context()).Err(err).Str("index", target).Msg("cluster: write not replicated")
 	c.Abort()
 	zutils.RenderJSON(c, http.StatusServiceUnavailable, zhttp.H{"error": "write not replicated: " + err.Error()})
@@ -230,13 +236,13 @@ func forward(c zhttp.Context, owner string, fallbacks []string) {
 	}
 
 	local := localNodeID()
-	addr, ok := cluster.NodeAddr(owner)
+	addr, ok := cluster.NodeAddr(c.Context(), owner)
 	for _, replica := range fallbacks {
 		if ok && addr != "" {
 			break
 		}
 		if replica != local {
-			addr, ok = cluster.NodeAddr(replica)
+			addr, ok = cluster.NodeAddr(c.Context(), replica)
 		}
 	}
 	if !ok || addr == "" {
@@ -305,7 +311,7 @@ func scatterSearch(c zhttp.Context, target string) {
 		}
 	}
 
-	groups, replicas := groupByOwner(resolveIndexes(target))
+	groups, replicas := groupByOwner(c.Context(), resolveIndexes(target))
 	if _, local := groups[localNodeID()]; len(replicas) == 0 && len(groups) <= 1 && (local || len(groups) == 0) {
 		// everything we would ask for is ours: let the normal handler do it
 		c.SetBody(body)
@@ -447,7 +453,7 @@ func internalSearch(ctx context.Context, owner string, indexes []string, query *
 		}
 		return err
 	}
-	addr, ok := cluster.NodeAddr(owner)
+	addr, ok := cluster.NodeAddr(ctx, owner)
 	if !ok || addr == "" {
 		return nil, unavailable(errors.New("cluster: node " + owner + " is unreachable"))
 	}
@@ -506,26 +512,18 @@ func replicaIndexMissing(status int, data []byte, indexes []string) bool {
 
 // groupByOwner batches indexes served by their owner or a readable local
 // replica. For an unreachable owner it collects the reachable remote
-// replicas of each index instead, in the order scatter tries them.
-func groupByOwner(indexes []string) (groups, replicas map[string][]string) {
+// replicas of each index instead, in the order scatter tries them. Each
+// node is resolved once per pass, and ctx bounds the lookups.
+func groupByOwner(ctx context.Context, indexes []string) (groups, replicas map[string][]string) {
 	local := localNodeID()
-	resolved := map[string]bool{local: true}
-	reachable := func(node string) bool {
-		ok, seen := resolved[node]
-		if !seen {
-			addr, found := cluster.NodeAddr(node)
-			ok = found && addr != ""
-			resolved[node] = ok
-		}
-		return ok
-	}
+	reachable := newResolver(ctx).reachable
 
 	groups = make(map[string][]string)
 	replicas = make(map[string][]string)
 	for _, name := range indexes {
 		owner, _, ok := cluster.Owner(name)
 		switch {
-		case !ok || (owner != local && servesReplica(name, owner)):
+		case !ok || (owner != local && servesReplica(name, owner, reachable)):
 			owner = local
 		case !reachable(owner) && (replicaReadable(name) || replicated(name)):
 			for _, replica := range cluster.Replicas(name) {
@@ -551,17 +549,34 @@ var replicaReadable = replication.Readable
 var replicaCurrent = replication.Current
 
 // servesReplica reports whether this node answers a read of an index owner
-// owns from its own copy. A copy still applying what the owner shipped
-// would miss acknowledged writes, so the owner answers while it is there.
-func servesReplica(name, owner string) bool {
+// owns from its own copy. A copy that is not current would miss
+// acknowledged writes, so the owner answers while it is reachable.
+func servesReplica(name, owner string, reachable func(string) bool) bool {
 	if !cluster.IsLocalReplica(name) || !replicaReadable(name) {
 		return false
 	}
-	if replicaCurrent(name) {
-		return true
+	return replicaCurrent(name) || !reachable(owner)
+}
+
+// resolver memoizes node reachability for one routing pass: an owner that
+// misses the member cache costs one bounded lookup, not one per index.
+type resolver struct {
+	ctx      context.Context
+	resolved map[string]bool
+}
+
+func newResolver(ctx context.Context) *resolver {
+	return &resolver{ctx: ctx, resolved: map[string]bool{localNodeID(): true}}
+}
+
+func (r *resolver) reachable(node string) bool {
+	ok, seen := r.resolved[node]
+	if !seen {
+		addr, found := cluster.NodeAddr(r.ctx, node)
+		ok = found && addr != ""
+		r.resolved[node] = ok
 	}
-	addr, ok := cluster.NodeAddr(owner)
-	return !ok || addr == ""
+	return ok
 }
 
 // replicated reports whether the replicas of a disk index hold a copy, so

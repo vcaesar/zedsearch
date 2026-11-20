@@ -92,6 +92,13 @@ func (f *fakeTopology) Epoch(string) int64 {
 	return f.epoch
 }
 
+func (f *fakeTopology) CheckEpoch(index string, epoch int64) error {
+	if !f.IsOwner(index) || epoch != f.Epoch(index) {
+		return errStaleEpoch
+	}
+	return nil
+}
+
 // setEpoch moves ownership to a new epoch, as a handoff away and back would.
 func (f *fakeTopology) setEpoch(epoch int64) {
 	f.mu.Lock()

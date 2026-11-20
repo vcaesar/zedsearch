@@ -83,6 +83,7 @@ type topology interface {
 	IsReplica(index string) bool
 	Replicas(index string) []string
 	Epoch(index string) int64
+	CheckEpoch(index string, epoch int64) error
 	UpdateInSync(ctx context.Context, index string, nodes []string, epoch int64) error
 	InSync(ctx context.Context) (map[string][]string, error)
 }
@@ -114,6 +115,10 @@ func (clusterTopology) Replicas(index string) []string { return cluster.Replicas
 func (clusterTopology) Epoch(index string) int64 {
 	_, epoch, _ := cluster.Owner(index)
 	return epoch
+}
+
+func (clusterTopology) CheckEpoch(index string, epoch int64) error {
+	return cluster.CheckEpoch(index, epoch)
 }
 
 func (clusterTopology) UpdateInSync(ctx context.Context, index string, nodes []string, epoch int64) error {
@@ -459,19 +464,19 @@ func CommitAll(ctx context.Context) error {
 		return nil
 	}
 	m.mu.Lock()
-	pending := make([]string, 0, len(m.primaries))
-	for name, p := range m.primaries {
+	pending := make([]*primary, 0, len(m.primaries))
+	for _, p := range m.primaries {
 		if p.dirty() {
-			pending = append(pending, name)
+			pending = append(pending, p)
 		}
 	}
 	m.mu.Unlock()
 	errs := make([]error, len(pending))
 	var group errgroup.Group
 	group.SetLimit(commitParallelism)
-	for i, name := range pending {
+	for i, p := range pending {
 		group.Go(func() error {
-			errs[i] = Commit(ctx, name)
+			errs[i] = m.commitRecorded(ctx, p)
 			return errs[i]
 		})
 	}
@@ -479,6 +484,26 @@ func CommitAll(ctx context.Context) error {
 		return nil
 	}
 	return errors.Join(errs...) // every failed index, not only the first
+}
+
+// commitRecorded commits what p recorded. It fails when the partition moved
+// since p was created, before or while shipping: the new owner never fenced
+// those operations. A `_bulk` has no path index for the route to check, so
+// this is its only ownership check.
+func (m *manager) commitRecorded(ctx context.Context, p *primary) error {
+	if err := m.topo.CheckEpoch(p.index, p.epoch); err != nil {
+		return err
+	}
+	if !m.writable(p.index) {
+		return nil // deleted meanwhile
+	}
+	if _, err := m.prepare(ctx, p.index); err != nil {
+		return err
+	}
+	if err := m.commit(ctx, p, false); err != nil {
+		return err
+	}
+	return m.topo.CheckEpoch(p.index, p.epoch)
 }
 
 // Ready reports whether this node holds a usable copy of index as a
@@ -503,11 +528,32 @@ func Readable(name string) bool {
 	return ok && (index.IsCold() || Ready(name))
 }
 
-// Current reports whether the copy this node replicates has applied every
-// operation the owner shipped to it: until then a read here misses writes
-// the owner already acknowledged and serves itself. A segment replica keeps
-// its operations aside and answers from its last checkpoint.
+// Current reports whether the copy this node replicates holds every write
+// the owner acknowledged: it is in the in-sync set, which the owner leaves
+// a failed replica out of before acknowledging, and it applied everything
+// it received. A segment replica answers from its installed files, so
+// operations it only kept leave it behind until its next checkpoint.
 func Current(name string) bool {
 	index, ok := core.GetIndex(name)
-	return ok && (index.IsCold() || index.Applied())
+	if !ok {
+		return false
+	}
+	if index.IsCold() {
+		return true
+	}
+	m := get()
+	if m == nil || !index.Applied() || !inSync(name) {
+		return false
+	}
+	if m.mode != ModeSegment {
+		return true
+	}
+	m.mu.Lock()
+	r := m.replicas[name]
+	m.mu.Unlock()
+	return r != nil && !r.hasKept()
 }
+
+// inSync reports whether this node is in the in-sync set of an index. A
+// variable for tests.
+var inSync = cluster.IsLocalInSync

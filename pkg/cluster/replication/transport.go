@@ -131,7 +131,7 @@ func CheckSecret(header, secret string) bool {
 }
 
 func (t *HTTPTransport) do(ctx context.Context, method, node, path string, body []byte) (*http.Response, error) {
-	addr, ok := cluster.NodeAddr(node)
+	addr, ok := cluster.NodeAddr(ctx, node)
 	if !ok {
 		return nil, fmt.Errorf("replication: node %s is unreachable", node)
 	}

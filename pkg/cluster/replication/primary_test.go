@@ -18,6 +18,7 @@ package replication
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -397,6 +398,39 @@ func TestCommitAllShipsToReplicaNotInSync(t *testing.T) {
 	assert.Equal(t, shipped, calls, "nothing was written since the last commit")
 }
 
+// A bulk has no path index to fence: CommitAll must fail the operations of
+// a partition that moved, whether it now has another owner or came back
+// under a new epoch, instead of acknowledging them.
+func TestCommitAllFailsMovedPartition(t *testing.T) {
+	tests := []struct {
+		name string
+		move func(topo *fakeTopology, index string)
+	}{
+		{name: "owned by another node", move: func(topo *fakeTopology, index string) { topo.set(index, "node-c", "node-b") }},
+		{name: "moved away and back", move: func(topo *fakeTopology, _ string) { topo.setEpoch(topo.Epoch("") + 1) }},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			name := fmt.Sprintf("TestCommitAllFailsMovedPartition.index_%d", i+1)
+			newDiskIndex(t, name)
+			topo := newFakeTopology("node-a")
+			topo.set(name, "node-a", "node-b")
+			transport := &funcTransport{replicate: func(_ string, b *Batch) (Ack, error) {
+				return Ack{Term: b.Term, Seq: b.From - 1 + uint64(len(b.Ops))}, nil
+			}}
+			m := newManager(t, ModeDocument, topo, transport)
+			activate(t, m)
+			ctx := context.Background()
+			_, err := m.prepare(ctx, name)
+			require.NoError(t, err)
+
+			m.record(name, "0", []byte(testEntry))
+			tt.move(topo, name)
+			assert.ErrorIs(t, CommitAll(ctx), errStaleEpoch)
+		})
+	}
+}
+
 // The background tick promotes owned indexes, probes their replicas,
 // flushes remote ones and checkpoints replicated ones.
 func TestTickRoutesIndexes(t *testing.T) {
@@ -683,19 +717,38 @@ func TestReadable(t *testing.T) {
 	}
 }
 
-// A copy is current once it applied what the owner shipped; a cold index
-// is the same data on every node.
+// A copy is current once it is in the in-sync set and applied what the
+// owner shipped; a cold index is the same data on every node.
 func TestCurrent(t *testing.T) {
 	const disk, cold = "TestCurrent.index_1", "TestCurrent.index_2"
 	index := newDiskIndex(t, disk)
 	newColdIndex(t, cold)
+	member := true
+	previous := inSync
+	inSync = func(string) bool { return member }
+	t.Cleanup(func() { inSync = previous })
 
 	assert.True(t, Current(cold))
 	assert.False(t, Current("TestCurrent.missing"))
+	assert.False(t, Current(disk), "replication is off")
+
+	m := newManager(t, ModeDocument, newFakeTopology("node-b"), newLoopTransport())
+	activate(t, m)
 	assert.True(t, Current(disk), "nothing was shipped")
+	member = false
+	assert.False(t, Current(disk), "the owner dropped this replica from the in-sync set")
+	member = true
 
 	entry := []byte(`{"@_id":"1","@_action":"insert","@_shard":-1,"name":"one"}`)
 	require.NoError(t, core.ApplyReplicaEntries(index, firstShard(t, index), [][]byte{entry}))
 	waitDocs(t, index, 1)
 	assert.Eventually(t, func() bool { return Current(disk) }, 30*time.Second, 10*time.Millisecond)
+
+	// a segment replica serves its installed files, not the operations it kept
+	m.mode = ModeSegment
+	assert.False(t, Current(disk), "no replica state")
+	r := m.replicaFor(disk)
+	assert.True(t, Current(disk))
+	r.seq = r.filesSeq + 1
+	assert.False(t, Current(disk), "operations kept beyond the installed files")
 }

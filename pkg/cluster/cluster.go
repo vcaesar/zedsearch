@@ -268,8 +268,9 @@ func Nodes() []NodeStatus {
 }
 
 // NodeAddr returns the advertised address of a node id. It is answered from
-// the member cache; a miss (a node that just joined) falls back to one read.
-func NodeAddr(id string) (string, bool) {
+// the member cache; a miss (a node that just joined) falls back to one read,
+// bounded by ctx and at most five seconds.
+func NodeAddr(ctx context.Context, id string) (string, bool) {
 	n := get()
 	if n == nil {
 		return "", false
@@ -280,7 +281,7 @@ func NodeAddr(id string) (string, bool) {
 	if addr, ok := n.membership.Addr(id); ok {
 		return addr, addr != ""
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	if err := n.membership.Refresh(ctx); err != nil {
 		log.Error().Err(err).Msg("cluster: list nodes")
@@ -330,6 +331,16 @@ func IsLocalReplica(indexName string) bool {
 		return false
 	}
 	return n.fence.IsLocalReplica(indexName)
+}
+
+// IsLocalInSync reports whether this node is in the in-sync set of
+// indexName, false when clustering is off.
+func IsLocalInSync(indexName string) bool {
+	n := get()
+	if n == nil {
+		return false
+	}
+	return n.fence.IsLocalInSync(indexName)
 }
 
 // CheckEpoch fails when the partition of indexName moved since epoch was

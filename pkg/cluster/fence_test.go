@@ -202,6 +202,40 @@ func TestFenceWatchTracksHandoff(t *testing.T) {
 	assert.Error(t, fence.CheckEpoch(index, first.Epoch))
 }
 
+// A replica the owner drops from the in-sync set learns it from the watch.
+func TestFenceWatchTracksInSync(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store := NewMemoryStore()
+	defer func() { require.NoError(t, store.Close()) }()
+
+	fence, assigner := newTestFence(t, store, "node-b")
+	const index = "logs-2024"
+	partition := PartitionOfN(index, fencePartitions)
+	owned, ok, err := assigner.Set(ctx, partition, "node-a", 0)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.NoError(t, assigner.UpdateInSync(ctx, index, []string{"node-b"}, owned.Epoch))
+
+	go fence.Run(ctx, time.Minute)
+	require.Eventually(t, func() bool { return fence.IsLocalInSync(index) }, 2*time.Second, 5*time.Millisecond)
+	assert.False(t, fence.IsLocalInSync("other"))
+
+	require.NoError(t, assigner.UpdateInSync(ctx, index, []string{}, owned.Epoch))
+	require.Eventually(t, func() bool { return !fence.IsLocalInSync(index) }, 2*time.Second, 5*time.Millisecond)
+
+	require.NoError(t, assigner.UpdateInSync(ctx, index, []string{"node-b"}, owned.Epoch))
+	require.Eventually(t, func() bool { return fence.IsLocalInSync(index) }, 2*time.Second, 5*time.Millisecond)
+	require.NoError(t, store.Delete(ctx, assigner.InSyncKey()))
+	require.Eventually(t, func() bool { return !fence.IsLocalInSync(index) }, 2*time.Second, 5*time.Millisecond)
+}
+
+func TestFenceRefreshInSyncFails(t *testing.T) {
+	store := newFaultStore(failOn(errFault, "/test/insync", "Get"))
+	fence, _ := newTestFence(t, store, "node-a")
+	assert.ErrorIs(t, fence.Refresh(context.Background()), errFault)
+}
+
 func TestFenceDefaultsAndError(t *testing.T) {
 	fence := NewFence(NewAssigner(NewMemoryStore(), "/test/", 0), "node-a", 0)
 	assert.Equal(t, DefaultPartitions, fence.partitions)
@@ -235,11 +269,11 @@ func TestFenceRunStopsOnClosedWatch(t *testing.T) {
 		defer close(done)
 		fence.Run(ctx, time.Minute)
 	}()
-	// closing the store ends both watch streams, Run keeps going until ctx ends
+	// closing the store ends every watch stream, Run keeps going until ctx ends
 	require.Eventually(t, func() bool {
 		store.mu.Lock()
 		defer store.mu.Unlock()
-		return len(store.watchers) == 2
+		return len(store.watchers) == 3
 	}, time.Second, time.Millisecond)
 	require.NoError(t, store.Close())
 	time.Sleep(10 * time.Millisecond)
@@ -258,6 +292,9 @@ func TestFenceApplyIgnoresBadEvents(t *testing.T) {
 
 	fence.applyReplicas(Event{Type: EventPut, KV: KV{Key: "/other", Value: []byte(`{"1":["b"]}`)}})
 	fence.applyReplicas(Event{Type: EventPut, KV: KV{Key: assigner.ReplicasKey(), Value: []byte("{")}})
+	fence.applyInSync(Event{Type: EventPut, KV: KV{Key: "/other", Value: []byte(`{"logs":["node-a"]}`)}})
+	fence.applyInSync(Event{Type: EventPut, KV: KV{Key: assigner.InSyncKey(), Value: []byte("{")}})
+	assert.False(t, fence.IsLocalInSync("logs"))
 	fence.mu.RLock()
 	defer fence.mu.RUnlock()
 	assert.Empty(t, fence.replicas)
