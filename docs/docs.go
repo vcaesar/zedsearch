@@ -1440,6 +1440,20 @@ const docTemplate = `{
                             "type": "object",
                             "additionalProperties": true
                         }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "503": {
+                        "description": "Storage failure, retry the batch",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
                     }
                 }
             }
@@ -1493,6 +1507,18 @@ const docTemplate = `{
                     },
                     "400": {
                         "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    },
+                    "503": {
+                        "description": "Storage failure, retry the batch",
                         "schema": {
                             "$ref": "#/definitions/meta.HTTPResponseError"
                         }
@@ -1912,9 +1938,21 @@ const docTemplate = `{
                         "description": "No Content"
                     },
                     "400": {
-                        "description": "Bad Request",
+                        "description": "Some records failed; an invalid request answers meta.HTTPResponseError instead",
                         "schema": {
                             "$ref": "#/definitions/logs.IngestResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    },
+                    "503": {
+                        "description": "Storage failure, retry the batch",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
                         }
                     }
                 }
@@ -1967,6 +2005,24 @@ const docTemplate = `{
                     },
                     "400": {
                         "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    },
+                    "415": {
+                        "description": "Unsupported Media Type",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    },
+                    "503": {
+                        "description": "Storage failure, retry the batch",
                         "schema": {
                             "$ref": "#/definitions/meta.HTTPResponseError"
                         }
@@ -2592,6 +2648,391 @@ const docTemplate = `{
                 }
             }
         },
+        "/es/_query_rules": {
+            "get": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "QueryRules"
+                ],
+                "summary": "List query rulesets for compatible ES",
+                "operationId": "ListQueryRulesets",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Starting offset",
+                        "name": "from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Max results, default 100",
+                        "name": "size",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/rules.ListResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/es/_query_rules/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "QueryRules"
+                ],
+                "summary": "Get query ruleset for compatible ES",
+                "operationId": "GetQueryRuleset",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Ruleset id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/meta.QueryRuleset"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "QueryRules"
+                ],
+                "summary": "Create or update query ruleset for compatible ES",
+                "operationId": "PutQueryRuleset",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Ruleset id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Rules",
+                        "name": "ruleset",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/meta.QueryRuleset"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/rules.ResultResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "QueryRules"
+                ],
+                "summary": "Delete query ruleset for compatible ES",
+                "operationId": "DeleteQueryRuleset",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Ruleset id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/es/_query_rules/{id}/_rule/{rule_id}": {
+            "get": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "QueryRules"
+                ],
+                "summary": "Get query rule for compatible ES",
+                "operationId": "GetQueryRule",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Ruleset id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Rule id",
+                        "name": "rule_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/meta.QueryRule"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "QueryRules"
+                ],
+                "summary": "Create or update query rule for compatible ES",
+                "operationId": "PutQueryRule",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Ruleset id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Rule id",
+                        "name": "rule_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Rule",
+                        "name": "rule",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/meta.QueryRule"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/rules.ResultResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "QueryRules"
+                ],
+                "summary": "Delete query rule for compatible ES",
+                "operationId": "DeleteQueryRule",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Ruleset id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Rule id",
+                        "name": "rule_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/es/_query_rules/{id}/_test": {
+            "post": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "QueryRules"
+                ],
+                "summary": "Test query ruleset for compatible ES",
+                "operationId": "TestQueryRuleset",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Ruleset id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "{\\",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/rules.TestResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/es/_reindex": {
             "post": {
                 "security": [
@@ -2729,6 +3170,367 @@ const docTemplate = `{
                         "description": "Bad Request",
                         "schema": {
                             "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
+        "/es/_synonyms": {
+            "get": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Synonyms"
+                ],
+                "summary": "List synonyms sets for compatible ES",
+                "operationId": "ListSynonymsSets",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Starting offset",
+                        "name": "from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Max results, default 10",
+                        "name": "size",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/synonyms.ListResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/es/_synonyms/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Synonyms"
+                ],
+                "summary": "Get synonyms set for compatible ES",
+                "operationId": "GetSynonymsSet",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Synonyms set id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Starting offset",
+                        "name": "from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Max results, default 10",
+                        "name": "size",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/synonyms.SetResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Synonyms"
+                ],
+                "summary": "Create or update synonyms set for compatible ES",
+                "operationId": "PutSynonymsSet",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Synonyms set id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Synonyms set",
+                        "name": "data",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/meta.SynonymSet"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/synonyms.UpdateResponse"
+                        }
+                    },
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/synonyms.UpdateResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Synonyms"
+                ],
+                "summary": "Delete synonyms set for compatible ES",
+                "operationId": "DeleteSynonymsSet",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Synonyms set id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/es/_synonyms/{id}/{rule}": {
+            "get": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Synonyms"
+                ],
+                "summary": "Get synonym rule for compatible ES",
+                "operationId": "GetSynonymRule",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Synonyms set id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Synonym rule id",
+                        "name": "rule",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/meta.SynonymRule"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Synonyms"
+                ],
+                "summary": "Create or update synonym rule for compatible ES",
+                "operationId": "PutSynonymRule",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Synonyms set id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Synonym rule id",
+                        "name": "rule",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Synonym rule",
+                        "name": "data",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/meta.SynonymRule"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/synonyms.UpdateResponse"
+                        }
+                    },
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/synonyms.UpdateResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Synonyms"
+                ],
+                "summary": "Delete synonym rule for compatible ES",
+                "operationId": "DeleteSynonymRule",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Synonyms set id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Synonym rule id",
+                        "name": "rule",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/synonyms.UpdateResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
                         }
                     }
                 }
@@ -3097,6 +3899,47 @@ const docTemplate = `{
                         "description": "Bad Request",
                         "schema": {
                             "$ref": "#/definitions/meta.HTTPResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/es/{index}/_reload_search_analyzers": {
+            "post": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Synonyms"
+                ],
+                "summary": "Reload search analyzers for compatible ES",
+                "operationId": "ReloadSearchAnalyzers",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Index",
+                        "name": "index",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/synonyms.ReloadDetails"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
                         }
                     }
                 }
@@ -4170,6 +5013,10 @@ const docTemplate = `{
                 "avg": {
                     "type": "number"
                 },
+                "bg_count": {
+                    "description": "significant_terms background size",
+                    "type": "integer"
+                },
                 "buckets": {
                     "description": "slice or map"
                 },
@@ -4241,6 +5088,58 @@ const docTemplate = `{
                 },
                 "lag": {
                     "type": "integer"
+                }
+            }
+        },
+        "meta.AggregationSignificantTerms": {
+            "type": "object",
+            "properties": {
+                "background_filter": {},
+                "chi_square": {
+                    "$ref": "#/definitions/meta.SignificanceHeuristic"
+                },
+                "exclude": {
+                    "description": "regexp string or array of terms"
+                },
+                "field": {
+                    "type": "string"
+                },
+                "filter_duplicate_text": {
+                    "description": "significant_text options, not supported: rejected when set",
+                    "type": "boolean"
+                },
+                "gnd": {
+                    "$ref": "#/definitions/meta.SignificanceHeuristic"
+                },
+                "include": {
+                    "description": "regexp string or array of terms"
+                },
+                "jlh": {
+                    "type": "object"
+                },
+                "min_doc_count": {
+                    "description": "default 3",
+                    "type": "integer"
+                },
+                "mutual_information": {
+                    "$ref": "#/definitions/meta.SignificanceHeuristic"
+                },
+                "percentage": {
+                    "type": "object"
+                },
+                "shard_size": {
+                    "description": "foreground terms collected before scoring",
+                    "type": "integer"
+                },
+                "size": {
+                    "description": "default 10",
+                    "type": "integer"
+                },
+                "source_fields": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 }
             }
         },
@@ -4385,6 +5284,12 @@ const docTemplate = `{
                 },
                 "serial_diff": {
                     "$ref": "#/definitions/meta.AggregationSerialDiff"
+                },
+                "significant_terms": {
+                    "$ref": "#/definitions/meta.AggregationSignificantTerms"
+                },
+                "significant_text": {
+                    "$ref": "#/definitions/meta.AggregationSignificantTerms"
                 },
                 "stats": {
                     "$ref": "#/definitions/meta.AggregationMetric"
@@ -5304,6 +6209,87 @@ const docTemplate = `{
                 }
             }
         },
+        "meta.QueryRule": {
+            "type": "object",
+            "properties": {
+                "actions": {
+                    "$ref": "#/definitions/meta.QueryRuleActions"
+                },
+                "criteria": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/meta.QueryRuleCriteria"
+                    }
+                },
+                "priority": {
+                    "type": "integer"
+                },
+                "rule_id": {
+                    "type": "string"
+                },
+                "type": {
+                    "description": "pinned, exclude",
+                    "type": "string"
+                }
+            }
+        },
+        "meta.QueryRuleActions": {
+            "type": "object",
+            "properties": {
+                "docs": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/meta.QueryRuleDocRef"
+                    }
+                },
+                "ids": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "meta.QueryRuleCriteria": {
+            "type": "object",
+            "properties": {
+                "metadata": {
+                    "type": "string"
+                },
+                "type": {
+                    "type": "string"
+                },
+                "values": {
+                    "type": "array",
+                    "items": {}
+                }
+            }
+        },
+        "meta.QueryRuleDocRef": {
+            "type": "object",
+            "properties": {
+                "_id": {
+                    "type": "string"
+                },
+                "_index": {
+                    "type": "string"
+                }
+            }
+        },
+        "meta.QueryRuleset": {
+            "type": "object",
+            "properties": {
+                "rules": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/meta.QueryRule"
+                    }
+                },
+                "ruleset_id": {
+                    "type": "string"
+                }
+            }
+        },
         "meta.QueryStringQuery": {
             "type": "object",
             "properties": {
@@ -5432,6 +6418,10 @@ const docTemplate = `{
                 "hits": {
                     "$ref": "#/definitions/meta.Hits"
                 },
+                "suggest": {
+                    "type": "object",
+                    "additionalProperties": true
+                },
                 "timed_out": {
                     "type": "boolean"
                 },
@@ -5455,6 +6445,19 @@ const docTemplate = `{
                 },
                 "total": {
                     "type": "integer"
+                }
+            }
+        },
+        "meta.SignificanceHeuristic": {
+            "type": "object",
+            "properties": {
+                "background_is_superset": {
+                    "description": "default true",
+                    "type": "boolean"
+                },
+                "include_negatives": {
+                    "description": "default false",
+                    "type": "boolean"
                 }
             }
         },
@@ -5490,6 +6493,31 @@ const docTemplate = `{
             "properties": {
                 "enabled": {
                     "type": "boolean"
+                }
+            }
+        },
+        "meta.SynonymRule": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string"
+                },
+                "synonyms": {
+                    "type": "string"
+                }
+            }
+        },
+        "meta.SynonymSet": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string"
+                },
+                "synonyms_set": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/meta.SynonymRule"
+                    }
                 }
             }
         },
@@ -5642,11 +6670,19 @@ const docTemplate = `{
                     "description": "top-level knn: one object or an array, ORed with query"
                 },
                 "query": {},
+                "rescore": {
+                    "description": "one rescorer or an array, applied in order"
+                },
                 "size": {
                     "type": "integer"
                 },
                 "sort": {
                     "description": "\"_score\", [\"+Year\",\"-Year\", {\"Year\": \"desc\"}, \"Date\": {\"order\": \"asc\"\", \"format\": \"yyyy-MM-dd\"}}\"}]"
+                },
+                "suggest": {
+                    "description": "{\"text\": global, \"name\": {term|phrase|completion}}",
+                    "type": "object",
+                    "additionalProperties": true
                 },
                 "timeout": {
                     "type": "integer"
@@ -5687,6 +6723,9 @@ const docTemplate = `{
                 },
                 "highlight": {
                     "$ref": "#/definitions/meta.Highlight"
+                },
+                "knn": {
+                    "description": "top-level knn: one object or an array, ORed with query"
                 },
                 "query": {
                     "$ref": "#/definitions/meta.QueryForSDK"
@@ -5732,6 +6771,76 @@ const docTemplate = `{
                 }
             }
         },
+        "rules.ListResponse": {
+            "type": "object",
+            "properties": {
+                "count": {
+                    "type": "integer"
+                },
+                "results": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/rules.RulesetSummary"
+                    }
+                }
+            }
+        },
+        "rules.MatchedRule": {
+            "type": "object",
+            "properties": {
+                "rule_id": {
+                    "type": "string"
+                },
+                "ruleset_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "rules.ResultResponse": {
+            "type": "object",
+            "properties": {
+                "result": {
+                    "type": "string"
+                }
+            }
+        },
+        "rules.RulesetSummary": {
+            "type": "object",
+            "properties": {
+                "rule_criteria_types_counts": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "integer"
+                    }
+                },
+                "rule_total_count": {
+                    "type": "integer"
+                },
+                "rule_type_counts": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "integer"
+                    }
+                },
+                "ruleset_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "rules.TestResponse": {
+            "type": "object",
+            "properties": {
+                "matched_rules": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/rules.MatchedRule"
+                    }
+                },
+                "total_matched_rules": {
+                    "type": "integer"
+                }
+            }
+        },
         "sql.Request": {
             "type": "object",
             "properties": {
@@ -5771,6 +6880,104 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "type": {
+                    "type": "string"
+                }
+            }
+        },
+        "synonyms.ListResponse": {
+            "type": "object",
+            "properties": {
+                "count": {
+                    "type": "integer"
+                },
+                "results": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/synonyms.SetSummary"
+                    }
+                }
+            }
+        },
+        "synonyms.ReloadDetail": {
+            "type": "object",
+            "properties": {
+                "index": {
+                    "type": "string"
+                },
+                "reloaded_analyzers": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "reloaded_node_ids": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "synonyms.ReloadDetails": {
+            "type": "object",
+            "properties": {
+                "_shards": {
+                    "$ref": "#/definitions/synonyms.Shards"
+                },
+                "reload_details": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/synonyms.ReloadDetail"
+                    }
+                }
+            }
+        },
+        "synonyms.SetResponse": {
+            "type": "object",
+            "properties": {
+                "count": {
+                    "type": "integer"
+                },
+                "synonyms_set": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/meta.SynonymRule"
+                    }
+                }
+            }
+        },
+        "synonyms.SetSummary": {
+            "type": "object",
+            "properties": {
+                "count": {
+                    "type": "integer"
+                },
+                "synonyms_set": {
+                    "type": "string"
+                }
+            }
+        },
+        "synonyms.Shards": {
+            "type": "object",
+            "properties": {
+                "failed": {
+                    "type": "integer"
+                },
+                "successful": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                }
+            }
+        },
+        "synonyms.UpdateResponse": {
+            "type": "object",
+            "properties": {
+                "reload_analyzers_details": {
+                    "$ref": "#/definitions/synonyms.ReloadDetails"
+                },
+                "result": {
                     "type": "string"
                 }
             }

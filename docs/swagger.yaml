@@ -619,6 +619,9 @@ definitions:
     properties:
       avg:
         type: number
+      bg_count:
+        description: significant_terms background size
+        type: integer
       buckets:
         description: slice or map
       count:
@@ -672,6 +675,42 @@ definitions:
         type: string
       lag:
         type: integer
+    type: object
+  meta.AggregationSignificantTerms:
+    properties:
+      background_filter: {}
+      chi_square:
+        $ref: '#/definitions/meta.SignificanceHeuristic'
+      exclude:
+        description: regexp string or array of terms
+      field:
+        type: string
+      filter_duplicate_text:
+        description: 'significant_text options, not supported: rejected when set'
+        type: boolean
+      gnd:
+        $ref: '#/definitions/meta.SignificanceHeuristic'
+      include:
+        description: regexp string or array of terms
+      jlh:
+        type: object
+      min_doc_count:
+        description: default 3
+        type: integer
+      mutual_information:
+        $ref: '#/definitions/meta.SignificanceHeuristic'
+      percentage:
+        type: object
+      shard_size:
+        description: foreground terms collected before scoring
+        type: integer
+      size:
+        description: default 10
+        type: integer
+      source_fields:
+        items:
+          type: string
+        type: array
     type: object
   meta.AggregationStdDeviationBounds:
     properties:
@@ -765,6 +804,10 @@ definitions:
         $ref: '#/definitions/meta.AggregationNested'
       serial_diff:
         $ref: '#/definitions/meta.AggregationSerialDiff'
+      significant_terms:
+        $ref: '#/definitions/meta.AggregationSignificantTerms'
+      significant_text:
+        $ref: '#/definitions/meta.AggregationSignificantTerms'
       stats:
         $ref: '#/definitions/meta.AggregationMetric'
       stats_bucket:
@@ -1390,6 +1433,59 @@ definitions:
         description: simple, WildcardQuery
         type: object
     type: object
+  meta.QueryRule:
+    properties:
+      actions:
+        $ref: '#/definitions/meta.QueryRuleActions'
+      criteria:
+        items:
+          $ref: '#/definitions/meta.QueryRuleCriteria'
+        type: array
+      priority:
+        type: integer
+      rule_id:
+        type: string
+      type:
+        description: pinned, exclude
+        type: string
+    type: object
+  meta.QueryRuleActions:
+    properties:
+      docs:
+        items:
+          $ref: '#/definitions/meta.QueryRuleDocRef'
+        type: array
+      ids:
+        items:
+          type: string
+        type: array
+    type: object
+  meta.QueryRuleCriteria:
+    properties:
+      metadata:
+        type: string
+      type:
+        type: string
+      values:
+        items: {}
+        type: array
+    type: object
+  meta.QueryRuleDocRef:
+    properties:
+      _id:
+        type: string
+      _index:
+        type: string
+    type: object
+  meta.QueryRuleset:
+    properties:
+      rules:
+        items:
+          $ref: '#/definitions/meta.QueryRule'
+        type: array
+      ruleset_id:
+        type: string
+    type: object
   meta.QueryStringQuery:
     properties:
       analyzer:
@@ -1476,6 +1572,9 @@ definitions:
         type: string
       hits:
         $ref: '#/definitions/meta.Hits'
+      suggest:
+        additionalProperties: true
+        type: object
       timed_out:
         type: boolean
       took:
@@ -1492,6 +1591,15 @@ definitions:
         type: integer
       total:
         type: integer
+    type: object
+  meta.SignificanceHeuristic:
+    properties:
+      background_is_superset:
+        description: default true
+        type: boolean
+      include_negatives:
+        description: default false
+        type: boolean
     type: object
   meta.SimpleQueryStringQuery:
     properties:
@@ -1515,6 +1623,22 @@ definitions:
     properties:
       enabled:
         type: boolean
+    type: object
+  meta.SynonymRule:
+    properties:
+      id:
+        type: string
+      synonyms:
+        type: string
+    type: object
+  meta.SynonymSet:
+    properties:
+      id:
+        type: string
+      synonyms_set:
+        items:
+          $ref: '#/definitions/meta.SynonymRule'
+        type: array
     type: object
   meta.Template:
     properties:
@@ -1616,11 +1740,17 @@ definitions:
       knn:
         description: 'top-level knn: one object or an array, ORed with query'
       query: {}
+      rescore:
+        description: one rescorer or an array, applied in order
       size:
         type: integer
       sort:
         description: '"_score", ["+Year","-Year", {"Year": "desc"}, "Date": {"order":
           "asc"", "format": "yyyy-MM-dd"}}"}]'
+      suggest:
+        additionalProperties: true
+        description: '{"text": global, "name": {term|phrase|completion}}'
+        type: object
       timeout:
         type: integer
       track_total_hits:
@@ -1648,6 +1778,8 @@ definitions:
         type: integer
       highlight:
         $ref: '#/definitions/meta.Highlight'
+      knn:
+        description: 'top-level knn: one object or an array, ORed with query'
       query:
         $ref: '#/definitions/meta.QueryForSDK'
       size:
@@ -1678,6 +1810,51 @@ definitions:
           $ref: '#/definitions/metadata.ILMPhase'
         type: object
     type: object
+  rules.ListResponse:
+    properties:
+      count:
+        type: integer
+      results:
+        items:
+          $ref: '#/definitions/rules.RulesetSummary'
+        type: array
+    type: object
+  rules.MatchedRule:
+    properties:
+      rule_id:
+        type: string
+      ruleset_id:
+        type: string
+    type: object
+  rules.ResultResponse:
+    properties:
+      result:
+        type: string
+    type: object
+  rules.RulesetSummary:
+    properties:
+      rule_criteria_types_counts:
+        additionalProperties:
+          type: integer
+        type: object
+      rule_total_count:
+        type: integer
+      rule_type_counts:
+        additionalProperties:
+          type: integer
+        type: object
+      ruleset_id:
+        type: string
+    type: object
+  rules.TestResponse:
+    properties:
+      matched_rules:
+        items:
+          $ref: '#/definitions/rules.MatchedRule'
+        type: array
+      total_matched_rules:
+        type: integer
+    type: object
   sql.Request:
     properties:
       fetch_size:
@@ -1704,6 +1881,69 @@ definitions:
       name:
         type: string
       type:
+        type: string
+    type: object
+  synonyms.ListResponse:
+    properties:
+      count:
+        type: integer
+      results:
+        items:
+          $ref: '#/definitions/synonyms.SetSummary'
+        type: array
+    type: object
+  synonyms.ReloadDetail:
+    properties:
+      index:
+        type: string
+      reloaded_analyzers:
+        items:
+          type: string
+        type: array
+      reloaded_node_ids:
+        items:
+          type: string
+        type: array
+    type: object
+  synonyms.ReloadDetails:
+    properties:
+      _shards:
+        $ref: '#/definitions/synonyms.Shards'
+      reload_details:
+        items:
+          $ref: '#/definitions/synonyms.ReloadDetail'
+        type: array
+    type: object
+  synonyms.SetResponse:
+    properties:
+      count:
+        type: integer
+      synonyms_set:
+        items:
+          $ref: '#/definitions/meta.SynonymRule'
+        type: array
+    type: object
+  synonyms.SetSummary:
+    properties:
+      count:
+        type: integer
+      synonyms_set:
+        type: string
+    type: object
+  synonyms.Shards:
+    properties:
+      failed:
+        type: integer
+      successful:
+        type: integer
+      total:
+        type: integer
+    type: object
+  synonyms.UpdateResponse:
+    properties:
+      reload_analyzers_details:
+        $ref: '#/definitions/synonyms.ReloadDetails'
+      result:
         type: string
     type: object
   v1.AggregationDateRange:
@@ -2149,6 +2389,16 @@ paths:
           schema:
             additionalProperties: true
             type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+        "503":
+          description: Storage failure, retry the batch
+          schema:
+            additionalProperties: true
+            type: object
       security:
       - BasicAuth: []
       summary: Ingest Splunk HEC events
@@ -2183,6 +2433,14 @@ paths:
             $ref: '#/definitions/logs.IngestResponse'
         "400":
           description: Bad Request
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+        "503":
+          description: Storage failure, retry the batch
           schema:
             $ref: '#/definitions/meta.HTTPResponseError'
       security:
@@ -2451,9 +2709,18 @@ paths:
         "204":
           description: No Content
         "400":
-          description: Bad Request
+          description: Some records failed; an invalid request answers meta.HTTPResponseError
+            instead
           schema:
             $ref: '#/definitions/logs.IngestResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+        "503":
+          description: Storage failure, retry the batch
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
       security:
       - BasicAuth: []
       summary: Ingest Loki push request (JSON)
@@ -2487,6 +2754,18 @@ paths:
             type: object
         "400":
           description: Bad Request
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+        "415":
+          description: Unsupported Media Type
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+        "503":
+          description: Storage failure, retry the batch
           schema:
             $ref: '#/definitions/meta.HTTPResponseError'
       security:
@@ -3432,6 +3711,255 @@ paths:
       summary: Search V2 MultipleSearch for compatible ES
       tags:
       - Search
+  /es/_query_rules:
+    get:
+      operationId: ListQueryRulesets
+      parameters:
+      - description: Starting offset
+        in: query
+        name: from
+        type: integer
+      - description: Max results, default 100
+        in: query
+        name: size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/rules.ListResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BasicAuth: []
+      summary: List query rulesets for compatible ES
+      tags:
+      - QueryRules
+  /es/_query_rules/{id}:
+    delete:
+      operationId: DeleteQueryRuleset
+      parameters:
+      - description: Ruleset id
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BasicAuth: []
+      summary: Delete query ruleset for compatible ES
+      tags:
+      - QueryRules
+    get:
+      operationId: GetQueryRuleset
+      parameters:
+      - description: Ruleset id
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/meta.QueryRuleset'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BasicAuth: []
+      summary: Get query ruleset for compatible ES
+      tags:
+      - QueryRules
+    put:
+      consumes:
+      - application/json
+      operationId: PutQueryRuleset
+      parameters:
+      - description: Ruleset id
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Rules
+        in: body
+        name: ruleset
+        required: true
+        schema:
+          $ref: '#/definitions/meta.QueryRuleset'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/rules.ResultResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BasicAuth: []
+      summary: Create or update query ruleset for compatible ES
+      tags:
+      - QueryRules
+  /es/_query_rules/{id}/_rule/{rule_id}:
+    delete:
+      operationId: DeleteQueryRule
+      parameters:
+      - description: Ruleset id
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Rule id
+        in: path
+        name: rule_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BasicAuth: []
+      summary: Delete query rule for compatible ES
+      tags:
+      - QueryRules
+    get:
+      operationId: GetQueryRule
+      parameters:
+      - description: Ruleset id
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Rule id
+        in: path
+        name: rule_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/meta.QueryRule'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BasicAuth: []
+      summary: Get query rule for compatible ES
+      tags:
+      - QueryRules
+    put:
+      consumes:
+      - application/json
+      operationId: PutQueryRule
+      parameters:
+      - description: Ruleset id
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Rule id
+        in: path
+        name: rule_id
+        required: true
+        type: string
+      - description: Rule
+        in: body
+        name: rule
+        required: true
+        schema:
+          $ref: '#/definitions/meta.QueryRule'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/rules.ResultResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BasicAuth: []
+      summary: Create or update query rule for compatible ES
+      tags:
+      - QueryRules
+  /es/_query_rules/{id}/_test:
+    post:
+      consumes:
+      - application/json
+      operationId: TestQueryRuleset
+      parameters:
+      - description: Ruleset id
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: '{\'
+        in: body
+        name: body
+        required: true
+        schema:
+          additionalProperties: true
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/rules.TestResponse'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BasicAuth: []
+      summary: Test query ruleset for compatible ES
+      tags:
+      - QueryRules
   /es/_reindex:
     post:
       consumes:
@@ -3521,6 +4049,240 @@ paths:
       summary: SQL translate to query DSL for compatible ES
       tags:
       - Search
+  /es/_synonyms:
+    get:
+      operationId: ListSynonymsSets
+      parameters:
+      - description: Starting offset
+        in: query
+        name: from
+        type: integer
+      - description: Max results, default 10
+        in: query
+        name: size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/synonyms.ListResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BasicAuth: []
+      summary: List synonyms sets for compatible ES
+      tags:
+      - Synonyms
+  /es/_synonyms/{id}:
+    delete:
+      operationId: DeleteSynonymsSet
+      parameters:
+      - description: Synonyms set id
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BasicAuth: []
+      summary: Delete synonyms set for compatible ES
+      tags:
+      - Synonyms
+    get:
+      operationId: GetSynonymsSet
+      parameters:
+      - description: Synonyms set id
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Starting offset
+        in: query
+        name: from
+        type: integer
+      - description: Max results, default 10
+        in: query
+        name: size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/synonyms.SetResponse'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BasicAuth: []
+      summary: Get synonyms set for compatible ES
+      tags:
+      - Synonyms
+    put:
+      consumes:
+      - application/json
+      operationId: PutSynonymsSet
+      parameters:
+      - description: Synonyms set id
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Synonyms set
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/meta.SynonymSet'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/synonyms.UpdateResponse'
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/synonyms.UpdateResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BasicAuth: []
+      summary: Create or update synonyms set for compatible ES
+      tags:
+      - Synonyms
+  /es/_synonyms/{id}/{rule}:
+    delete:
+      operationId: DeleteSynonymRule
+      parameters:
+      - description: Synonyms set id
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Synonym rule id
+        in: path
+        name: rule
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/synonyms.UpdateResponse'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BasicAuth: []
+      summary: Delete synonym rule for compatible ES
+      tags:
+      - Synonyms
+    get:
+      operationId: GetSynonymRule
+      parameters:
+      - description: Synonyms set id
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Synonym rule id
+        in: path
+        name: rule
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/meta.SynonymRule'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BasicAuth: []
+      summary: Get synonym rule for compatible ES
+      tags:
+      - Synonyms
+    put:
+      consumes:
+      - application/json
+      operationId: PutSynonymRule
+      parameters:
+      - description: Synonyms set id
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Synonym rule id
+        in: path
+        name: rule
+        required: true
+        type: string
+      - description: Synonym rule
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/meta.SynonymRule'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/synonyms.UpdateResponse'
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/synonyms.UpdateResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BasicAuth: []
+      summary: Create or update synonym rule for compatible ES
+      tags:
+      - Synonyms
   /es/{index}:
     head:
       operationId: EsExists
@@ -3754,6 +4516,32 @@ paths:
       summary: Get index mappings for compatible ES
       tags:
       - Index
+  /es/{index}/_reload_search_analyzers:
+    post:
+      operationId: ReloadSearchAnalyzers
+      parameters:
+      - description: Index
+        in: path
+        name: index
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/synonyms.ReloadDetails'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BasicAuth: []
+      summary: Reload search analyzers for compatible ES
+      tags:
+      - Synonyms
   /es/{index}/_search:
     post:
       consumes:

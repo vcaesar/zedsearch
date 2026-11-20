@@ -45,7 +45,7 @@ type Request struct {
 // @Produce json
 // @Param   query  body  sql.Request  true  "Query"
 // @Param   format query string false "Response format: json, txt, csv, tsv"
-// @Success 200 {object} sql.Response
+// @Success 200 {object} zedsql.Response
 // @Failure 400 {object} meta.HTTPResponseError
 // @Router /es/_sql [post]
 func Search(c zhttp.Context) {
