@@ -30,6 +30,7 @@ type SearchResponse struct {
 	Shards       Shards                         `json:"_shards"`
 	Hits         Hits                           `json:"hits"`
 	Aggregations map[string]AggregationResponse `json:"aggregations,omitempty"`
+	Suggest      map[string]interface{}         `json:"suggest,omitempty"`
 	Error        string                         `json:"error,omitempty"`
 }
 
@@ -86,6 +87,7 @@ type AggregationResponse struct {
 
 	// missing / filter / filters / nested aggregations
 	DocCount *uint64 `json:"doc_count,omitempty"`
+	BgCount  *uint64 `json:"bg_count,omitempty"` // significant_terms background size
 
 	// top_hits aggregation
 	Hits *AggregationHits `json:"hits,omitempty"`

@@ -66,6 +66,11 @@ func (index *Index) Search(query *meta.ZedQuery) (*meta.SearchResponse, error) {
 
 	// nested and join queries are resolved before query is parsed, and hidden
 	// nested documents are excluded from results.
+	// rule, more_like_this and rescore need the readers before query is parsed
+	ext, err := prepareSearch(query, mappings, analyzers, readers)
+	if err != nil {
+		return nil, err
+	}
 	if err := rewriteJoinQuery(query, mappings, analyzers, readers); err != nil {
 		return nil, err
 	}
@@ -95,7 +100,11 @@ func (index *Index) Search(query *meta.ZedQuery) (*meta.SearchResponse, error) {
 		return nil, err
 	}
 
-	return searchV2(index.GetAllShardNum(), int64(len(readers)), dmi, query, mappings, analyzers, nil)
+	resp, err := searchV2(index.GetAllShardNum(), int64(len(readers)), dmi, query, mappings, analyzers, nil)
+	if err != nil {
+		return nil, err
+	}
+	return resp, ext.finish(resp)
 }
 
 // searchV2 renders the hits of dmi. Highlighting and fields use the mappings

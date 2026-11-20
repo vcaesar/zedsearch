@@ -89,11 +89,16 @@ func MultiSearch(indexNames []string, query *meta.ZedQuery) (*meta.SearchRespons
 
 	// nested and join queries are resolved before query is parsed, and hidden
 	// nested documents are excluded from results.
+	// rule, more_like_this and rescore need the readers before query is parsed
+	ext, err := prepareSearch(query, mappings, analyzers, readers)
+	if err != nil {
+		return nil, err
+	}
 	if err := rewriteJoinQuery(query, mappings, analyzers, readers); err != nil {
 		return nil, err
 	}
 
-	_, err := uquery.ParseQueryDSL(query, mappings, analyzers)
+	_, err = uquery.ParseQueryDSL(query, mappings, analyzers)
 	if err != nil {
 		return nil, err
 	}
@@ -119,7 +124,11 @@ func MultiSearch(indexNames []string, query *meta.ZedQuery) (*meta.SearchRespons
 		return nil, err
 	}
 
-	return searchV2(shardNum, int64(len(readers)), dmi, query, mappings, analyzers, indexes)
+	resp, err := searchV2(shardNum, int64(len(readers)), dmi, query, mappings, analyzers, indexes)
+	if err != nil {
+		return nil, err
+	}
+	return resp, ext.finish(resp)
 }
 
 // unionMappings returns the mappings and analyzers the query of a search over

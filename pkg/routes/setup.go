@@ -31,10 +31,12 @@ func Setup(app *zhttp.Engine) {
 	if debug {
 		SetPProf(app)
 	}
-	SetPrometheus(app)    // Set up Prometheus.
-	SetClusterRoutes(app) // Cluster endpoints and ownership routing, must precede SetRoutes.
-	SetTierRoutes(app)    // Data tier / ILM endpoints and read-only guard, must precede SetRoutes.
-	SetSQLRoutes(app)     // ES SQL endpoints.
-	// SetFleetRoutes(app)   // zedagent fleet endpoints.
-	SetRoutes(app) // Set up all API routes.
+	SetPrometheus(app)       // Set up Prometheus.
+	SetClusterRoutes(app)    // Cluster endpoints and ownership routing, must precede SetRoutes.
+	SetTierRoutes(app)       // Data tier / ILM endpoints and read-only guard, must precede SetRoutes.
+	SetSQLRoutes(app)        // ES SQL endpoints.
+	SetFleetRoutes(app)      // zedagent fleet endpoints.
+	SetSynonymsRoutes(app)   // Synonyms sets endpoints.
+	SetQueryRulesRoutes(app) // Query rules endpoints.
+	SetRoutes(app)           // Set up all API routes.
 }

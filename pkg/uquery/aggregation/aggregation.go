@@ -152,6 +152,35 @@ func Request(req zedaggregation.SearchAggregation, aggs map[string]meta.Aggregat
 				}
 			}
 			req.AddAggregation(name, subreq)
+		case agg.SignificantTerms != nil || agg.SignificantText != nil:
+			// collect foreground counts with a terms aggregation, the
+			// buckets are scored against the background by assoc.SignificantTerms
+			kind, sig := "significant_terms", agg.SignificantTerms
+			if sig == nil {
+				kind, sig = "significant_text", agg.SignificantText
+			}
+			var source int
+			prop, _ := mappings.GetProperty(sig.Field)
+			switch prop.Type {
+			case "text", "keyword":
+				source = zedaggregation.TextValueSource
+			case "numeric":
+				source = zedaggregation.NumericValueSource
+			case "bool", "boolean":
+				source = zedaggregation.BooleanValueSource
+			default:
+				return errors.New(
+					errors.ErrorTypeParsingException,
+					fmt.Sprintf("[%s] aggregation doesn't support values of type: [%s:[%s]]", kind, sig.Field, prop.Type),
+				)
+			}
+			subreq := zedaggregation.NewTermsAggregation(search.Field(sig.Field), source, sig.RequestSize())
+			if len(agg.Aggregations) > 0 {
+				if err := Request(subreq, agg.Aggregations, mappings); err != nil {
+					return err
+				}
+			}
+			req.AddAggregation(name, subreq)
 		case agg.Range != nil:
 			if len(agg.Range.Ranges) == 0 {
 				return errors.New(errors.ErrorTypeParsingException, "[range] aggregation needs ranges")

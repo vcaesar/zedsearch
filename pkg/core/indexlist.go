@@ -25,6 +25,7 @@ import (
 	"github.com/vcaesar/zedsearch/pkg/config"
 	"github.com/vcaesar/zedsearch/pkg/meta"
 	"github.com/vcaesar/zedsearch/pkg/metadata"
+	zedtoken "github.com/vcaesar/zedsearch/pkg/uquery/analysis/token"
 )
 
 var ZED_INDEX_LIST IndexList
@@ -35,6 +36,9 @@ type IndexList struct {
 }
 
 func init() {
+	// stored analysis may reference synonyms sets
+	zedtoken.SynonymSetLookup = LookupSynonymSet
+
 	// check version
 	version, _ := metadata.KV.Get("version")
 	if version == nil {

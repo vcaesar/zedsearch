@@ -12,7 +12,16 @@
 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 * See the License for the specific language governing permissions and
 * limitations under the License.
- */
+*
+Part of this work fall under the AtomAI Enterprise Edition (EE)
+and are licensed under the Business Source License 1.1,
+if you are the Cloud companies or your companies with revenue greater than $1M,
+please refer to [AGPL-3.0](./LICENSE-AGPL)) and [LICENSE-EE](LICENSE-EE) for details,
+and production use of the Licensed Work requires a commercial license agreement with Zedsearch.
+Contact info@atomai.cc for licensing.
+
+The other parts of this work are licensed under the [Apache license](./LICENSE).
+*/
 
 package meta
 
@@ -32,6 +41,8 @@ type ZedQuery struct {
 	Size           int                     `json:"size"`
 	Timeout        int                     `json:"timeout"`
 	TrackTotalHits bool                    `json:"track_total_hits"`
+	Rescore        interface{}             `json:"rescore,omitempty"` // one rescorer or an array, applied in order
+	Suggest        map[string]interface{}  `json:"suggest,omitempty"` // {"text": global, "name": {term|phrase|completion}}
 }
 
 type ZedQueryForSDK struct {
@@ -50,7 +61,7 @@ type ZedQueryForSDK struct {
 
 type Query struct {
 	Bool              *BoolQuery                         `json:"bool,omitempty"`                // .
-	Boosting          *BoostingQuery                     `json:"boosting,omitempty"`            // TODO: not implemented
+	Boosting          *BoostingQuery                     `json:"boosting,omitempty"`            // .
 	Match             map[string]*MatchQuery             `json:"match,omitempty"`               // simple, MatchQuery
 	MatchBoolPrefix   map[string]*MatchBoolPrefixQuery   `json:"match_bool_prefix,omitempty"`   // simple, MatchBoolPrefixQuery
 	MatchPhrase       map[string]*MatchPhraseQuery       `json:"match_phrase,omitempty"`        // simple, MatchPhraseQuery
@@ -366,6 +377,8 @@ type Aggregations struct {
 	Missing           *AggregationMetric            `json:"missing"`
 	Cardinality       *AggregationMetric            `json:"cardinality"`
 	Terms             *AggregationsTerms            `json:"terms"`
+	SignificantTerms  *AggregationSignificantTerms  `json:"significant_terms"`
+	SignificantText   *AggregationSignificantTerms  `json:"significant_text"`
 	Range             *AggregationRange             `json:"range"`
 	DateRange         *AggregationDateRange         `json:"date_range"`
 	Histogram         *AggregationHistogram         `json:"histogram"`
