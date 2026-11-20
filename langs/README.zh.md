@@ -55,17 +55,25 @@ docker run -d --name zedsearch -p 4080:4080 \
 
 # 特性：
 
-go + gin + react
+go + gin（或使用 `-tags fiber` 切换为 fiber v3）+ react
 
-1. 提供全文索引能力
-2. 单个二进制文件即可安装和运行。Releases 中提供多个平台的二进制文件。
-3. 使用 React 编写的数据查询 Web UI（嵌入在二进制文件中）
-4. 兼容 Elasticsearch 的数据写入 API（单条记录和批量 API）
-5. 开箱即用的身份认证
-6. 无模式（Schema less）—— 无需预先定义 schema，同一索引中的不同文档可以拥有不同的字段。
-7. 索引存储在磁盘上
-8. 支持聚合
-9. 可选启用的[日志索引](../pkg/logs/README.md)，支持事件时间规范化和日志搜索默认配置
+1. 查询速度快，索引文件更小
+2. 提供全文索引和向量索引能力
+3. 单个二进制文件即可安装和运行。Releases 中提供多个平台的二进制文件。
+4. 使用 React 编写的数据查询 Web UI（嵌入在二进制文件中）
+5. 兼容 Elasticsearch 的数据写入 API（单条记录和批量 API）
+6. 开箱即用的身份认证
+7. 无模式（Schema less）—— 无需预先定义 schema，同一索引中的不同文档可以拥有不同的字段。
+8. 索引可存储在磁盘、S3、MinIO 等
+9. 支持聚合及完整的 Elasticsearch 功能
+10. 多语言支持，支持中日韩（CJK）
+11. 可选启用的[日志索引](../pkg/logs/README.md)，支持事件时间规范化和日志搜索默认配置，可写入 JSON、Splunk HEC、Loki、OTLP/HTTP JSON（兼容 OpenObserve）及 Logstash 事件
+12. kNN 向量搜索和地理查询（`geo_distance`、`geo_bounding_box`、`geo_polygon`、`geo_shape`）
+13. Elasticsearch SQL API（`/es/_sql`、`/es/_sql/translate`），并支持将 MySQL `CREATE TABLE` [schema 用作 mappings](../docs/sql-mappings.md)
+14. 高可用[集群](../pkg/cluster/README.md)：基于 etcd 协调的分区所有权、带 fencing 的切换、副本以及 scatter-gather 搜索
+15. 通过 OTLP/HTTP 导出 OpenTelemetry 追踪（`zed_tracing_enable`）；每个请求都有跨节点传递的 `X-Trace-Id`
+16. Fleet 与 `zedagent`（`agent/`）：注册 agent、管理策略、采集日志文件和系统指标，也可独立运行 agent
+17. 遵循 robots 的[网页爬虫](../pkg/crawler/README.md)（`cmd/zedcrawl`），支持 PageRank 并批量写入 ZedSearch
 
 # 基准测试
 

@@ -55,17 +55,25 @@ Elasticsearch は非常に優れた製品ですが、複雑で多くのリソー
 
 # 機能：
 
-go + gin + react
+go + gin（`-tags fiber` で fiber v3 に切り替え可能）+ react
 
-1. 全文インデックス機能を提供
-2. インストールと実行は単一バイナリで完結。複数プラットフォーム向けのバイナリを Releases で提供。
-3. データをクエリするための React 製 Web UI（バイナリに埋め込み）
-4. データ取り込み用の Elasticsearch 互換 API（単一レコードおよびバルク API）
-5. すぐに使える認証機能
-6. スキーマレス - 事前にスキーマを定義する必要がなく、同じインデックス内の異なるドキュメントが異なるフィールドを持てます。
-7. インデックスはディスクに保存
-8. 集計（aggregation）のサポート
-9. イベント時刻の正規化とログ検索のデフォルト設定を備えた、オプトインの[ログインデックス](../pkg/logs/README.md)
+1. 高速なクエリと小さなインデックスファイル
+2. 全文インデックスとベクトルインデックス機能を提供
+3. インストールと実行は単一バイナリで完結。複数プラットフォーム向けのバイナリを Releases で提供。
+4. データをクエリするための React 製 Web UI（バイナリに埋め込み）
+5. データ取り込み用の Elasticsearch 互換 API（単一レコードおよびバルク API）
+6. すぐに使える認証機能
+7. スキーマレス - 事前にスキーマを定義する必要がなく、同じインデックス内の異なるドキュメントが異なるフィールドを持てます。
+8. インデックスはディスク、S3、MinIO などに保存可能
+9. 集計（aggregation）と Elasticsearch の豊富な機能をサポート
+10. 多言語対応、CJK（中国語・日本語・韓国語）をサポート
+11. イベント時刻の正規化とログ検索のデフォルト設定を備え、JSON、Splunk HEC、Loki、OTLP/HTTP JSON（OpenObserve 互換）および Logstash のイベントを取り込める、オプトインの[ログインデックス](../pkg/logs/README.md)
+12. kNN ベクトル検索と地理クエリ（`geo_distance`、`geo_bounding_box`、`geo_polygon`、`geo_shape`）
+13. Elasticsearch SQL API（`/es/_sql`、`/es/_sql/translate`）と、MySQL の `CREATE TABLE` [スキーマをマッピングとして利用](../docs/sql-mappings.md)
+14. 高可用性[クラスター](../pkg/cluster/README.md)：etcd で調整されるパーティション所有権、フェンシング付きハンドオフ、レプリカ、scatter-gather 検索
+15. OTLP/HTTP による OpenTelemetry トレーシング（`zed_tracing_enable`）。すべてのリクエストにノードをまたいで引き継がれる `X-Trace-Id` を付与
+16. Fleet と `zedagent`（`agent/`）：エージェントの登録、ポリシー管理、ログファイルとシステムメトリクスの送信、スタンドアロン実行にも対応
+17. robots.txt を尊重する[Web クローラー](../pkg/crawler/README.md)（`cmd/zedcrawl`）、PageRank 計算と ZedSearch へのバルク投入に対応
 
 # ベンチマーク
 

@@ -55,62 +55,70 @@ While Elasticsearch is a very good product, it is complex and requires lots of r
 
 # Features:
 
-go + gin + react
+go + gin (or fiber v3 with `-tags fiber`) + react
 
-1. Provides full text indexing capability
-2. Single binary for installation and running. Binaries available under releases for multiple platforms.
-3. Web UI for querying data written in React (embedded in the binary)
-4. Compatibility with Elasticsearch APIs for ingestion of data (single record and bulk API)
-5. Out of the box authentication
-6. Schema less - No need to define schema upfront and different documents in the same index can have different fields.
-7. Index storage in disk
-8. aggregation support
-9. Opt-in [logs indexes](./pkg/logs/README.md) with event-time normalization and log search defaults
+1. Fast queries and smaller index files
+1. Provides full text and vector indexing capability
+1. Single binary for installation and running. Binaries available under releases for multiple platforms.
+1. Web UI for querying data written in React (embedded in the binary)
+1. Compatibility with Elasticsearch APIs for ingestion of data (single record and bulk API)
+1. Out of the box authentication
+1. Schema less - No need to define schema upfront and different documents in the same index can have different fields.
+1. Index storage in disk, s3, minio and others
+1. aggregation and full Elasticsearch features support
+1. multi languages support, support CJK
+1. Opt-in [logs indexes](./pkg/logs/README.md) with event-time normalization and log search defaults, ingesting JSON, Splunk HEC, Loki and OTLP/HTTP JSON (OpenObserve-compatible) and Logstash events
+1. kNN vector search and geo queries (`geo_distance`, `geo_bounding_box`, `geo_polygon`, `geo_shape`)
+1. Elasticsearch SQL API (`/es/_sql`, `/es/_sql/translate`) and MySQL `CREATE TABLE` [schemas as mappings](./docs/sql-mappings.md)
+1. High-availability [cluster](./pkg/cluster/README.md): etcd-coordinated partition ownership, fenced handoff, replicas and scatter-gather search
+1. OpenTelemetry tracing over OTLP/HTTP (`zed_tracing_enable`); every request gets an `X-Trace-Id` that follows it across nodes
+1. Fleet and `zedagent` (`agent/`): enroll agents, manage policies, ship log files and system metrics, or run the agent standalone
+1. Robots-aware [web crawler](./pkg/crawler/README.md) (`cmd/zedcrawl`) with PageRank and bulk indexing into ZedSearch
 
 # Benchmarks
 
 Seven search-application queries over 50,000 documents, top 10 plus the exact total, on a MacBook Pro M1 with every server in Docker: a filtered term query, an OR over two fields, a sort by price over all documents, page 101, a terms and a histogram aggregation, and highlighting. Lower is better, except QPS; "—" means the engine cannot express the query (Meilisearch has no numeric histogram, OpenObserve does not highlight).
 
-| Query | ZedSearch | ZincSearch 0.4.10 | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 | OpenObserve 1.1 |
-|---|---:|---:|---:|---:|---:|---:|
-| `filtered` (1 client) | **0.89 ms** | 3.43 ms | 1.38 ms | 1.44 ms | 1.87 ms | 9.44 ms |
-| `filtered` (8 clients) | **3,216 QPS** | 471 QPS | 2,742 QPS | 3,066 QPS | 1,924 QPS | 321 QPS |
-| `sort_price` (50k docs) | **0.74 ms** | 76.0 ms | 2.52 ms | 1.58 ms | 1.09 ms | 4.40 ms |
-| `multi_field` title + body | **0.63 ms** | 2.04 ms | 1.44 ms | 1.51 ms | 1.19 ms | 21.0 ms |
-| `deep_page` from 1000 | **1.24 ms** | 3.40 ms | 1.42 ms | 1.47 ms | 12.7 ms | 18.1 ms |
-| `agg_terms` `category` | **1.48 ms** | 5.55 ms | 1.66 ms | 2.12 ms | 1.63 ms | 18.6 ms |
-| `agg_histogram` `price` | **1.00 ms** | 20.1 ms | 1.67 ms | 1.72 ms | — | 18.7 ms |
-| `highlight` `body` | **0.81 ms** | 2.27 ms | 1.96 ms | 1.97 ms | 1.92 ms | — |
+| Query                      |     ZedSearch | ZincSearch 0.4.10 | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 | OpenObserve 1.1 |
+| -------------------------- | ------------: | ----------------: | ----------------: | -------------: | ---------------: | --------------: |
+| `filtered` (1 client)      |   **0.89 ms** |           3.43 ms |           1.38 ms |        1.44 ms |          1.87 ms |         9.44 ms |
+| `filtered` (8 clients)     | **3,216 QPS** |           471 QPS |         2,742 QPS |      3,066 QPS |        1,924 QPS |         321 QPS |
+| `sort_price` (50k docs)    |   **0.74 ms** |           76.0 ms |           2.52 ms |        1.58 ms |          1.09 ms |         4.40 ms |
+| `multi_field` title + body |   **0.63 ms** |           2.04 ms |           1.44 ms |        1.51 ms |          1.19 ms |         21.0 ms |
+| `deep_page` from 1000      |   **1.24 ms** |           3.40 ms |           1.42 ms |        1.47 ms |          12.7 ms |         18.1 ms |
+| `agg_terms` `category`     |   **1.48 ms** |           5.55 ms |           1.66 ms |        2.12 ms |          1.63 ms |         18.6 ms |
+| `agg_histogram` `price`    |   **1.00 ms** |           20.1 ms |           1.67 ms |        1.72 ms |                — |         18.7 ms |
+| `highlight` `body`         |   **0.81 ms** |           2.27 ms |           1.96 ms |        1.97 ms |          1.92 ms |               — |
 
 ### Single queries (v2)
 
 The v2 queries from the same sessions, one query type each. Meilisearch cannot express OR or exact phrases.
 
-| Query | ZedSearch | ZincSearch 0.4.10 | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 | OpenObserve 1.1 |
-|---|---:|---:|---:|---:|---:|---:|
-| `term` rare | **0.50 ms** | 1.03 ms | 1.43 ms | 1.16 ms | 1.14 ms | 15.7 ms |
-| `term` mid | **0.58 ms** | 1.82 ms | 1.28 ms | 1.27 ms | 1.16 ms | 17.6 ms |
-| `term` keyword | **0.57 ms** | 0.82 ms | 1.75 ms | 2.32 ms | 1.03 ms | 5.59 ms |
-| `bool` should | **0.63 ms** | 1.12 ms | 1.61 ms | 1.75 ms | — | 26.7 ms |
-| `bool` must | **1.01 ms** | 1.79 ms | 2.36 ms | 3.30 ms | 1.28 ms | 24.1 ms |
-| `range` | **0.64 ms** | 2.56 ms | 1.32 ms | 1.28 ms | 1.32 ms | 5.31 ms |
-| `match_all` | **0.66 ms** | 4.12 ms | 1.48 ms | 1.38 ms | 1.03 ms | 4.68 ms |
-| `prefix` `w1*` | **0.71 ms** | 214.5 ms | 1.87 ms | 2.66 ms | 1.32 ms | 11.9 ms |
-| `match_phrase` | **10.3 ms** | 55.6 ms | 12.7 ms | 12.6 ms | — | 16.3 ms |
-| `bool` should (8 clients) | **5,179 QPS** | 1,292 QPS | 2,707 QPS | 2,616 QPS | — | 131 QPS |
+| Query                     |     ZedSearch | ZincSearch 0.4.10 | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 | OpenObserve 1.1 |
+| ------------------------- | ------------: | ----------------: | ----------------: | -------------: | ---------------: | --------------: |
+| `term` rare               |   **0.50 ms** |           1.03 ms |           1.43 ms |        1.16 ms |          1.14 ms |         15.7 ms |
+| `term` mid                |   **0.58 ms** |           1.82 ms |           1.28 ms |        1.27 ms |          1.16 ms |         17.6 ms |
+| `term` keyword            |   **0.57 ms** |           0.82 ms |           1.75 ms |        2.32 ms |          1.03 ms |         5.59 ms |
+| `bool` should             |   **0.63 ms** |           1.12 ms |           1.61 ms |        1.75 ms |                — |         26.7 ms |
+| `bool` must               |   **1.01 ms** |           1.79 ms |           2.36 ms |        3.30 ms |          1.28 ms |         24.1 ms |
+| `range`                   |   **0.64 ms** |           2.56 ms |           1.32 ms |        1.28 ms |          1.32 ms |         5.31 ms |
+| `match_all`               |   **0.66 ms** |           4.12 ms |           1.48 ms |        1.38 ms |          1.03 ms |         4.68 ms |
+| `prefix` `w1*`            |   **0.71 ms** |          214.5 ms |           1.87 ms |        2.66 ms |          1.32 ms |         11.9 ms |
+| `match_phrase`            |   **10.3 ms** |           55.6 ms |           12.7 ms |        12.6 ms |                — |         16.3 ms |
+| `bool` should (8 clients) | **5,179 QPS** |         1,292 QPS |         2,707 QPS |      2,616 QPS |                — |         131 QPS |
 
 ### Footprint
 
 Docker image (uncompressed), text index of the same 50,000 documents (about 25 MB for ZedSearch, Elasticsearch and OpenSearch after `_flush`), and memory / CPU over the whole run (100% = 1 vCPU), the data is the median of three runs.
 
-| Resource | ZedSearch | ZincSearch 0.4.10 | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 | OpenObserve 1.1 |
-|---|---:|---:|---:|---:|---:|---:|
-| Docker image | **56.4 MB** | 72.4 MB | 1,195 MB | 1,311 MB | 370 MB | 434 MB |
-| Text index, 50k docs | 25.9 MB | 133.3 MB | 25.8 MB | 25.7 MB | 454 MB | 14.2 MB (Not indexed) |
-| Memory idle | **14 MiB** | 64 MiB | 2,674 MiB | 2,699 MiB | 179 MiB | 387 MiB |
-| Memory peak | **388 MiB** | 858 MiB | 3,185 MiB | 3,191 MiB | 1,014 MiB | 919 MiB |
-| CPU mean | **134%** | 366% | 157% | 156% | 230% | 140% |
-| CPU peak | 553% | 710% | 620% | 529% | 545% | **519%** |
+| Resource             |   ZedSearch | ZincSearch 0.4.10 | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 |       OpenObserve 1.1 |
+| -------------------- | ----------: | ----------------: | ----------------: | -------------: | ---------------: | --------------------: |
+| Docker image         | **56.4 MB** |           72.4 MB |          1,195 MB |       1,311 MB |           370 MB |                434 MB |
+| Text index, 50k docs |     25.9 MB |          133.3 MB |           25.8 MB |        25.7 MB |           454 MB | 14.2 MB (Not indexed) |
+| Memory idle          |  **14 MiB** |            64 MiB |         2,674 MiB |      2,699 MiB |          179 MiB |               387 MiB |
+| Memory peak          | **388 MiB** |           858 MiB |         3,185 MiB |      3,191 MiB |        1,014 MiB |               919 MiB |
+| CPU mean             |    **134%** |              366% |              157% |           156% |             230% |                  140% |
+| CPU peak             |        553% |              710% |              620% |           529% |             545% |              **519%** |
 
 # Documentation
 

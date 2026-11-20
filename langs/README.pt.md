@@ -55,17 +55,25 @@ Embora o Elasticsearch seja um produto muito bom, ele é complexo, exige muitos 
 
 # Recursos:
 
-go + gin + react
+go + gin (ou fiber v3 com `-tags fiber`) + react
 
-1. Oferece capacidade de indexação de texto completo
-2. Binário único para instalação e execução. Binários disponíveis nas releases para várias plataformas.
-3. Interface web para consultar dados escrita em React (embutida no binário)
-4. Compatibilidade com as APIs do Elasticsearch para ingestão de dados (API de registro único e bulk)
-5. Autenticação pronta para uso
-6. Sem esquema - não é necessário definir um esquema antecipadamente e documentos diferentes no mesmo índice podem ter campos diferentes.
-7. Armazenamento de índices em disco
-8. Suporte a agregações
-9. [Índices de logs](../pkg/logs/README.md) opcionais com normalização do horário do evento e padrões para busca em logs
+1. Consultas rápidas e arquivos de índice menores
+2. Oferece capacidade de indexação de texto completo e vetorial
+3. Binário único para instalação e execução. Binários disponíveis nas releases para várias plataformas.
+4. Interface web para consultar dados escrita em React (embutida no binário)
+5. Compatibilidade com as APIs do Elasticsearch para ingestão de dados (API de registro único e bulk)
+6. Autenticação pronta para uso
+7. Sem esquema - não é necessário definir um esquema antecipadamente e documentos diferentes no mesmo índice podem ter campos diferentes.
+8. Armazenamento de índices em disco, S3, MinIO e outros
+9. Suporte a agregações e aos recursos completos do Elasticsearch
+10. Suporte a vários idiomas, incluindo CJK
+11. [Índices de logs](../pkg/logs/README.md) opcionais com normalização do horário do evento e padrões para busca em logs, com ingestão de JSON, Splunk HEC, Loki e OTLP/HTTP JSON (compatível com OpenObserve) e eventos do Logstash
+12. Busca vetorial kNN e consultas geográficas (`geo_distance`, `geo_bounding_box`, `geo_polygon`, `geo_shape`)
+13. API SQL do Elasticsearch (`/es/_sql`, `/es/_sql/translate`) e [esquemas MySQL `CREATE TABLE` como mappings](../docs/sql-mappings.md)
+14. [Cluster](../pkg/cluster/README.md) de alta disponibilidade: propriedade de partições coordenada pelo etcd, transferência com fencing, réplicas e busca scatter-gather
+15. Rastreamento OpenTelemetry via OTLP/HTTP (`zed_tracing_enable`); cada requisição recebe um `X-Trace-Id` que a acompanha entre os nós
+16. Fleet e `zedagent` (`agent/`): registro de agentes, gestão de políticas, envio de arquivos de log e métricas do sistema, ou agente autônomo
+17. [Crawler web](../pkg/crawler/README.md) que respeita robots.txt (`cmd/zedcrawl`), com PageRank e indexação bulk no ZedSearch
 
 # Benchmarks
 
