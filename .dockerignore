@@ -10,4 +10,13 @@ miniodata
 test/tmp
 test/logs
 test/v0
+test/zedsearch-web*
+test0
+.v0
+v0
+.codg
+# mysearch
+*.out
+# Runtime config may hold credentials; it is never part of an image.
+**/conf/zed.toml
 
