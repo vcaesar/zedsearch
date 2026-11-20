@@ -17,6 +17,7 @@ package cluster
 
 import (
 	"math"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -26,6 +27,8 @@ import (
 
 	"github.com/vcaesar/zedsearch/pkg/config"
 	"github.com/vcaesar/zedsearch/pkg/meta"
+	"github.com/vcaesar/zedsearch/pkg/uquery/aggregation"
+	"github.com/vcaesar/zedsearch/pkg/uquery/source"
 	"github.com/vcaesar/zedsearch/pkg/zutils/json"
 )
 
@@ -49,13 +52,17 @@ func ScatterQuery(query *meta.ZedQuery) *meta.ZedQuery {
 
 // scatterAggs copies defs with every terms size raised to Elasticsearch's
 // shard_size default, size * 1.5 + 10, and every top_hits asked for its
-// whole window: the merge applies from.
+// whole window and its sort field: the merge applies from and orders by it.
+// Pipelines are left out, they read the merged buckets.
 func scatterAggs(defs map[string]meta.Aggregations) map[string]meta.Aggregations {
 	if len(defs) == 0 {
 		return defs
 	}
 	out := make(map[string]meta.Aggregations, len(defs))
 	for name, def := range defs {
+		if isPipeline(def) {
+			continue
+		}
 		switch {
 		case def.Terms != nil:
 			terms := *def.Terms
@@ -65,15 +72,54 @@ func scatterAggs(defs map[string]meta.Aggregations) map[string]meta.Aggregations
 			terms := *def.MultiTerms
 			terms.Size = termsSize(def)*3/2 + 10
 			def.MultiTerms = &terms
-		case def.TopHits != nil && def.TopHits.From > 0 && def.TopHits.Size >= 0:
-			hits := *def.TopHits
-			hits.From, hits.Size = 0, def.TopHits.From+topHitsSize(def.TopHits)
-			def.TopHits = &hits
+		case def.TopHits != nil:
+			def.TopHits = scatterTopHits(def.TopHits)
 		}
 		def.Aggregations = scatterAggs(def.Aggregations)
 		out[name] = def
 	}
 	return out
+}
+
+// scatterTopHits is the top_hits an owner runs, def itself when the merge
+// needs nothing more than was asked for.
+func scatterTopHits(def *meta.AggregationTopHits) *meta.AggregationTopHits {
+	fields, widened := sortSource(def)
+	paged := def.From > 0 && def.Size >= 0
+	if !widened && !paged {
+		return def
+	}
+	hits := *def
+	if paged {
+		hits.From, hits.Size = 0, def.From+topHitsSize(def)
+	}
+	if widened {
+		hits.Source = fields
+	}
+	return &hits
+}
+
+// sortSource is the _source an owner returns for a top_hits sorted by a
+// field its _source leaves out: the hits carry no sort values, the merge
+// reads the field from _source and then filters _source as asked. False
+// when the field is there anyway.
+func sortSource(def *meta.AggregationTopHits) ([]interface{}, bool) {
+	field, _, _ := parseSort(def.Sort)
+	if field == "" || field == "_score" {
+		return nil, false
+	}
+	switch fields := def.Source.(type) {
+	case bool:
+		if !fields {
+			return []interface{}{field}, true
+		}
+	case []interface{}:
+		// an empty list is the whole _source
+		if len(fields) > 0 && !slices.Contains(fields, interface{}(field)) {
+			return append(slices.Clone(fields), field), true
+		}
+	}
+	return nil, false
 }
 
 // topHitsSize is the number of hits a top_hits returns, the default included.
@@ -92,7 +138,8 @@ func topHitsSize(def *meta.AggregationTopHits) int {
 // taken from the original query, which the owners ran as ScatterQuery.
 // Aggregations that cannot be merged exactly (cardinality, percentiles)
 // keep the first node's value and are logged, they are approximations
-// across nodes.
+// across nodes. Pipeline aggregations are evaluated here, over the merged
+// buckets.
 func MergeSearch(responses []*meta.SearchResponse, query *meta.ZedQuery) *meta.SearchResponse {
 	out := &meta.SearchResponse{Hits: meta.Hits{Hits: []meta.Hit{}}}
 	aggs := make(map[string]map[string]interface{})
@@ -144,8 +191,78 @@ func MergeSearch(responses []*meta.SearchResponse, query *meta.ZedQuery) *meta.S
 			finishAgg(aggs[name], aggDef(query, name))
 			out.Aggregations[name] = aggFromGeneric(aggs[name])
 		}
+		if query != nil && hasPipeline(query.Aggregations) {
+			nodeForm(out.Aggregations, query.Aggregations)
+			// as on a single node, a pipeline that fails is left out
+			if err := aggregation.ApplyPipelines(out.Aggregations, query.Aggregations); err != nil {
+				log.Error().Err(err).Msg("cluster: apply pipeline aggregations")
+			}
+		}
 	}
 	return out
+}
+
+// isPipeline reports whether def reads the buckets of other aggregations
+// instead of documents. An owner only has its own buckets, before the merge
+// ordered and cut them, so pipelines run once, in MergeSearch.
+func isPipeline(def meta.Aggregations) bool {
+	return def.AvgBucket != nil || def.SumBucket != nil || def.MinBucket != nil || def.MaxBucket != nil ||
+		def.StatsBucket != nil || def.CumulativeSum != nil || def.Derivative != nil || def.SerialDiff != nil ||
+		def.MovingFn != nil || def.BucketScript != nil || def.BucketSelector != nil || def.BucketSort != nil
+}
+
+func hasPipeline(defs map[string]meta.Aggregations) bool {
+	for _, def := range defs {
+		if isPipeline(def) || hasPipeline(def.Aggregations) {
+			return true
+		}
+	}
+	return false
+}
+
+// nodeForm renders merged aggregations the way a node does, which is what
+// ApplyPipelines reads: bucket lists as maps, the sub-aggregations of a
+// bucket typed.
+func nodeForm(aggs map[string]meta.AggregationResponse, defs map[string]meta.Aggregations) {
+	for name, def := range defs {
+		agg, ok := aggs[name]
+		if !ok {
+			continue
+		}
+		switch buckets := agg.Buckets.(type) {
+		case []interface{}:
+			list := make([]map[string]interface{}, 0, len(buckets))
+			for _, value := range buckets {
+				bucket, ok := value.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				subs := make(map[string]meta.AggregationResponse, len(def.Aggregations))
+				for sub := range def.Aggregations {
+					if generic, ok := bucket[sub].(map[string]interface{}); ok {
+						subs[sub] = aggFromGeneric(generic)
+					}
+				}
+				nodeForm(subs, def.Aggregations)
+				for sub, typed := range subs {
+					bucket[sub] = typed
+				}
+				list = append(list, bucket)
+			}
+			agg.Buckets = list
+		case map[string]interface{}: // filters
+			for key, value := range buckets {
+				if generic, ok := value.(map[string]interface{}); ok {
+					bucket := aggFromGeneric(generic)
+					nodeForm(bucket.Aggregations, def.Aggregations)
+					buckets[key] = bucket
+				}
+			}
+		default: // a single bucket: filter, nested, ...
+			nodeForm(agg.Aggregations, def.Aggregations)
+		}
+		aggs[name] = agg
+	}
 }
 
 // stripPartial removes the internal averaging counters, they are of no
@@ -440,8 +557,9 @@ func mergeTopHits(dst, src map[string]interface{}) {
 
 // windowTopHits orders the pooled hits like the nodes do, by score or by
 // the single sort field, and cuts them to the requested window. The hits
-// carry no sort values, the field is read from _source: hits without it
-// go last and keep the order they arrived in.
+// carry no sort values, the field is read from _source, which the owners
+// were asked to return it in: hits without it go last and keep the order
+// they arrived in.
 func windowTopHits(agg map[string]interface{}, def *meta.AggregationTopHits) {
 	body, _ := agg["hits"].(map[string]interface{})
 	hits, ok := body["hits"].([]interface{})
@@ -464,13 +582,57 @@ func windowTopHits(agg map[string]interface{}, def *meta.AggregationTopHits) {
 		if !leftOK || !rightOK {
 			return leftOK && !rightOK
 		}
-		if cmp := compareValues(leftValue, rightValue); cmp != 0 {
+		if cmp := compareSource(leftValue, rightValue); cmp != 0 {
 			return (cmp > 0) == desc
 		}
 		return stringify(left["_id"]) < stringify(right["_id"])
 	})
 	from := min(max(def.From, 0), len(hits))
-	body["hits"] = hits[from:min(from+max(topHitsSize(def), 0), len(hits))]
+	hits = hits[from:min(from+max(topHitsSize(def), 0), len(hits))]
+	if _, widened := sortSource(def); widened {
+		filterSource(hits, def.Source)
+	}
+	body["hits"] = hits
+}
+
+// compareSource orders two _source values of a sort field like an owner
+// orders its doc values: text by bytes, so "10" is before "2", dates by
+// time and anything else like compareValues.
+func compareSource(left, right interface{}) int {
+	leftText, leftOK := left.(string)
+	rightText, rightOK := right.(string)
+	if !leftOK || !rightOK {
+		return compareValues(left, right)
+	}
+	leftTime, leftErr := time.Parse(time.RFC3339, leftText)
+	rightTime, rightErr := time.Parse(time.RFC3339, rightText)
+	if leftErr == nil && rightErr == nil {
+		return leftTime.Compare(rightTime)
+	}
+	return strings.Compare(leftText, rightText)
+}
+
+// filterSource cuts the _source of hits down to spec, the _source the
+// client asked for, like an owner does.
+func filterSource(hits []interface{}, spec interface{}) {
+	fields, err := source.Request(spec)
+	if err != nil {
+		return // not a _source an owner answers
+	}
+	for _, value := range hits {
+		hit, _ := value.(map[string]interface{})
+		doc, ok := hit["_source"]
+		if !ok {
+			continue
+		}
+		data, err := json.Marshal(doc)
+		if err != nil {
+			log.Error().Err(err).Msg("cluster: encode top_hits _source")
+			delete(hit, "_source") // never more than was asked for
+			continue
+		}
+		hit["_source"] = source.Response(fields, data)
+	}
 }
 
 // sourceValue reads a top level field of a _source, the first value of a list.

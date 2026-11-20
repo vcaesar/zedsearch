@@ -108,7 +108,8 @@ func (p *primary) opsFrom(from, to uint64) ([]Op, bool) {
 
 // trim drops operations every replica (or the bucket) already has, and
 // anything beyond retainOps or retainBytes: a replica that far behind
-// recovers from files.
+// recovers from files. The bucket has no such recovery, an operation it
+// lacks is kept until its upload succeeds.
 func (p *primary) trim(replicas []string) {
 	keep := p.seq
 	if p.remote {
@@ -118,7 +119,8 @@ func (p *primary) trim(replicas []string) {
 		keep = min(keep, p.acked[node])
 	}
 	drop := 0
-	for drop < len(p.ops) && (p.ops[drop].Seq <= keep || len(p.ops)-drop > retainOps || p.opsBytes > retainBytes) {
+	for drop < len(p.ops) && (p.ops[drop].Seq <= keep ||
+		!p.remote && (len(p.ops)-drop > retainOps || p.opsBytes > retainBytes)) {
 		p.opsBytes -= len(p.ops[drop].Entry)
 		drop++
 	}

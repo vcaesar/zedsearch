@@ -38,10 +38,13 @@ func TestTransportReusesConnections(t *testing.T) {
 
 	var dialed atomic.Int64
 	arrived := make(chan struct{}, burst)
-	release := make(chan struct{})
-	server := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	release := make(chan struct{}, burst)
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		arrived <- struct{}{}
-		<-release // hold the request so the burst needs one connection each
+		select {
+		case <-release: // hold the request so the burst needs one connection each
+		case <-r.Context().Done(): // the client gave up, server.Close must not wait for it
+		}
 	}))
 	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
 		if state == http.StateNew {
@@ -51,8 +54,9 @@ func TestTransportReusesConnections(t *testing.T) {
 	server.Start()
 	t.Cleanup(server.Close)
 
-	client := &http.Client{Transport: Transport()}
+	client := &http.Client{Transport: Transport(), Timeout: 10 * time.Second}
 	wave := func() {
+		failed := make(chan struct{}, burst)
 		var wg sync.WaitGroup
 		for range burst {
 			wg.Add(1)
@@ -60,6 +64,7 @@ func TestTransportReusesConnections(t *testing.T) {
 				defer wg.Done()
 				resp, err := client.Get(server.URL)
 				if !assert.NoError(t, err) {
+					failed <- struct{}{}
 					return
 				}
 				_, err = io.Copy(io.Discard, resp.Body)
@@ -67,8 +72,12 @@ func TestTransportReusesConnections(t *testing.T) {
 				assert.NoError(t, resp.Body.Close())
 			}()
 		}
+		// every request is held by the handler or failed: the timeout bounds both
 		for range burst {
-			<-arrived
+			select {
+			case <-arrived:
+			case <-failed:
+			}
 		}
 		for range burst {
 			release <- struct{}{}
