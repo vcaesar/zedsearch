@@ -49,7 +49,11 @@ var frontendAssets = zedsearch.GetFrontendAssets
 // SetRoutes sets up all HTTP API endpoints that can be called by front end
 func SetRoutes(r *zhttp.Engine) {
 	r.Use(CORS)
+	setRoutes(r)
+}
 
+// setRoutes registers the SetRoutes endpoints on r, which already uses CORS.
+func setRoutes(r *zhttp.Engine) {
 	r.GET("/version", meta.GetVersion)
 	r.GET("/healthz", meta.GetHealthz)
 

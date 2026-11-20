@@ -26,11 +26,15 @@ package core
 
 import (
 	"context"
+	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/vcaesar/riot"
 	"github.com/vcaesar/riot/analysis"
 
+	"github.com/vcaesar/zedsearch/pkg/config"
+	"github.com/vcaesar/zedsearch/pkg/errors"
 	"github.com/vcaesar/zedsearch/pkg/meta"
 	"github.com/vcaesar/zedsearch/pkg/metadata"
 	"github.com/vcaesar/zedsearch/pkg/uquery"
@@ -71,19 +75,72 @@ func prepareSearch(query *meta.ZedQuery, mappings *meta.Mappings, analyzers map[
 		return nil, err
 	}
 	if len(ext.rescorers) > 0 {
+		if !scoreSorted(query.Sort) {
+			return nil, errors.New(errors.ErrorTypeIllegalArgumentException, "[rescore] cannot be used with a [sort] other than [_score] descending")
+		}
+		window := uquery.RescoreWindow(ext.rescorers, query.From, query.Size)
+		if window > config.Global.MaxResults {
+			return nil, errors.New(errors.ErrorTypeIllegalArgumentException,
+				fmt.Sprintf("[rescore] from + size and window_size must be less than or equal to [%d] but was [%d]", config.Global.MaxResults, window))
+		}
 		ext.from, ext.size = query.From, query.Size
-		query.Size, query.From = uquery.RescoreWindow(ext.rescorers, query.From, query.Size), 0
+		query.Size, query.From = window, 0
 	}
 	return ext, nil
 }
 
+// restore gives the query back the page prepareSearch widened.
+func (ext *searchExt) restore() {
+	if len(ext.rescorers) > 0 {
+		ext.query.From, ext.query.Size = ext.from, ext.size
+	}
+}
+
+// scoreSorted reports whether sort orders hits by descending score only, the
+// order rescoring keeps.
+func scoreSorted(v interface{}) bool {
+	switch v := v.(type) {
+	case nil:
+		return true
+	case string:
+		return strings.TrimLeft(v, "+-") == "_score"
+	case []interface{}:
+		for _, item := range v {
+			if !scoreSorted(item) {
+				return false
+			}
+		}
+		return true
+	case map[string]interface{}:
+		if len(v) != 1 {
+			return false
+		}
+		order, ok := v["_score"]
+		if !ok {
+			return false
+		}
+		if m, isMap := order.(map[string]interface{}); isMap {
+			order = m["order"]
+		}
+		s, _ := order.(string)
+		return order == nil || strings.EqualFold(s, "desc")
+	}
+	return false
+}
+
 // finish rescores the hits of resp and adds suggestions and significant
 // terms. It runs before the readers are closed.
-func (ext *searchExt) finish(resp *meta.SearchResponse) error {
+func (ext *searchExt) finish(ctx context.Context, resp *meta.SearchResponse) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if len(ext.rescorers) > 0 {
-		if err := ext.rescore(resp); err != nil {
+		if err := ext.rescore(ctx, resp); err != nil {
 			return err
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if len(ext.query.Suggest) > 0 {
 		suggest, err := assoc.Suggest(ext.readers, ext.query.Suggest, ext.mappings, ext.analyzers)
@@ -91,6 +148,9 @@ func (ext *searchExt) finish(resp *meta.SearchResponse) error {
 			return err
 		}
 		resp.Suggest = suggest
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if len(ext.query.Aggregations) > 0 && resp.Aggregations != nil {
 		// #nosec G115 -- hit counts are non-negative
@@ -102,24 +162,29 @@ func (ext *searchExt) finish(resp *meta.SearchResponse) error {
 	return nil
 }
 
-// rescore applies each rescorer to its window of top hits, then cuts the
-// requested page.
-func (ext *searchExt) rescore(resp *meta.SearchResponse) error {
+// rescore applies each rescorer to its window of top hits, reorders all the
+// hits, as Elasticsearch weights the hits past the window by query_weight,
+// then cuts the requested page.
+func (ext *searchExt) rescore(ctx context.Context, resp *meta.SearchResponse) error {
 	hits := resp.Hits.Hits
 	for _, r := range ext.rescorers {
 		window := hits[:min(r.WindowSize, len(hits))]
 		if len(window) == 0 {
 			continue
 		}
-		scores, err := ext.scoreHits(r.Query, window)
+		scores, err := ext.scoreHits(ctx, r.Query, window)
 		if err != nil {
 			return err
 		}
-		for i := range window {
-			s, ok := scores[hitKey(window[i].Index, window[i].ID)]
-			window[i].Score = r.Combine(window[i].Score, s, ok)
+		for i := range hits {
+			if i >= len(window) {
+				hits[i].Score *= r.QueryWeight
+				continue
+			}
+			s, ok := scores[hitKey(hits[i].Index, hits[i].ID)]
+			hits[i].Score = r.Combine(hits[i].Score, s, ok)
 		}
-		sort.SliceStable(window, func(i, j int) bool { return window[i].Score > window[j].Score })
+		sort.SliceStable(hits, func(i, j int) bool { return hits[i].Score > hits[j].Score })
 	}
 	resp.Hits.MaxScore = 0
 	for _, h := range hits {
@@ -128,12 +193,11 @@ func (ext *searchExt) rescore(resp *meta.SearchResponse) error {
 	start := min(ext.from, len(hits))
 	end := min(start+ext.size, len(hits))
 	resp.Hits.Hits = hits[start:end]
-	ext.query.From, ext.query.Size = ext.from, ext.size
 	return nil
 }
 
 // scoreHits returns the score of rescore query q for each of hits matching it.
-func (ext *searchExt) scoreHits(q map[string]interface{}, hits []meta.Hit) (map[string]float64, error) {
+func (ext *searchExt) scoreHits(ctx context.Context, q map[string]interface{}, hits []meta.Hit) (map[string]float64, error) {
 	ids := make([]interface{}, len(hits))
 	for i, h := range hits {
 		ids[i] = h.ID
@@ -148,7 +212,7 @@ func (ext *searchExt) scoreHits(q map[string]interface{}, hits []meta.Hit) (map[
 	}
 	scores := make(map[string]float64, len(hits))
 	for _, reader := range ext.readers {
-		dmi, err := reader.Search(context.Background(), riot.NewTopNSearch(len(hits), parsed))
+		dmi, err := reader.Search(ctx, riot.NewTopNSearch(len(hits), parsed))
 		if err != nil {
 			return nil, err
 		}

@@ -109,7 +109,10 @@ func TestSignificantTerms_Search(t *testing.T) {
 			Aggregations: map[string]meta.Aggregations{"sig": {SignificantTerms: &meta.AggregationSignificantTerms{Field: "n", MinDocCount: intPtr(1), Percentage: &struct{}{}}}},
 		}}
 		resp := run(t, riot.NewMatchAllQuery(), aggs)
-		for _, b := range resp["by_tag"].Buckets.([]map[string]interface{}) {
+		buckets, ok := resp["by_tag"].Buckets.([]map[string]interface{})
+		require.True(t, ok, "%T", resp["by_tag"].Buckets)
+		require.NotEmpty(t, buckets)
+		for _, b := range buckets {
 			sig := b["sig"].(meta.AggregationResponse)
 			assert.Equal(t, b["doc_count"], *sig.DocCount)
 			assert.Equal(t, uint64(10), *sig.BgCount)
@@ -216,6 +219,104 @@ func TestSignificantTerms_Rewrite(t *testing.T) {
 		assert.Equal(t, []string{"dog", "lazy", "the", "fox", "quick"}, keys)
 	})
 
+	t.Run("no significance aggregation reads no reader", func(t *testing.T) {
+		// a nil reader panics on Count
+		nilReaders := []*riot.Reader{nil}
+		docCount := uint64(4)
+		resp := map[string]meta.AggregationResponse{
+			"plain":  {Value: 1.0},
+			"terms":  {Buckets: []map[string]interface{}{{"key": "a", "doc_count": uint64(4), "max": meta.AggregationResponse{Value: 2.0}}}},
+			"filter": {DocCount: &docCount, Aggregations: map[string]meta.AggregationResponse{"max": {Value: 3.0}}},
+		}
+		sub := map[string]meta.Aggregations{"max": {Max: &meta.AggregationMetric{Field: "n"}}}
+		req := map[string]meta.Aggregations{
+			"plain":  {Max: &meta.AggregationMetric{Field: "n"}},
+			"terms":  {Terms: &meta.AggregationsTerms{Field: "tag"}, Aggregations: sub},
+			"filter": {Filter: map[string]interface{}{}, Aggregations: sub},
+		}
+		assert.NotPanics(t, func() {
+			assert.NoError(t, SignificantTerms(nilReaders, resp, req, 10, testMappings(), nil))
+		})
+		assert.Equal(t, meta.AggregationResponse{Value: 1.0}, resp["plain"])
+	})
+
+	t.Run("background_filter alone reads no total", func(t *testing.T) {
+		calls := 0
+		s := &significance{readers: readers, mappings: testMappings(), total: func() (uint64, error) {
+			calls++
+			return totalDocs(readers)
+		}}
+		resp := map[string]meta.AggregationResponse{"sig": textResponse()}
+		req := map[string]meta.Aggregations{"sig": {SignificantText: &meta.AggregationSignificantTerms{Field: "body", MinDocCount: intPtr(1),
+			BackgroundFilter: map[string]interface{}{"match_all": map[string]interface{}{}}}}}
+		require.NoError(t, s.walk(resp, req, 4))
+		assert.Equal(t, 0, calls)
+	})
+
+	t.Run("background total is loaded once", func(t *testing.T) {
+		calls := 0
+		s := &significance{readers: readers, mappings: testMappings(), total: func() (uint64, error) {
+			calls++
+			return totalDocs(readers)
+		}}
+		inner := map[string]meta.Aggregations{"sig": {SignificantTerms: &meta.AggregationSignificantTerms{Field: "body", MinDocCount: intPtr(1)}}}
+		resp := map[string]meta.AggregationResponse{"terms": {Buckets: []map[string]interface{}{
+			{"key": "a", "doc_count": uint64(4), "sig": textResponse()},
+			{"key": "b", "doc_count": uint64(4), "sig": textResponse()},
+		}}}
+		req := map[string]meta.Aggregations{"terms": {Terms: &meta.AggregationsTerms{Field: "tag"}, Aggregations: inner}}
+		require.NoError(t, s.walk(resp, req, 10))
+		assert.Equal(t, 1, calls)
+		for _, b := range resp["terms"].Buckets.([]map[string]interface{}) {
+			assert.Equal(t, uint64(10), *b["sig"].(meta.AggregationResponse).BgCount)
+		}
+	})
+
+	t.Run("background total error", func(t *testing.T) {
+		s := &significance{readers: readers, mappings: testMappings(), total: func() (uint64, error) {
+			return 0, assert.AnError
+		}}
+		resp := map[string]meta.AggregationResponse{"sig": textResponse()}
+		req := map[string]meta.Aggregations{"sig": {SignificantText: &meta.AggregationSignificantTerms{Field: "body"}}}
+		assert.ErrorIs(t, s.walk(resp, req, 4), assert.AnError)
+	})
+
+	supersetTests := []struct {
+		name    string
+		sig     meta.AggregationSignificantTerms
+		fgSize  uint64
+		wantErr string
+	}{
+		{"chi_square term count above background", meta.AggregationSignificantTerms{Field: "body", MinDocCount: intPtr(1), ChiSquare: &meta.SignificanceHeuristic{},
+			BackgroundFilter: map[string]interface{}{"term": map[string]interface{}{"tag": "tech"}}}, 4, "background_is_superset: false"},
+		{"mutual_information term count above background", meta.AggregationSignificantTerms{Field: "body", MinDocCount: intPtr(1), MutualInformation: &meta.SignificanceHeuristic{},
+			BackgroundFilter: map[string]interface{}{"term": map[string]interface{}{"tag": "tech"}}}, 4, "background_is_superset: false"},
+		{"gnd foreground larger than background", meta.AggregationSignificantTerms{Field: "body", MinDocCount: intPtr(1), GND: &meta.SignificanceHeuristic{},
+			BackgroundFilter: map[string]interface{}{"term": map[string]interface{}{"tag": "food"}}}, 4, "background_is_superset: false"},
+		{"chi_square foreground larger than the index", meta.AggregationSignificantTerms{Field: "body", MinDocCount: intPtr(1), ChiSquare: &meta.SignificanceHeuristic{}}, 11, "background_is_superset: false"},
+		{"not superset accepts it", meta.AggregationSignificantTerms{Field: "body", MinDocCount: intPtr(1), ChiSquare: &meta.SignificanceHeuristic{BackgroundIsSuperset: boolPtr(false)},
+			BackgroundFilter: map[string]interface{}{"term": map[string]interface{}{"tag": "tech"}}}, 4, ""},
+		{"gnd not superset accepts it", meta.AggregationSignificantTerms{Field: "body", MinDocCount: intPtr(1), GND: &meta.SignificanceHeuristic{BackgroundIsSuperset: boolPtr(false)},
+			BackgroundFilter: map[string]interface{}{"term": map[string]interface{}{"tag": "food"}}}, 4, ""},
+		{"jlh has no superset check", meta.AggregationSignificantTerms{Field: "body", MinDocCount: intPtr(1),
+			BackgroundFilter: map[string]interface{}{"term": map[string]interface{}{"tag": "tech"}}}, 4, ""},
+		{"superset counts accepted", meta.AggregationSignificantTerms{Field: "body", MinDocCount: intPtr(1), ChiSquare: &meta.SignificanceHeuristic{}}, 4, ""},
+	}
+	for _, tt := range supersetTests {
+		t.Run(tt.name, func(t *testing.T) {
+			sig := tt.sig
+			resp := map[string]meta.AggregationResponse{"sig": textResponse()}
+			req := map[string]meta.Aggregations{"sig": {SignificantText: &sig}}
+			err := SignificantTerms(readers, resp, req, tt.fgSize, testMappings(), nil)
+			if tt.wantErr == "" {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+
 	t.Run("empty inputs", func(t *testing.T) {
 		assert.NoError(t, SignificantTerms(readers, nil, nil, 0, nil, nil))
 		resp := map[string]meta.AggregationResponse{"sig": {}}
@@ -294,8 +395,15 @@ func TestHeuristics(t *testing.T) {
 		h := &meta.SignificanceHeuristic{BackgroundIsSuperset: boolPtr(false)}
 		assert.False(t, superset(h))
 		assert.True(t, superset(&meta.SignificanceHeuristic{}))
-		score, err := sigHeuristic("significant_terms", &meta.AggregationSignificantTerms{ChiSquare: h})
+		score, isSuperset, err := sigHeuristic("significant_terms", &meta.AggregationSignificantTerms{ChiSquare: h})
 		require.NoError(t, err)
+		assert.False(t, isSuperset)
 		assert.InDelta(t, 14.0*16/1920, score(2, 4, 4, 10), 1e-12)
+		_, isSuperset, err = sigHeuristic("significant_terms", &meta.AggregationSignificantTerms{GND: &meta.SignificanceHeuristic{}})
+		require.NoError(t, err)
+		assert.True(t, isSuperset)
+		_, isSuperset, err = sigHeuristic("significant_terms", &meta.AggregationSignificantTerms{})
+		require.NoError(t, err)
+		assert.False(t, isSuperset)
 	})
 }

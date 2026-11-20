@@ -19,6 +19,7 @@ package aggregation
 import (
 	"fmt"
 	"math"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -159,15 +160,30 @@ func Request(req zedaggregation.SearchAggregation, aggs map[string]meta.Aggregat
 			if sig == nil {
 				kind, sig = "significant_text", agg.SignificantText
 			}
+			if len(sig.SourceFields) > 0 {
+				return errors.New(errors.ErrorTypeNotImplemented, fmt.Sprintf("[%s] source_fields is not supported", kind))
+			}
+			if sig.FilterDuplicateText {
+				return errors.New(errors.ErrorTypeNotImplemented, fmt.Sprintf("[%s] filter_duplicate_text is not supported", kind))
+			}
+			if sig.Size < 0 || sig.Size > meta.MaxSignificantTermsSize {
+				return errors.New(errors.ErrorTypeParsingException, fmt.Sprintf("[%s] size must be in [0, %d]", kind, meta.MaxSignificantTermsSize))
+			}
+			if sig.ShardSize < 0 || sig.ShardSize > meta.MaxSignificantTermsSize {
+				return errors.New(errors.ErrorTypeParsingException, fmt.Sprintf("[%s] shard_size must be in [0, %d]", kind, meta.MaxSignificantTermsSize))
+			}
+			if _, ok := agg.Aggregations["count"]; ok {
+				// the terms collector counts the bucket documents under "count"
+				return errors.New(errors.ErrorTypeParsingException, fmt.Sprintf("[%s] sub aggregation name [count] is reserved", kind))
+			}
 			var source int
 			prop, _ := mappings.GetProperty(sig.Field)
 			switch prop.Type {
-			case "text", "keyword":
-				source = zedaggregation.TextValueSource
+			case "text", "keyword", "bool", "boolean":
+				// bool values are written as "true" / "false" keywords
+				source = zedaggregation.TextValuesSource
 			case "numeric":
 				source = zedaggregation.NumericValueSource
-			case "bool", "boolean":
-				source = zedaggregation.BooleanValueSource
 			default:
 				return errors.New(
 					errors.ErrorTypeParsingException,
@@ -175,6 +191,13 @@ func Request(req zedaggregation.SearchAggregation, aggs map[string]meta.Aggregat
 				)
 			}
 			subreq := zedaggregation.NewTermsAggregation(search.Field(sig.Field), source, sig.RequestSize())
+			keep, err := significantKeyFilter(kind, sig)
+			if err != nil {
+				return err
+			}
+			if keep != nil {
+				subreq.SetKeyFilter(keep)
+			}
 			if len(agg.Aggregations) > 0 {
 				if err := Request(subreq, agg.Aggregations, mappings); err != nil {
 					return err
@@ -614,6 +637,55 @@ func topHitsAggregation(agg *meta.AggregationTopHits, mappings *meta.Mappings) (
 		rv.SetStoredFields(meta.NewSourceVectors(mappings.VectorFields()).Fields())
 	}
 	return rv, nil
+}
+
+// significantKeyFilter builds the include / exclude clauses of a significant
+// aggregation, applied to the foreground terms before they are trimmed to
+// the candidates. It is nil when neither is set.
+func significantKeyFilter(kind string, sig *meta.AggregationSignificantTerms) (func(string) bool, error) {
+	include, err := termMatcher(kind, "include", sig.Include)
+	if err != nil {
+		return nil, err
+	}
+	exclude, err := termMatcher(kind, "exclude", sig.Exclude)
+	if err != nil {
+		return nil, err
+	}
+	if include == nil && exclude == nil {
+		return nil, nil
+	}
+	return func(key string) bool {
+		return (include == nil || include(key)) && (exclude == nil || !exclude(key))
+	}, nil
+}
+
+// termMatcher parses an include / exclude clause: a regexp or a list of terms.
+func termMatcher(kind, key string, v interface{}) (func(string) bool, error) {
+	switch v := v.(type) {
+	case nil:
+		return nil, nil
+	case string:
+		re, err := regexp.Compile("^(?:" + v + ")$")
+		if err != nil {
+			return nil, errors.New(errors.ErrorTypeIllegalArgumentException, fmt.Sprintf("[%s] invalid %s regexp [%s]", kind, key, v)).Cause(err)
+		}
+		return re.MatchString, nil
+	case []interface{}:
+		terms := make(map[string]struct{}, len(v))
+		for _, vv := range v {
+			s, err := zutils.ToString(vv)
+			if err != nil {
+				return nil, err
+			}
+			terms[s] = struct{}{}
+		}
+		return func(term string) bool {
+			_, ok := terms[term]
+			return ok
+		}, nil
+	default:
+		return nil, errors.New(errors.ErrorTypeNotImplemented, fmt.Sprintf("[%s] %s doesn't support values of type: %T", kind, key, v))
+	}
 }
 
 // topHitsSort accepts "field", "-field", ["field"], [{"field": "desc"}] and

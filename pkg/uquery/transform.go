@@ -61,11 +61,21 @@ func transformQuery(q map[string]interface{}, fns map[string]TransformFunc) (map
 				if !ok {
 					return q, nil // the query parser reports the bad type
 				}
-				return fn(body)
+				rewritten, err := fn(body)
+				if err != nil || rewritten == nil {
+					return rewritten, err
+				}
+				// the replacement can keep sub queries of body, as the organic
+				// query of a rule, which are transformed in turn
+				return transformChildren(rewritten, fns)
 			}
 		}
 	}
+	return transformChildren(q, fns)
+}
 
+// transformChildren transforms the sub queries of the compound queries of q.
+func transformChildren(q map[string]interface{}, fns map[string]TransformFunc) (map[string]interface{}, error) {
 	out := make(map[string]interface{}, len(q))
 	for k, v := range q {
 		out[k] = v

@@ -39,6 +39,18 @@ import (
 	"github.com/vcaesar/zedsearch/pkg/meta"
 )
 
+// maxSuggestSize bounds the size of a suggestion.
+const maxSuggestSize = 10000
+
+// paramSize reads a suggestion size, between 1 and maxSuggestSize.
+func paramSize(kind, key string, v interface{}) (int, error) {
+	n, err := paramInt(kind, key, v)
+	if err == nil && (n < 1 || n > maxSuggestSize) {
+		err = errors.New(errors.ErrorTypeParsingException, fmt.Sprintf("[%s] [%s] must be between 1 and %d", kind, key, maxSuggestSize))
+	}
+	return n, err
+}
+
 type suggester struct {
 	readers   []*riot.Reader
 	mappings  *meta.Mappings
@@ -164,7 +176,7 @@ func parseTermOpts(kind string, opts map[string]interface{}) (*termOpts, error) 
 		case "analyzer":
 			o.analyzer, err = paramString(kind, k, v)
 		case "size":
-			o.size, err = paramInt(kind, k, v)
+			o.size, err = paramSize(kind, k, v)
 		case "sort":
 			o.sort, err = paramString(kind, k, v)
 			if err == nil && o.sort != "score" && o.sort != "frequency" {
@@ -340,7 +352,7 @@ func parsePhraseOpts(opts map[string]interface{}) (*phraseOpts, error) {
 		case "analyzer":
 			o.analyzer, err = paramString(kind, k, v)
 		case "size":
-			o.size, err = paramInt(kind, k, v)
+			o.size, err = paramSize(kind, k, v)
 		case "max_errors":
 			o.maxErrors, err = paramFloat(kind, k, v)
 		case "separator":
@@ -419,7 +431,7 @@ func (s *suggester) phraseSuggest(text string, opts map[string]interface{}) ([]i
 	tokens := tokenize(ana, text)
 
 	maxErrors := int(o.maxErrors)
-	if o.maxErrors < 1 {
+	if o.maxErrors > 0 && o.maxErrors < 1 {
 		maxErrors = max(1, int(o.maxErrors*float64(len(tokens))))
 	}
 	prob := func(freq uint64) float64 { return float64(freq+1) / float64(s.numDocs+1) }
@@ -511,7 +523,7 @@ func parseCompletionOpts(opts map[string]interface{}) (*completionOpts, error) {
 		case "field":
 			o.field, err = paramString(kind, k, v)
 		case "size":
-			o.size, err = paramInt(kind, k, v)
+			o.size, err = paramSize(kind, k, v)
 		case "skip_duplicates":
 			o.skipDuplicates, err = paramBool(kind, k, v)
 		case "fuzzy":
@@ -612,15 +624,17 @@ func (s *suggester) completionSuggest(in suggestion, opts map[string]interface{}
 	if in.regex != nil {
 		input = *in.regex
 	}
-	needle := input
+	// text fields hold lowercased terms: a literal input is lowercased, a
+	// regex keeps its syntax and matches case insensitively
+	needle, flags := input, ""
 	if prop, ok := s.mappings.GetProperty(o.field); !ok || prop.Type == "text" {
-		needle = strings.ToLower(input)
+		needle, flags = strings.ToLower(input), "(?i)"
 	}
 
 	var matches []completionMatch
 	switch {
 	case in.regex != nil:
-		re, err := regexp.Compile("^(?:" + needle + ")$")
+		re, err := regexp.Compile(flags + "^(?:" + input + ")$")
 		if err != nil {
 			return nil, errors.New(errors.ErrorTypeIllegalArgumentException, fmt.Sprintf("[completion] invalid regex [%s]", input)).Cause(err)
 		}
@@ -650,7 +664,7 @@ func (s *suggester) completionSuggest(in suggestion, opts map[string]interface{}
 		for term := range terms {
 			d := 0
 			if edits > 0 {
-				if d = prefixDistance(runes, []rune(term), o.transpositions); d > edits {
+				if d = prefixDistance(runes, []rune(term), o.transpositions, edits); d > edits {
 					continue
 				}
 			}
@@ -724,11 +738,37 @@ func editDistance(a, b []rune, transpositions bool) int {
 }
 
 // prefixDistance is the smallest edit distance between prefix and any prefix
-// of term.
-func prefixDistance(prefix, term []rune, transpositions bool) int {
-	last := distanceMatrix(prefix, term, transpositions)[len(prefix)]
-	rv := last[0]
-	for _, d := range last[1:] {
+// of term, limit+1 when it is above limit. Longer term prefixes than
+// len(prefix)+limit are above limit, as are the cells off the diagonal band
+// |i-j| <= limit, so neither is computed.
+func prefixDistance(prefix, term []rune, transpositions bool, limit int) int {
+	term = term[:min(len(term), len(prefix)+limit)]
+	over := limit + 1
+	// rows i-2, i-1 and i of the distance matrix, capped at over
+	prev2, prev, cur := make([]int, len(term)+1), make([]int, len(term)+1), make([]int, len(term)+1)
+	for j := range prev {
+		prev[j] = min(j, over)
+	}
+	for i := 1; i <= len(prefix); i++ {
+		for j := range cur {
+			cur[j] = over
+		}
+		cur[0] = min(i, over)
+		for j := max(1, i-limit); j <= min(len(term), i+limit); j++ {
+			cost := 1
+			if prefix[i-1] == term[j-1] {
+				cost = 0
+			}
+			d := min(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+			if transpositions && i > 1 && j > 1 && prefix[i-1] == term[j-2] && prefix[i-2] == term[j-1] {
+				d = min(d, prev2[j-2]+1)
+			}
+			cur[j] = min(d, over)
+		}
+		prev2, prev, cur = prev, cur, prev2
+	}
+	rv := over
+	for _, d := range prev {
 		rv = min(rv, d)
 	}
 	return rv

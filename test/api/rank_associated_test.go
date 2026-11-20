@@ -16,40 +16,16 @@
 package api
 
 import (
-	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/vcaesar/zedsearch/pkg/routes"
-	"github.com/vcaesar/zedsearch/pkg/zhttp"
 	"github.com/vcaesar/zedsearch/pkg/zutils/json"
 )
-
-var (
-	rulesEngine *zhttp.Engine
-	rulesOnce   sync.Once
-)
-
-// rulesRequest serves the query rules routes on their own engine, as the
-// shared one only carries routes.SetRoutes.
-func rulesRequest(method, api string, body io.Reader) *httptest.ResponseRecorder {
-	rulesOnce.Do(func() {
-		rulesEngine = zhttp.New()
-		routes.SetQueryRulesRoutes(rulesEngine)
-	})
-	req, _ := http.NewRequest(method, api, body)
-	req.SetBasicAuth(username, password)
-	w := httptest.NewRecorder()
-	rulesEngine.ServeHTTP(w, req)
-	return w
-}
 
 type rankResponse struct {
 	Hits struct {
@@ -137,14 +113,14 @@ func TestRankAndAssociated(t *testing.T) {
 
 	t.Run("query rules", func(t *testing.T) {
 		set := "TestRankAndAssociated.rules_1"
-		r := rulesRequest("PUT", "/es/_query_rules/"+set, strings.NewReader(`{"rules":[
+		r := request("PUT", "/es/_query_rules/"+set, strings.NewReader(`{"rules":[
 			{"rule_id":"pin","type":"pinned","criteria":[{"type":"exact","metadata":"q","values":["dogs"]}],"actions":{"ids":["1"]}},
 			{"rule_id":"drop","type":"exclude","criteria":[{"type":"always"}],"actions":{"ids":["3"]}}
 		]}`))
 		require.Equal(t, http.StatusCreated, r.Code, r.Body.String())
-		t.Cleanup(func() { rulesRequest("DELETE", "/es/_query_rules/"+set, nil) })
+		t.Cleanup(func() { request("DELETE", "/es/_query_rules/"+set, nil) })
 
-		r = rulesRequest("POST", "/api/_query_rules/"+set+"/_test", strings.NewReader(`{"match_criteria":{"q":"dogs"}}`))
+		r = request("POST", "/api/_query_rules/"+set+"/_test", strings.NewReader(`{"match_criteria":{"q":"dogs"}}`))
 		assert.Equal(t, http.StatusOK, r.Code)
 		assert.Contains(t, r.Body.String(), `"total_matched_rules":2`)
 

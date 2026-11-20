@@ -17,12 +17,15 @@ package assoc
 
 import (
 	"math"
+	"sort"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vcaesar/riot"
 
 	"github.com/vcaesar/zedsearch/pkg/meta"
+	"github.com/vcaesar/zedsearch/pkg/uquery/query"
 )
 
 // mltTerms flattens the should clauses of an MLT rewrite into field:term ->
@@ -216,6 +219,102 @@ func TestMoreLikeThis(t *testing.T) {
 		terms, _ := mltTerms(t, q)
 		assert.Equal(t, []string{"body:lazy"}, terms)
 	})
+}
+
+func TestMoreLikeThis_SameIDInTwoIndexes(t *testing.T) {
+	readers := []*riot.Reader{
+		newIndexReader(t, "A", []testDoc{{"7", "shared alpha alpha", "a", 1}, {"1", "shared alpha", "a", 2}}),
+		newIndexReader(t, "B", []testDoc{{"7", "shared beta beta", "b", 3}, {"2", "shared beta", "b", 4}}),
+	}
+	like := func(items ...interface{}) map[string]interface{} {
+		return map[string]interface{}{"fields": []interface{}{"body"}, "min_term_freq": 1, "min_doc_freq": 1, "like": items}
+	}
+	ref := func(index, id string) map[string]interface{} {
+		item := map[string]interface{}{"_id": id}
+		if index != "" {
+			item["_index"] = index
+		}
+		return item
+	}
+	tests := []struct {
+		name      string
+		body      map[string]interface{}
+		wantTerms []string
+		mustNot   []interface{}
+		wantHits  []string
+	}{
+		{
+			name:      "explicit index finds its own seed",
+			body:      like(ref("B", "7")),
+			wantTerms: []string{"body:beta", "body:shared"},
+			// 7 is also A/7, only an index scoped exclusion could drop B/7
+			wantHits: []string{"A/1", "A/7", "B/2", "B/7"},
+		},
+		{
+			name:      "explicit first index",
+			body:      like(ref("A", "7")),
+			wantTerms: []string{"body:alpha", "body:shared"},
+			wantHits:  []string{"A/1", "A/7", "B/2", "B/7"},
+		},
+		{
+			name:      "every doc of the id liked is excluded",
+			body:      like(ref("A", "7"), ref("B", "7")),
+			wantTerms: []string{"body:alpha", "body:beta", "body:shared"},
+			mustNot:   []interface{}{"7"},
+			wantHits:  []string{"A/1", "B/2"},
+		},
+		{
+			name:      "unique id is excluded",
+			body:      like(ref("B", "2")),
+			wantTerms: []string{"body:beta", "body:shared"},
+			mustNot:   []interface{}{"2"},
+			wantHits:  []string{"A/1", "A/7", "B/7"},
+		},
+		{
+			name:      "id only takes the first doc",
+			body:      like(ref("", "7")),
+			wantTerms: []string{"body:alpha", "body:shared"},
+			mustNot:   []interface{}{"7"},
+			wantHits:  []string{"A/1", "B/2"},
+		},
+		{
+			name:      "skipped seeds are not excluded",
+			body:      like("beta", ref("", "404"), ref("C", "2")),
+			wantTerms: []string{"body:beta"},
+			wantHits:  []string{"B/2", "B/7"},
+		},
+		{
+			name:      "include has no exclusions",
+			body:      func() map[string]interface{} { b := like(ref("B", "2")); b["include"] = true; return b }(),
+			wantTerms: []string{"body:beta", "body:shared"},
+			wantHits:  []string{"A/1", "A/7", "B/2", "B/7"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			q, err := MoreLikeThis(readers, tt.body, testMappings(), nil)
+			require.NoError(t, err)
+			terms, _ := mltTerms(t, q)
+			sort.Strings(terms)
+			assert.Equal(t, tt.wantTerms, terms)
+			b := q["bool"].(map[string]interface{})
+			if tt.mustNot != nil {
+				assert.Equal(t, []interface{}{map[string]interface{}{"ids": map[string]interface{}{"values": tt.mustNot}}}, b["must_not"])
+			} else {
+				assert.NotContains(t, b, "must_not")
+			}
+			parsed, err := query.Query(q, testMappings(), nil)
+			require.NoError(t, err)
+			docs, err := searchDocs(readers, parsed, 100)
+			require.NoError(t, err)
+			hits := make([]string, 0, len(docs))
+			for _, d := range docs {
+				hits = append(hits, d.Index+"/"+d.ID)
+			}
+			sort.Strings(hits)
+			assert.Equal(t, tt.wantHits, hits)
+		})
+	}
 }
 
 func TestMoreLikeThis_Errors(t *testing.T) {

@@ -17,6 +17,7 @@ package token
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -38,14 +39,28 @@ const synonymKeySep = "\x00"
 // SynonymTokenFilter replaces token sequences matching a synonym rule with
 // their synonyms, alternates stacked at the same position.
 type SynonymTokenFilter struct {
+	groups     []synonymGroup        // parsed rules, kept to rebuild rules on Normalized
 	rules      map[string][][]string // matched terms joined by synonymKeySep -> replacements
 	maxLen     int
 	ignoreCase bool
+	expand     bool
+}
+
+// synonymGroup is a parsed rule: terms mapped to replacements, or
+// equivalent terms when to is nil.
+type synonymGroup struct {
+	from, to [][]string
 }
 
 type positionedToken struct {
 	pos int
 	tok *analysis.Token
+}
+
+// synonymRule is a rule line and how errors refer to it: the rule itself
+// when inline, its line number when read from synonyms_path.
+type synonymRule struct {
+	text, label string
 }
 
 // NewSynonymTokenFilter builds the synonym and synonym_graph token filters.
@@ -56,29 +71,22 @@ func NewSynonymTokenFilter(options interface{}) (analysis.TokenFilter, error) {
 	}
 
 	f := &SynonymTokenFilter{
-		rules:      make(map[string][][]string),
 		ignoreCase: synonymBool(options, "ignore_case", false),
+		expand:     synonymBool(options, "expand", true),
 	}
-	expand := synonymBool(options, "expand", true)
 	lenient := synonymBool(options, "lenient", false)
 	format, _ := zutils.GetStringFromMap(options, "format")
 	switch strings.ToLower(format) {
 	case "", "solr":
 		for _, line := range lines {
-			from, to, err := parseSolrRule(line, f.ignoreCase)
+			from, to, err := parseSolrRule(line.text, line.label)
 			if err != nil {
 				if lenient {
 					continue
 				}
 				return nil, err
 			}
-			if to == nil {
-				f.addEquivalent(from, expand)
-				continue
-			}
-			for _, terms := range from {
-				f.add(terms, to)
-			}
+			f.groups = append(f.groups, synonymGroup{from: from, to: to})
 		}
 	case "wordnet":
 		groups, err := parseWordnet(lines, lenient)
@@ -86,25 +94,96 @@ func NewSynonymTokenFilter(options interface{}) (analysis.TokenFilter, error) {
 			return nil, err
 		}
 		for _, words := range groups {
-			terms, err := parseSolrTerms(words, strings.Join(words, ", "), f.ignoreCase)
+			terms, err := parseSolrTerms(words, strings.Join(words, ", "))
 			if err != nil {
 				if lenient {
 					continue
 				}
 				return nil, err
 			}
-			f.addEquivalent(terms, expand)
+			f.groups = append(f.groups, synonymGroup{from: terms})
 		}
 	default:
 		return nil, errors.New(errors.ErrorTypeParsingException, fmt.Sprintf("[synonym] unsupported format [%s]", format))
 	}
 
+	f.build(nil)
 	return f, nil
+}
+
+// Normalized returns a copy of f whose rule terms are first run through
+// the token filters preceding it in an analyzer, as Elasticsearch does.
+func (f *SynonymTokenFilter) Normalized(pre []analysis.TokenFilter) *SynonymTokenFilter {
+	n := &SynonymTokenFilter{groups: f.groups, ignoreCase: f.ignoreCase, expand: f.expand}
+	n.build(pre)
+	return n
+}
+
+// build indexes the rule groups, their terms run through pre. Terms
+// emptied by pre are dropped, as are rules left without either side.
+func (f *SynonymTokenFilter) build(pre []analysis.TokenFilter) {
+	f.rules = make(map[string][][]string)
+	for _, g := range f.groups {
+		from := f.normalize(g.from, pre)
+		if len(from) == 0 {
+			continue
+		}
+		if g.to == nil {
+			f.addEquivalent(from, f.expand)
+			continue
+		}
+		to := f.normalize(g.to, pre)
+		if len(to) == 0 {
+			continue
+		}
+		for _, terms := range from {
+			f.add(terms, to)
+		}
+	}
+}
+
+func (f *SynonymTokenFilter) normalize(terms [][]string, pre []analysis.TokenFilter) [][]string {
+	out := make([][]string, 0, len(terms))
+	for _, words := range terms {
+		words = filterWords(words, pre)
+		if len(words) == 0 {
+			continue
+		}
+		if f.ignoreCase {
+			for i, w := range words {
+				words[i] = strings.ToLower(w)
+			}
+		}
+		out = append(out, words)
+	}
+	return out
+}
+
+// filterWords runs words through filters, keeping a new slice of the
+// resulting terms without stacked alternates.
+func filterWords(words []string, filters []analysis.TokenFilter) []string {
+	stream := make(analysis.TokenStream, len(words))
+	start := 0
+	for i, w := range words {
+		stream[i] = &analysis.Token{Term: []byte(w), PositionIncr: 1, Start: start, End: start + len(w), Type: analysis.AlphaNumeric}
+		start += len(w) + 1
+	}
+	for _, filter := range filters {
+		stream = filter.Filter(stream)
+	}
+	out := make([]string, 0, len(stream))
+	for _, t := range stream {
+		if t.PositionIncr == 0 && len(out) > 0 {
+			continue
+		}
+		out = append(out, string(t.Term))
+	}
+	return out
 }
 
 // ValidateSynonymRule reports whether rule is a valid Solr synonym rule.
 func ValidateSynonymRule(rule string) error {
-	_, _, err := parseSolrRule(rule, false)
+	_, _, err := parseSolrRule(rule, rule)
 	return err
 }
 
@@ -122,15 +201,21 @@ func (f *SynonymTokenFilter) Filter(input analysis.TokenStream) analysis.TokenSt
 
 	out := make([]positionedToken, 0, len(input))
 	changed := false
+	shift := 0 // positions taken by replacements longer than their match
 	for i := 0; i < len(input); {
 		n, reps := f.match(input, i)
 		if n == 0 {
-			out = append(out, positionedToken{pos: positions[i], tok: input[i]})
+			out = append(out, positionedToken{pos: positions[i] + shift, tok: input[i]})
 			i++
 			continue
 		}
 		changed = true
-		out = append(out, f.emit(input[i:i+n], positions[i], reps)...)
+		out = append(out, f.emit(input[i:i+n], positions[i]+shift, reps)...)
+		longest := 0
+		for _, rep := range reps {
+			longest = max(longest, len(rep))
+		}
+		shift += max(0, longest-n)
 		i += n
 	}
 	if !changed {
@@ -249,35 +334,67 @@ func (f *SynonymTokenFilter) add(from []string, to [][]string) {
 
 // parseSolrRule parses `a, b => c, d` into the term sequences to match and
 // their replacements, or `a, b, c` into its terms and nil replacements.
-func parseSolrRule(rule string, ignoreCase bool) ([][]string, [][]string, error) {
-	sides := strings.Split(rule, "=>")
+// A backslash escapes the next character, as in `foo\,bar => baz`. Errors
+// refer to the rule by label.
+func parseSolrRule(rule, label string) ([][]string, [][]string, error) {
+	sides := splitUnescaped(rule, "=>")
 	switch len(sides) {
 	case 1:
-		terms, err := parseSolrTerms(strings.Split(rule, ","), rule, ignoreCase)
+		terms, err := parseSolrTerms(splitUnescaped(rule, ","), label)
 		return terms, nil, err
 	case 2:
-		from, err := parseSolrTerms(strings.Split(sides[0], ","), rule, ignoreCase)
+		from, err := parseSolrTerms(splitUnescaped(sides[0], ","), label)
 		if err != nil {
 			return nil, nil, err
 		}
-		to, err := parseSolrTerms(strings.Split(sides[1], ","), rule, ignoreCase)
+		to, err := parseSolrTerms(splitUnescaped(sides[1], ","), label)
 		if err != nil {
 			return nil, nil, err
 		}
 		return from, to, nil
 	default:
-		return nil, nil, invalidSynonymRule(rule, "more than one explicit mapping specified on the same line")
+		return nil, nil, invalidSynonymRule(label, "more than one explicit mapping specified on the same line")
 	}
 }
 
+// splitUnescaped splits s around each sep not escaped by a backslash.
+func splitUnescaped(s, sep string) []string {
+	var out []string
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' {
+			i++
+			continue
+		}
+		if strings.HasPrefix(s[i:], sep) {
+			out = append(out, s[start:i])
+			start = i + len(sep)
+			i = start - 1
+		}
+	}
+	return append(out, s[start:])
+}
+
+// unescape drops the backslash escaping a character.
+func unescape(s string) string {
+	if !strings.Contains(s, `\`) {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			i++
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
 // parseSolrTerms splits each term into its words.
-func parseSolrTerms(terms []string, rule string, ignoreCase bool) ([][]string, error) {
+func parseSolrTerms(terms []string, rule string) ([][]string, error) {
 	out := make([][]string, 0, len(terms))
 	for _, term := range terms {
-		if ignoreCase {
-			term = strings.ToLower(term)
-		}
-		words := strings.Fields(term)
+		words := strings.Fields(unescape(term))
 		if len(words) == 0 {
 			return nil, invalidSynonymRule(rule, "term is empty")
 		}
@@ -288,16 +405,16 @@ func parseSolrTerms(terms []string, rule string, ignoreCase bool) ([][]string, e
 
 // parseWordnet groups the words of wordnet lines `s(100000001,1,'abstain',v,1,0).`
 // by synset id, in order of first appearance.
-func parseWordnet(lines []string, lenient bool) ([][]string, error) {
+func parseWordnet(lines []synonymRule, lenient bool) ([][]string, error) {
 	var ids []string
 	groups := make(map[string][]string)
 	for _, l := range lines {
-		id, word, ok := parseWordnetLine(l)
+		id, word, ok := parseWordnetLine(l.text)
 		if !ok {
 			if lenient {
 				continue
 			}
-			return nil, invalidSynonymRule(l, "invalid wordnet line")
+			return nil, invalidSynonymRule(l.label, "invalid wordnet line")
 		}
 		if _, exists := groups[id]; !exists {
 			ids = append(ids, id)
@@ -335,22 +452,28 @@ func parseWordnetLine(l string) (string, string, bool) {
 			i++
 			continue
 		}
-		return id, word.String(), word.Len() > 0
+		return id, word.String(), strings.TrimSpace(word.String()) != ""
 	}
 	return "", "", false
 }
 
 // synonymLines collects the non blank, non comment rules of every
 // configured source.
-func synonymLines(options interface{}) ([]string, error) {
-	var raw []string
+func synonymLines(options interface{}) ([]synonymRule, error) {
+	var raw []synonymRule
+	inline := func(rules []string) {
+		for _, r := range rules {
+			r = strings.TrimSpace(r)
+			raw = append(raw, synonymRule{text: r, label: r})
+		}
+	}
 	found := false
 	if _, err := zutils.GetAnyFromMap(options, "synonyms"); err == nil {
 		rules, err := zutils.GetStringSliceFromMap(options, "synonyms")
 		if err != nil {
 			return nil, errors.New(errors.ErrorTypeParsingException, "[synonym] option [synonyms] should be an array of string")
 		}
-		raw = append(raw, rules...)
+		inline(rules)
 		found = true
 	}
 	if _, err := zutils.GetAnyFromMap(options, "synonyms_set"); err == nil {
@@ -365,7 +488,7 @@ func synonymLines(options interface{}) ([]string, error) {
 		if err != nil {
 			return nil, synonymSetNotFound(id)
 		}
-		raw = append(raw, rules...)
+		inline(rules)
 		found = true
 	}
 	if _, err := zutils.GetAnyFromMap(options, "synonyms_path"); err == nil {
@@ -373,29 +496,52 @@ func synonymLines(options interface{}) ([]string, error) {
 		if err != nil {
 			return nil, errors.New(errors.ErrorTypeParsingException, "[synonym] option [synonyms_path] should be a string")
 		}
-		if !filepath.IsAbs(path) {
-			path = filepath.Join(config.Global.DataPath, path)
-		}
-		data, err := os.ReadFile(path)
+		data, err := readSynonymsPath(path)
 		if err != nil {
-			return nil, errors.New(errors.ErrorTypeParsingException, fmt.Sprintf("[synonym] failed to read synonyms_path [%s]", path)).Cause(err)
+			return nil, err
 		}
-		raw = append(raw, strings.Split(string(data), "\n")...)
+		// errors cite the line number only, never the file content
+		for i, l := range strings.Split(string(data), "\n") {
+			raw = append(raw, synonymRule{text: strings.TrimSpace(l), label: fmt.Sprintf("synonyms_path line %d", i+1)})
+		}
 		found = true
 	}
 	if !found {
 		return nil, errors.New(errors.ErrorTypeParsingException, "[synonym] requires one of [synonyms], [synonyms_set] or [synonyms_path] to be configured")
 	}
 
-	lines := make([]string, 0, len(raw))
+	lines := make([]synonymRule, 0, len(raw))
 	for _, l := range raw {
-		l = strings.TrimSpace(l)
-		if l == "" || strings.HasPrefix(l, "#") {
+		if l.text == "" || strings.HasPrefix(l.text, "#") {
 			continue
 		}
 		lines = append(lines, l)
 	}
 	return lines, nil
+}
+
+// readSynonymsPath reads the file at path relative to the data path,
+// refusing absolute paths and any path, symlinks included, leaving it.
+func readSynonymsPath(path string) ([]byte, error) {
+	if !filepath.IsLocal(path) {
+		return nil, errors.New(errors.ErrorTypeParsingException, fmt.Sprintf("[synonym] synonyms_path [%s] must be a relative path inside the data path", path))
+	}
+	f, err := os.OpenInRoot(config.Global.DataPath, path)
+	if err != nil {
+		return nil, readSynonymsPathError(path)
+	}
+	data, err := io.ReadAll(f)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return nil, readSynonymsPathError(path)
+	}
+	return data, nil
+}
+
+func readSynonymsPathError(path string) error {
+	return errors.New(errors.ErrorTypeParsingException, fmt.Sprintf("[synonym] failed to read synonyms_path [%s]", path))
 }
 
 func synonymBool(options interface{}, key string, def bool) bool {

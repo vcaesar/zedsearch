@@ -32,11 +32,12 @@ func Setup(app *zhttp.Engine) {
 		SetPProf(app)
 	}
 	SetPrometheus(app)    // Set up Prometheus.
+	app.Use(CORS)         // before the API routes: middleware only applies to routes registered after it
 	SetClusterRoutes(app) // Cluster endpoints and ownership routing, must precede SetRoutes.
 	SetTierRoutes(app)    // Data tier / ILM endpoints and read-only guard, must precede SetRoutes.
 	SetSQLRoutes(app)     // ES SQL endpoints.
 	// SetFleetRoutes(app)      // zedagent fleet endpoints.
 	SetSynonymsRoutes(app)   // Synonyms sets endpoints.
 	SetQueryRulesRoutes(app) // Query rules endpoints.
-	SetRoutes(app)           // Set up all API routes.
+	setRoutes(app)           // Set up all API routes, CORS already installed.
 }

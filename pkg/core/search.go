@@ -64,6 +64,14 @@ func (index *Index) Search(query *meta.ZedQuery) (*meta.SearchResponse, error) {
 		}
 	}()
 
+	// the deadline also covers preparing the query and the extension work
+	ctx := context.Background()
+	var cancel context.CancelFunc
+	if query.Timeout > 0 {
+		ctx, cancel = context.WithTimeout(context.Background(), time.Duration(query.Timeout)*time.Second)
+		defer cancel()
+	}
+
 	// nested and join queries are resolved before query is parsed, and hidden
 	// nested documents are excluded from results.
 	// rule, more_like_this and rescore need the readers before query is parsed
@@ -71,19 +79,13 @@ func (index *Index) Search(query *meta.ZedQuery) (*meta.SearchResponse, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer ext.restore()
 	if err := rewriteJoinQuery(query, mappings, analyzers, readers); err != nil {
 		return nil, err
 	}
 
 	if _, err = uquery.ParseQueryDSL(query, mappings, analyzers); err != nil {
 		return nil, err
-	}
-
-	ctx := context.Background()
-	var cancel context.CancelFunc
-	if query.Timeout > 0 {
-		ctx, cancel = context.WithTimeout(context.Background(), time.Duration(query.Timeout)*time.Second)
-		defer cancel()
 	}
 
 	// dmi, err := riot.MultiSearch(ctx, searchRequest, readers...)
@@ -104,7 +106,17 @@ func (index *Index) Search(query *meta.ZedQuery) (*meta.SearchResponse, error) {
 	if err != nil {
 		return nil, err
 	}
-	return resp, ext.finish(resp)
+	if err := ext.finish(ctx, resp); err != nil {
+		if err == context.DeadlineExceeded {
+			return &meta.SearchResponse{
+				TimedOut: true,
+				Error:    err.Error(),
+				Hits:     meta.Hits{Hits: []meta.Hit{}},
+			}, nil
+		}
+		return nil, err
+	}
+	return resp, nil
 }
 
 // searchV2 renders the hits of dmi. Highlighting and fields use the mappings

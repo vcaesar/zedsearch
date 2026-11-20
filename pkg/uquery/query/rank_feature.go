@@ -114,9 +114,7 @@ func rankFeatureFunc(name string, body map[string]interface{}) (func(float64) fl
 		if err != nil {
 			return nil, err
 		}
-		return func(v float64) float64 {
-			return math.Pow(v, exp) / (math.Pow(v, exp) + math.Pow(pivot, exp))
-		}, nil
+		return func(v float64) float64 { return sigmoid(v, pivot, exp) }, nil
 	case "linear":
 		return func(v float64) float64 { return v }, nil
 	default: // saturation
@@ -126,6 +124,12 @@ func rankFeatureFunc(name string, body map[string]interface{}) (func(float64) fl
 		}
 		return func(v float64) float64 { return v / (v + pivot) }, nil
 	}
+}
+
+// sigmoid is v^exp / (v^exp + pivot^exp), written as 1 / (1 + (pivot/v)^exp)
+// so that large powers do not overflow to Inf/Inf.
+func sigmoid(v, pivot, exp float64) float64 {
+	return 1 / (1 + math.Pow(pivot/v, exp))
 }
 
 type rankFeatureQuery struct {

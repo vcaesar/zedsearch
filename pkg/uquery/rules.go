@@ -44,6 +44,9 @@ var (
 
 // ValidateQueryRule checks a rule of the query rules API.
 func ValidateQueryRule(rule *meta.QueryRule) error {
+	if rule == nil {
+		return errors.New(errors.ErrorTypeParsingException, "[query_rule] must be an object")
+	}
 	if rule.ID == "" {
 		return errors.New(errors.ErrorTypeParsingException, "[query_rule] requires [rule_id]")
 	}

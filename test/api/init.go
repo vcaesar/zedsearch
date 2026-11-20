@@ -88,7 +88,9 @@ func server() *zhttp.Engine {
 	if r == nil {
 		once.Do(func() {
 			r = zhttp.New()
-			routes.SetRoutes(r)
+			routes.SetRoutes(r) // installs CORS, so it goes first
+			routes.SetSynonymsRoutes(r)
+			routes.SetQueryRulesRoutes(r)
 		})
 	}
 

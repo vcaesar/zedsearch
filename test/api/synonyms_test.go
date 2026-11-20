@@ -16,41 +16,18 @@
 package api
 
 import (
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"sort"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/vcaesar/zedsearch/pkg/routes"
-	"github.com/vcaesar/zedsearch/pkg/zhttp"
 	"github.com/vcaesar/zedsearch/pkg/zutils/json"
 )
-
-var (
-	synonymsEngine *zhttp.Engine
-	synonymsOnce   sync.Once
-)
-
-// synonymsRequest serves the synonyms routes on their own engine, as the
-// shared one only carries routes.SetRoutes.
-func synonymsRequest(method, api string, body io.Reader) *httptest.ResponseRecorder {
-	synonymsOnce.Do(func() {
-		synonymsEngine = zhttp.New()
-		routes.SetSynonymsRoutes(synonymsEngine)
-	})
-	req, _ := http.NewRequest(method, api, body)
-	req.SetBasicAuth(username, password)
-	w := httptest.NewRecorder()
-	synonymsEngine.ServeHTTP(w, req)
-	return w
-}
 
 func synonymsSearch(t *testing.T, index, field, text string) []string {
 	t.Helper()
@@ -84,11 +61,26 @@ func synonymsIndexDocs(t *testing.T, index string, docs map[string]string) {
 	}
 }
 
+func TestSharedServerExtraRoutes(t *testing.T) {
+	for _, path := range []string{"/es/_synonyms", "/api/_synonyms", "/es/_query_rules", "/api/_query_rules"} {
+		t.Run(path, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodGet, path, nil)
+			require.NoError(t, err)
+			req.SetBasicAuth(username, password)
+			req.Header.Set("Origin", "http://example.com")
+			w := httptest.NewRecorder()
+			server().ServeHTTP(w, req)
+			assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
+			assert.Equal(t, "*", w.Header().Get("Access-Control-Allow-Origin"))
+		})
+	}
+}
+
 func TestSynonymsSetSearchAnalyzer(t *testing.T) {
 	set := "TestSynonymsSetSearchAnalyzer.set_1"
 	index := "TestSynonymsSetSearchAnalyzer.index_1"
 
-	resp := synonymsRequest("PUT", "/es/_synonyms/"+set, strings.NewReader(`{"synonyms_set":[{"id":"r1","synonyms":"hello, hi"}]}`))
+	resp := request("PUT", "/es/_synonyms/"+set, strings.NewReader(`{"synonyms_set":[{"id":"r1","synonyms":"hello, hi"}]}`))
 	require.Equal(t, http.StatusCreated, resp.Code, resp.Body.String())
 
 	resp = request("PUT", "/es/"+index, strings.NewReader(`{
@@ -101,7 +93,7 @@ func TestSynonymsSetSearchAnalyzer(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.Code, resp.Body.String())
 	t.Cleanup(func() {
 		request("DELETE", "/api/index/"+index, nil)
-		synonymsRequest("DELETE", "/es/_synonyms/"+set, nil)
+		request("DELETE", "/es/_synonyms/"+set, nil)
 	})
 
 	synonymsIndexDocs(t, index, map[string]string{"1": "Hello world", "2": "goodbye moon"})
@@ -113,7 +105,7 @@ func TestSynonymsSetSearchAnalyzer(t *testing.T) {
 	})
 
 	t.Run("rule update reloads the search analyzer", func(t *testing.T) {
-		resp := synonymsRequest("PUT", "/es/_synonyms/"+set+"/r1", strings.NewReader(`{"synonyms":"hi, goodbye"}`))
+		resp := request("PUT", "/es/_synonyms/"+set+"/r1", strings.NewReader(`{"synonyms":"hi, goodbye"}`))
 		require.Equal(t, http.StatusOK, resp.Code, resp.Body.String())
 		var update struct {
 			Result  string `json:"result"`
@@ -134,37 +126,37 @@ func TestSynonymsSetSearchAnalyzer(t *testing.T) {
 	})
 
 	t.Run("get and list", func(t *testing.T) {
-		resp := synonymsRequest("GET", "/api/_synonyms/"+set+"/r1", nil)
+		resp := request("GET", "/api/_synonyms/"+set+"/r1", nil)
 		assert.Equal(t, http.StatusOK, resp.Code)
 		assert.JSONEq(t, `{"id":"r1","synonyms":"hi, goodbye"}`, resp.Body.String())
 
-		resp = synonymsRequest("GET", "/es/_synonyms/"+set, nil)
+		resp = request("GET", "/es/_synonyms/"+set, nil)
 		assert.Equal(t, http.StatusOK, resp.Code)
 		assert.Equal(t, "Elasticsearch", resp.Header().Get("X-elastic-product"))
 		assert.JSONEq(t, `{"count":1,"synonyms_set":[{"id":"r1","synonyms":"hi, goodbye"}]}`, resp.Body.String())
 
-		resp = synonymsRequest("GET", "/es/_synonyms?size=1000", nil)
+		resp = request("GET", "/es/_synonyms?size=1000", nil)
 		assert.Equal(t, http.StatusOK, resp.Code)
 		assert.Contains(t, resp.Body.String(), `{"synonyms_set":"`+set+`","count":1}`)
 	})
 
 	t.Run("reload search analyzers", func(t *testing.T) {
-		resp := synonymsRequest("POST", "/es/"+index+"/_reload_search_analyzers", nil)
+		resp := request("POST", "/es/"+index+"/_reload_search_analyzers", nil)
 		assert.Equal(t, http.StatusOK, resp.Code, resp.Body.String())
 		assert.Contains(t, resp.Body.String(), `"reloaded_analyzers":["a"]`)
 	})
 
 	t.Run("delete used set", func(t *testing.T) {
-		resp := synonymsRequest("DELETE", "/es/_synonyms/"+set, nil)
+		resp := request("DELETE", "/es/_synonyms/"+set, nil)
 		assert.Equal(t, http.StatusBadRequest, resp.Code)
 		assert.Contains(t, resp.Body.String(), index)
 	})
 
 	t.Run("delete set after the index", func(t *testing.T) {
 		require.Equal(t, http.StatusOK, request("DELETE", "/api/index/"+index, nil).Code)
-		resp := synonymsRequest("DELETE", "/es/_synonyms/"+set, nil)
+		resp := request("DELETE", "/es/_synonyms/"+set, nil)
 		assert.Equal(t, http.StatusOK, resp.Code, resp.Body.String())
-		assert.Equal(t, http.StatusNotFound, synonymsRequest("GET", "/es/_synonyms/"+set, nil).Code)
+		assert.Equal(t, http.StatusNotFound, request("GET", "/es/_synonyms/"+set, nil).Code)
 	})
 }
 

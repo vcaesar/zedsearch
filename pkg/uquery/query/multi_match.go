@@ -18,6 +18,7 @@ package query
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -120,7 +121,7 @@ func splitFieldBoost(field string) (string, float64) {
 		return field, 1
 	}
 	boost, err := strconv.ParseFloat(field[i+1:], 64)
-	if err != nil || boost < 0 {
+	if err != nil || boost < 0 || math.IsNaN(boost) || math.IsInf(boost, 0) {
 		return field, 1
 	}
 	return field[:i], boost

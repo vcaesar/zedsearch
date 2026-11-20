@@ -27,6 +27,7 @@ package assoc
 import (
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -90,7 +91,7 @@ func MoreLikeThis(readers []*riot.Reader, body map[string]interface{}, mappings 
 		return nil, err
 	}
 
-	likeIDs := make([]interface{}, 0)
+	var likeIDs []interface{}
 	like, err := resolveItems(readers, p.like, &likeIDs)
 	if err != nil {
 		return nil, err
@@ -310,33 +311,69 @@ func mltFields(p *mltParams, mappings *meta.Mappings) ([]string, error) {
 	return fields, nil
 }
 
-// resolveItems loads the _source of the items liked by id, their ids are
-// appended to ids. Missing documents are skipped as in Elasticsearch.
+// resolveItems loads the _source of the items liked by id, of their _index
+// when set. Missing documents are skipped as in Elasticsearch. When ids is
+// not nil, it gets the liked ids to exclude: the rewritten query can only
+// exclude by _id, so an id is left out when it is also the id of a document
+// of another index that is not liked.
 func resolveItems(readers []*riot.Reader, items []mltItem, ids *[]interface{}) ([]mltItem, error) {
+	// the documents with an id, at most one per reader
+	byID := make(map[string][]storedDoc)
+	docsByID := func(id string) ([]storedDoc, error) {
+		if docs, ok := byID[id]; ok {
+			return docs, nil
+		}
+		docs, err := searchDocs(readers, riot.NewTermQuery(id).SetField("_id"), len(readers))
+		byID[id] = docs
+		return docs, err
+	}
+
 	rv := make([]mltItem, 0, len(items))
+	var liked []storedDoc
 	for _, item := range items {
 		if item.id == "" {
 			rv = append(rv, item)
 			continue
 		}
-		if ids != nil {
-			*ids = append(*ids, item.id)
+		if item.doc == nil {
+			docs, err := docsByID(item.id)
+			if err != nil {
+				return nil, err
+			}
+			i := slices.IndexFunc(docs, func(d storedDoc) bool { return sameIndex(item.index, d.Index) })
+			if i < 0 {
+				continue
+			}
+			item.doc = docs[i].Source
 		}
-		if item.doc != nil {
-			rv = append(rv, item)
+		rv = append(rv, item)
+		liked = append(liked, storedDoc{ID: item.id, Index: item.index})
+	}
+	if ids == nil {
+		return rv, nil
+	}
+	isLiked := func(d storedDoc) bool {
+		return slices.ContainsFunc(liked, func(l storedDoc) bool { return l.ID == d.ID && sameIndex(l.Index, d.Index) })
+	}
+	for _, l := range liked {
+		if slices.Contains(*ids, interface{}(l.ID)) {
 			continue
 		}
-		docs, err := searchDocs(readers, riot.NewTermQuery(item.id).SetField("_id"), 1)
+		docs, err := docsByID(l.ID)
 		if err != nil {
 			return nil, err
 		}
-		if len(docs) == 0 || (item.index != "" && docs[0].Index != "" && docs[0].Index != item.index) {
-			continue
+		if !slices.ContainsFunc(docs, func(d storedDoc) bool { return !isLiked(d) }) {
+			*ids = append(*ids, l.ID)
 		}
-		item.doc = docs[0].Source
-		rv = append(rv, item)
 	}
 	return rv, nil
+}
+
+// sameIndex reports a document of index doc matching a requested index,
+// an empty one matches any.
+func sameIndex(want, doc string) bool {
+	return want == "" || doc == "" || want == doc
 }
 
 // termFreqs counts the terms of field over all items, noise words excluded.

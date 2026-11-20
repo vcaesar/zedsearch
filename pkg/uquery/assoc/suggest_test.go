@@ -16,6 +16,7 @@
 package assoc
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -162,6 +163,8 @@ func TestSuggest_Phrase(t *testing.T) {
 	}{
 		{"default max_errors is one correction", "quikc brwn fox", map[string]interface{}{"size": 2}, []string{"quick brwn fox", "quikc brown fox"}},
 		{"max_errors fraction", "quikc brwn fox", map[string]interface{}{"max_errors": 0.5}, []string{"quick brwn fox"}},
+		{"max_errors zero allows no correction", "quikc brwn fox", map[string]interface{}{"max_errors": 0}, []string{}},
+		{"max size", "quikc", map[string]interface{}{"size": maxSuggestSize}, []string{"quick"}},
 		{"separator", "quikc brwn", map[string]interface{}{"separator": "|", "max_errors": 2}, []string{"quick|brown"}},
 		{"confidence cutoff", "quikc brwn fox", map[string]interface{}{"confidence": 100}, []string{}},
 		{"zero confidence", "quikc", map[string]interface{}{"confidence": 0}, []string{"quick"}},
@@ -233,6 +236,10 @@ func TestSuggest_Completion(t *testing.T) {
 		{"text input", map[string]interface{}{"s": map[string]interface{}{"text": "fo", "completion": map[string]interface{}{"field": "tag"}}}, []string{"food", "food"}},
 		{"global text", map[string]interface{}{"text": "an", "s": map[string]interface{}{"completion": map[string]interface{}{"field": "tag", "size": 1}}}, []string{"animal"}},
 		{"regex", map[string]interface{}{"s": map[string]interface{}{"regex": "f.*|an.*", "completion": map[string]interface{}{"field": "tag", "skip_duplicates": true}}}, []string{"animal", "food"}},
+		{"regex keeps escapes on text field", map[string]interface{}{"s": map[string]interface{}{"regex": `fo\D+`, "completion": map[string]interface{}{"field": "body", "skip_duplicates": true}}}, []string{"for", "fox", "foxes"}},
+		{"regex on text field ignores case", map[string]interface{}{"s": map[string]interface{}{"regex": "FO[X]", "completion": map[string]interface{}{"field": "body", "skip_duplicates": true}}}, []string{"fox"}},
+		{"regex on keyword is case sensitive", map[string]interface{}{"s": map[string]interface{}{"regex": "F.*", "completion": map[string]interface{}{"field": "tag"}}}, []string{}},
+		{"max size", completion("te", map[string]interface{}{"size": maxSuggestSize}), []string{"tech", "tech", "tech", "tech"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -267,13 +274,21 @@ func TestSuggest_Errors(t *testing.T) {
 		{"term bad sort", term("x", map[string]interface{}{"sort": "nope"})},
 		{"term bad mode", term("x", map[string]interface{}{"suggest_mode": "nope"})},
 		{"term max_edits", term("x", map[string]interface{}{"max_edits": 3})},
+		{"term fractional max_edits", term("x", map[string]interface{}{"max_edits": 1.9})},
 		{"term bad size", term("x", map[string]interface{}{"size": "a"})},
+		{"term zero size", term("quikc", map[string]interface{}{"size": 0})},
+		{"term negative size", term("quikc", map[string]interface{}{"size": -1})},
+		{"term size above max", term("quikc", map[string]interface{}{"size": maxSuggestSize + 1})},
 		{"term bad accuracy", term("x", map[string]interface{}{"accuracy": "a"})},
 		{"term unknown option", term("x", map[string]interface{}{"nope": 1})},
 		{"term unknown analyzer", term("x", map[string]interface{}{"analyzer": "nope"})},
 		{"phrase without field", phrase("x", map[string]interface{}{"field": ""})},
 		{"phrase unknown option", phrase("x", map[string]interface{}{"nope": 1})},
 		{"phrase bad size", phrase("x", map[string]interface{}{"size": "a"})},
+		{"phrase zero size", phrase("quikc", map[string]interface{}{"size": 0})},
+		{"phrase negative size", phrase("quikc", map[string]interface{}{"size": -1})},
+		{"phrase size above max", phrase("quikc", map[string]interface{}{"size": maxSuggestSize + 1})},
+		{"phrase generator negative size", phrase("quikc", map[string]interface{}{"direct_generator": []interface{}{map[string]interface{}{"size": -1}}})},
 		{"phrase bad highlight", phrase("x", map[string]interface{}{"highlight": "x"})},
 		{"phrase bad pre_tag", phrase("x", map[string]interface{}{"highlight": map[string]interface{}{"pre_tag": 1}})},
 		{"phrase bad generator", phrase("x", map[string]interface{}{"direct_generator": "x"})},
@@ -282,6 +297,10 @@ func TestSuggest_Errors(t *testing.T) {
 		{"phrase bad generator option", phrase("x", map[string]interface{}{"direct_generator": []interface{}{map[string]interface{}{"nope": 1}}})},
 		{"phrase unknown analyzer", phrase("x", map[string]interface{}{"analyzer": "nope"})},
 		{"completion without field", completion("x", map[string]interface{}{"field": ""})},
+		{"completion zero size", completion("te", map[string]interface{}{"size": 0})},
+		{"completion negative size", completion("te", map[string]interface{}{"size": -1})},
+		{"completion size above max", completion("te", map[string]interface{}{"size": maxSuggestSize + 1})},
+		{"completion fractional fuzziness", completion("tecj", map[string]interface{}{"fuzzy": map[string]interface{}{"fuzziness": 1.5}})},
 		{"completion unknown option", completion("x", map[string]interface{}{"nope": 1})},
 		{"completion contexts", completion("x", map[string]interface{}{"contexts": map[string]interface{}{}})},
 		{"completion bad skip_duplicates", completion("x", map[string]interface{}{"skip_duplicates": "maybe"})},
@@ -317,9 +336,59 @@ func TestDistance(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.a+"/"+tt.b, func(t *testing.T) {
 			assert.Equal(t, tt.edit, editDistance([]rune(tt.a), []rune(tt.b), true))
-			assert.Equal(t, tt.prefix, prefixDistance([]rune(tt.a), []rune(tt.b), true))
+			assert.Equal(t, tt.prefix, prefixDistance([]rune(tt.a), []rune(tt.b), true, 3))
 		})
 	}
 	assert.Equal(t, 2, editDistance([]rune("ab"), []rune("ba"), false))
 	assert.Equal(t, 1, abs(-1))
+}
+
+func TestPrefixDistance_Bounded(t *testing.T) {
+	long := strings.Repeat("x", 10000)
+	tests := []struct {
+		name           string
+		prefix, term   string
+		transpositions bool
+		limit          int
+		want           int
+	}{
+		{"exact prefix", "tec", "technology", true, 1, 0},
+		{"one substitution", "tecj", "technology", true, 1, 1},
+		{"transposition", "tceh", "tech", true, 1, 1},
+		{"no transposition", "tceh", "tech", false, 1, 2},
+		{"no transposition limit 2", "tceh", "tech", false, 2, 2},
+		{"insertion in band", "fodo", "food", true, 1, 1},
+		{"above limit capped", "abc", "xyz", true, 1, 2},
+		{"short term above limit", "abcd", "a", true, 2, 3},
+		{"short term within limit", "abc", "a", true, 2, 2},
+		{"empty prefix", "", "abc", true, 1, 0},
+		{"empty term", "ab", "", true, 2, 2},
+		{"zero limit exact", "te", "tech", true, 0, 0},
+		{"zero limit miss", "tx", "tech", true, 0, 1},
+		{"long term matches", "xxxy", long, true, 1, 1},
+		{"long term misses", "abcd", long, true, 2, 3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, prefixDistance([]rune(tt.prefix), []rune(tt.term), tt.transpositions, tt.limit))
+		})
+	}
+
+	t.Run("agrees with the full matrix within the limit", func(t *testing.T) {
+		words := []string{"", "a", "ab", "ba", "tech", "tceh", "tecj", "food", "fodo", "kitten", "sitting", "technology", "abcdef"}
+		for _, a := range words {
+			for _, b := range words {
+				for _, tr := range []bool{true, false} {
+					last := distanceMatrix([]rune(a), []rune(b), tr)[len([]rune(a))]
+					full := last[0]
+					for _, d := range last[1:] {
+						full = min(full, d)
+					}
+					for limit := 0; limit <= 3; limit++ {
+						assert.Equal(t, min(full, limit+1), prefixDistance([]rune(a), []rune(b), tr, limit), "%q/%q tr=%v limit=%d", a, b, tr, limit)
+					}
+				}
+			}
+		}
+	})
 }

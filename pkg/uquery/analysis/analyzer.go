@@ -47,6 +47,7 @@ import (
 	"github.com/vcaesar/zedsearch/pkg/errors"
 	"github.com/vcaesar/zedsearch/pkg/meta"
 	zedanalyzer "github.com/vcaesar/zedsearch/pkg/uquery/analysis/analyzer"
+	zedtoken "github.com/vcaesar/zedsearch/pkg/uquery/analysis/token"
 )
 
 func RequestAnalyzer(data *meta.IndexAnalysis) (map[string]*analysis.Analyzer, error) {
@@ -168,6 +169,12 @@ func RequestAnalyzer(data *meta.IndexAnalysis) (map[string]*analysis.Analyzer, e
 		}
 		if len(tokens) > 0 {
 			ana.TokenFilters = append(ana.TokenFilters, tokens...)
+		}
+		// synonym rules are analyzed by the filters preceding them
+		for i, filter := range ana.TokenFilters {
+			if syn, ok := filter.(*zedtoken.SynonymTokenFilter); ok && i > 0 {
+				ana.TokenFilters[i] = syn.Normalized(ana.TokenFilters[:i])
+			}
 		}
 		analyzers[name] = ana
 	}

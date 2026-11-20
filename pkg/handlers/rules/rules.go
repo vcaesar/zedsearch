@@ -105,7 +105,7 @@ func ListRulesets(c zhttp.Context) {
 	sort.Slice(rulesets, func(i, j int) bool { return rulesets[i].ID < rulesets[j].ID })
 	results := make([]RulesetSummary, 0)
 	if from < len(rulesets) {
-		for _, rs := range rulesets[from:min(from+size, len(rulesets))] {
+		for _, rs := range rulesets[from : from+min(size, len(rulesets)-from)] {
 			results = append(results, summary(rs))
 		}
 	}

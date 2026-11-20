@@ -16,9 +16,12 @@
 package synonyms
 
 import (
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -147,6 +150,76 @@ func TestSynonymsSet(t *testing.T) {
 			assert.Equal(t, errorTypeNotFound, errorType(resp))
 			assert.Equal(t, float64(http.StatusNotFound), resp["status"])
 		})
+	}
+}
+
+func TestSynonymsPageBounds(t *testing.T) {
+	id := "TestSynonymsPageBounds.set_1"
+	cleanupSet(t, id)
+	_, _ = call(t, PutSet, map[string]string{"set_id": id}, nil, `{"synonyms_set":[{"id":"r1","synonyms":"a, b"},{"id":"r2","synonyms":"c, d"}]}`)
+	maxInt := strconv.Itoa(math.MaxInt)
+
+	tests := []struct {
+		name  string
+		h     zhttp.HandlerFunc
+		query map[string]string
+		key   string
+		want  int
+	}{
+		{name: "get huge size", h: GetSet, query: map[string]string{"size": maxInt}, key: "synonyms_set", want: 2},
+		{name: "get overflowing end", h: GetSet, query: map[string]string{"from": "1", "size": maxInt}, key: "synonyms_set", want: 1},
+		{name: "list huge size", h: ListSets, query: map[string]string{"size": maxInt}, key: "results", want: -1},
+		{name: "list overflowing end", h: ListSets, query: map[string]string{"from": "1", "size": maxInt}, key: "results", want: -1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var w *httptest.ResponseRecorder
+			var resp map[string]interface{}
+			require.NotPanics(t, func() { w, resp = call(t, tt.h, map[string]string{"set_id": id}, tt.query, "") })
+			assert.Equal(t, http.StatusOK, w.Code)
+			if tt.want >= 0 {
+				assert.Len(t, resp[tt.key], tt.want)
+			} else {
+				assert.NotNil(t, resp[tt.key])
+			}
+		})
+	}
+	t.Run("paginate", func(t *testing.T) {
+		items := []int{1, 2, 3}
+		assert.Equal(t, []int{2, 3}, paginate(items, 1, math.MaxInt))
+		assert.Equal(t, []int{1}, paginate(items, 0, 1))
+		assert.Empty(t, paginate(items, 3, 1))
+		assert.Empty(t, paginate(items, 0, 0))
+	})
+}
+
+func TestReloadSearchAnalyzersLocks(t *testing.T) {
+	name := "TestReloadSearchAnalyzersLocks.index_1"
+	index, err := core.NewIndex(name, "disk", 1)
+	require.NoError(t, err)
+	require.NoError(t, core.StoreIndex(index))
+	t.Cleanup(func() { assert.NoError(t, core.DeleteIndex(name)) })
+
+	lock.Lock()
+	done := make(chan int)
+	go func() {
+		c, w := utils.NewContext()
+		utils.SetRequestParams(c, map[string]string{"target": name})
+		ReloadSearchAnalyzers(c)
+		done <- w.Code
+	}()
+	select {
+	case <-done:
+		lock.Unlock()
+		t.Fatal("reload ran while the synonyms lock was held")
+	case <-time.After(100 * time.Millisecond):
+	}
+	lock.Unlock()
+	select {
+	case code := <-done:
+		assert.Equal(t, http.StatusOK, code)
+	case <-time.After(5 * time.Second):
+		t.Fatal("reload did not finish after the lock was released")
 	}
 }
 
@@ -304,15 +377,17 @@ func TestSynonymsReloadFailure(t *testing.T) {
 	_, _ = call(t, PutSet, map[string]string{"set_id": set}, nil, `{"synonyms_set":[]}`)
 	newSynonymsIndex(t, "TestSynonymsReloadFailure.index_1", set, map[string]interface{}{"bad": map[string]interface{}{"type": "nope"}})
 
-	_, resp := call(t, PutRule, map[string]string{"set_id": set, "rule_id": "r1"}, nil, `{"synonyms":"a, b"}`)
-	assert.Equal(t, map[string]interface{}{
-		"_shards":        map[string]interface{}{"total": float64(1), "successful": float64(0), "failed": float64(1)},
-		"reload_details": []interface{}{},
-	}, resp["reload_analyzers_details"])
+	w, resp := call(t, PutRule, map[string]string{"set_id": set, "rule_id": "r1"}, nil, `{"synonyms":"a, b"}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Equal(t, errorTypeIllegal, errorType(resp))
+	stored, err := metadata.Synonyms.Get(set)
+	require.NoError(t, err)
+	assert.Empty(t, stored.Rules, "a rule breaking an index must not be stored")
 
 	t.Run("filter unused by analyzers is not reloaded", func(t *testing.T) {
 		other := "TestSynonymsReloadFailure.set_2"
 		cleanupSet(t, other)
+		_, _ = call(t, PutSet, map[string]string{"set_id": other}, nil, `{"synonyms_set":[]}`)
 		newSynonymsIndex(t, "TestSynonymsReloadFailure.index_3", set, map[string]interface{}{
 			"unused": map[string]interface{}{"type": "synonym", "synonyms_set": other},
 		})
@@ -334,4 +409,113 @@ func TestSynonymsReloadFailure(t *testing.T) {
 		require.Len(t, details, 1)
 		assert.Equal(t, []interface{}{}, details[0].(map[string]interface{})["reloaded_analyzers"])
 	})
+}
+
+func TestSynonymsBuildBeforeSave(t *testing.T) {
+	set := "TestSynonymsBuildBeforeSave.set_1"
+	name := "TestSynonymsBuildBeforeSave.index_1"
+	cleanupSet(t, set)
+	w, _ := call(t, PutSet, map[string]string{"set_id": set}, nil,
+		`{"synonyms_set":[{"id":"r1","synonyms":"s(1,1,'abstain',v,1,0)."},{"id":"r2","synonyms":"s(1,2,'refrain',v,1,0)."}]}`)
+	require.Equal(t, http.StatusCreated, w.Code)
+	index := newSynonymsIndex(t, name, set, map[string]interface{}{
+		"syn": map[string]interface{}{"type": "synonym", "synonyms_set": set, "format": "wordnet"},
+	})
+	built, err := zedanalysis.RequestAnalyzer(index.GetSettings().Analysis)
+	require.NoError(t, err)
+	require.NoError(t, index.SetAnalyzers(built))
+	require.Equal(t, []string{"refrain", "abstain"}, terms(index, "refrain"))
+	stored, err := metadata.Synonyms.Get(set)
+	require.NoError(t, err)
+	wantRules := stored.Rules
+
+	invalid := []struct {
+		name   string
+		h      zhttp.HandlerFunc
+		params map[string]string
+		body   string
+	}{
+		{name: "put solr rule", h: PutRule, params: map[string]string{"set_id": set, "rule_id": "r3"}, body: `{"synonyms":"a, b"}`},
+		{name: "replace with solr rule", h: PutRule, params: map[string]string{"set_id": set, "rule_id": "r1"}, body: `{"synonyms":"x => y"}`},
+		{name: "put solr set", h: PutSet, params: map[string]string{"set_id": set}, body: `{"synonyms_set":[{"id":"r1","synonyms":"a, b"}]}`},
+	}
+	for _, tt := range invalid {
+		t.Run(tt.name, func(t *testing.T) {
+			w, resp := call(t, tt.h, tt.params, nil, tt.body)
+			assert.Equal(t, http.StatusBadRequest, w.Code)
+			assert.Equal(t, errorTypeIllegal, errorType(resp))
+			assert.Contains(t, resp["error"].(map[string]interface{})["reason"], name)
+			stored, err := metadata.Synonyms.Get(set)
+			require.NoError(t, err)
+			assert.Equal(t, wantRules, stored.Rules)
+			assert.Equal(t, []string{"refrain", "abstain"}, terms(index, "refrain"))
+		})
+	}
+
+	t.Run("valid rule", func(t *testing.T) {
+		w, resp := call(t, PutRule, map[string]string{"set_id": set, "rule_id": "r3"}, nil, `{"synonyms":"s(1,3,'forbear',v,1,0)."}`)
+		assert.Equal(t, http.StatusCreated, w.Code)
+		assert.Equal(t, map[string]interface{}{
+			"_shards": map[string]interface{}{"total": float64(1), "successful": float64(1), "failed": float64(0)},
+			"reload_details": []interface{}{map[string]interface{}{
+				"index":              name,
+				"reloaded_analyzers": []interface{}{"a"},
+				"reloaded_node_ids":  []interface{}{},
+			}},
+		}, resp["reload_analyzers_details"])
+		assert.Equal(t, []string{"forbear", "abstain", "refrain"}, terms(index, "forbear"))
+		stored, err := metadata.Synonyms.Get(set)
+		require.NoError(t, err)
+		assert.Len(t, stored.Rules, 3)
+	})
+	t.Run("delete rule", func(t *testing.T) {
+		w, _ := call(t, DeleteRule, map[string]string{"set_id": set, "rule_id": "r1"}, nil, "")
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.Equal(t, []string{"forbear", "refrain"}, terms(index, "forbear"))
+	})
+	t.Run("index settings keep the set reference", func(t *testing.T) {
+		syn := index.GetSettings().Analysis.TokenFilter["syn"].(map[string]interface{})
+		assert.Equal(t, set, syn["synonyms_set"])
+		assert.NotContains(t, syn, "synonyms")
+	})
+}
+
+func TestWithRules(t *testing.T) {
+	cleanupSet(t, "TestWithRules.other")
+	require.NoError(t, metadata.Synonyms.Set("TestWithRules.other", meta.SynonymSet{ID: "TestWithRules.other"}))
+	syn := map[string]interface{}{"type": "synonym", "synonyms_set": "TestWithRules.set", "synonyms": []interface{}{"p, q"}}
+	other := map[string]interface{}{"type": "synonym", "synonyms_set": "TestWithRules.other"}
+	tests := []struct {
+		name     string
+		analysis *meta.IndexAnalysis
+	}{
+		{name: "token_filter", analysis: &meta.IndexAnalysis{
+			TokenFilter: map[string]interface{}{"syn": syn, "other": other},
+			Analyzer:    map[string]*meta.Analyzer{"a": {Tokenizer: "standard", TokenFilter: []string{"syn", "other"}}},
+		}},
+		{name: "filter alias", analysis: &meta.IndexAnalysis{
+			Filter:   map[string]interface{}{"syn": syn, "other": other},
+			Analyzer: map[string]*meta.Analyzer{"a": {Tokenizer: "standard", Filter: []string{"syn", "other"}}},
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before, err := json.Marshal(tt.analysis)
+			require.NoError(t, err)
+			clone := withRules(tt.analysis, "TestWithRules.set", []string{"x, y"})
+			filters := clone.TokenFilter
+			if tt.analysis.Filter != nil {
+				filters = clone.Filter
+			}
+			assert.Equal(t, map[string]interface{}{"type": "synonym", "synonyms": []string{"p, q", "x, y"}}, filters["syn"])
+			assert.Equal(t, other, filters["other"])
+
+			built, err := zedanalysis.RequestAnalyzer(clone)
+			require.NoError(t, err)
+			assert.Contains(t, built, "a")
+			after, err := json.Marshal(tt.analysis)
+			require.NoError(t, err)
+			assert.JSONEq(t, string(before), string(after), "the index analysis must not change")
+		})
+	}
 }

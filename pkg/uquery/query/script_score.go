@@ -33,7 +33,10 @@ import (
 )
 
 // scriptDocField finds the doc['field'] references of a script.
-var scriptDocField = regexp.MustCompile(`doc\[\s*['"]([^'"]+)['"]\s*\]`)
+var scriptDocField = regexp.MustCompile(`doc\s*\[\s*['"]([^'"]+)['"]\s*\]`)
+
+// scriptDocEmpty finds the doc['field'].empty checks of a script.
+var scriptDocEmpty = regexp.MustCompile(`(doc\s*\[\s*['"][^'"]+['"]\s*\])\.empty\b`)
 
 // scriptFunctions are the painless score functions and Math helpers a
 // script_score script may call; scripts are evaluated with expr, so the
@@ -42,7 +45,7 @@ var scriptDocField = regexp.MustCompile(`doc\[\s*['"]([^'"]+)['"]\s*\]`)
 var scriptFunctions = map[string]interface{}{
 	"saturation": func(v, k interface{}) float64 { return num(v) / (num(k) + num(v)) },
 	"sigmoid": func(v, k, a interface{}) float64 {
-		return math.Pow(num(v), num(a)) / (math.Pow(num(k), num(a)) + math.Pow(num(v), num(a)))
+		return sigmoid(num(v), num(k), num(a))
 	},
 	"Math": map[string]interface{}{
 		"log":   func(v interface{}) float64 { return math.Log(num(v)) },
@@ -129,9 +132,11 @@ func ScriptScoreQuery(query map[string]interface{}, mappings *meta.Mappings, ana
 	return q, nil
 }
 
-// painlessToExpr rewrites the painless method calls expr has no syntax for.
+// painlessToExpr rewrites the painless method calls expr has no syntax for;
+// .empty is parenthesized so that operators like ! apply to the whole check.
 func painlessToExpr(source string) string {
-	return strings.NewReplacer(".size()", ".size", ".empty", ".size == 0").Replace(source)
+	source = scriptDocEmpty.ReplaceAllString(source, "($1.size == 0)")
+	return strings.ReplaceAll(source, ".size()", ".size")
 }
 
 func appendUnique(list []string, s string) []string {

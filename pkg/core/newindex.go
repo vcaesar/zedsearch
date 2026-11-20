@@ -256,6 +256,11 @@ func storeIndex(index *Index) error {
 	if StoreGuard != nil && !StoreGuard(index.GetName()) {
 		return nil
 	}
+	synonymRefs.RLock()
+	defer synonymRefs.RUnlock()
+	if err := checkSynonymSets(index); err != nil {
+		return fmt.Errorf("core.storeIndex: index: %s, error: %w", index.ref.Name, err)
+	}
 	data, err := index.MarshalJSON()
 	if err != nil {
 		return fmt.Errorf("core.storeIndex: index: %s, error: %s", index.ref.Name, err.Error())

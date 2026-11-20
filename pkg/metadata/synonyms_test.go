@@ -26,23 +26,36 @@ import (
 )
 
 func TestSynonyms(t *testing.T) {
-	id := "TestSynonyms.set_1"
-	set := meta.SynonymSet{ID: id, Rules: []meta.SynonymRule{{ID: "r1", Synonyms: "hello, hi"}}}
+	// fixture stores a set owned by the calling subtest, so each runs alone.
+	fixture := func(t *testing.T, id string) meta.SynonymSet {
+		t.Helper()
+		set := meta.SynonymSet{ID: id, Rules: []meta.SynonymRule{{ID: "r1", Synonyms: "hello, hi"}}}
+		require.NoError(t, Synonyms.Set(id, set))
+		t.Cleanup(func() { assert.NoError(t, Synonyms.Delete(id)) })
+		return set
+	}
 
 	t.Run("set", func(t *testing.T) {
-		require.NoError(t, Synonyms.Set(id, set))
+		set := fixture(t, "TestSynonyms.set_set")
+		set.Rules = append(set.Rules, meta.SynonymRule{ID: "r2", Synonyms: "a => b"})
+		require.NoError(t, Synonyms.Set(set.ID, set))
+		got, err := Synonyms.Get(set.ID)
+		require.NoError(t, err)
+		assert.Equal(t, set, *got)
 	})
 	t.Run("get", func(t *testing.T) {
-		got, err := Synonyms.Get(id)
+		set := fixture(t, "TestSynonyms.set_get")
+		got, err := Synonyms.Get(set.ID)
 		require.NoError(t, err)
 		assert.Equal(t, set, *got)
 	})
 	t.Run("list", func(t *testing.T) {
+		set := fixture(t, "TestSynonyms.set_list")
 		got, err := Synonyms.List(0, 0)
 		require.NoError(t, err)
 		found := false
 		for _, s := range got {
-			if s.ID == id {
+			if s.ID == set.ID {
 				found = true
 				assert.Equal(t, set.Rules, s.Rules)
 			}
@@ -50,8 +63,9 @@ func TestSynonyms(t *testing.T) {
 		assert.True(t, found)
 	})
 	t.Run("delete", func(t *testing.T) {
-		require.NoError(t, Synonyms.Delete(id))
-		_, err := Synonyms.Get(id)
+		set := fixture(t, "TestSynonyms.set_delete")
+		require.NoError(t, Synonyms.Delete(set.ID))
+		_, err := Synonyms.Get(set.ID)
 		assert.ErrorIs(t, err, errors.ErrKeyNotFound)
 	})
 	t.Run("get invalid json", func(t *testing.T) {

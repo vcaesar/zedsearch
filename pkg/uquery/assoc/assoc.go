@@ -20,6 +20,7 @@ package assoc
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -234,19 +235,36 @@ func fieldValues(source map[string]interface{}, field string) []string {
 	return nil
 }
 
-func lookupPath(source map[string]interface{}, path string) (interface{}, bool) {
-	if v, ok := source[path]; ok {
-		return v, true
+// lookupPath returns the value at the dotted path in v: an object is
+// descended by exact (possibly dotted) key, an array by numeric index.
+func lookupPath(v interface{}, path string) (interface{}, bool) {
+	switch v := v.(type) {
+	case map[string]interface{}:
+		if e, ok := v[path]; ok {
+			return e, true
+		}
+		for i := len(path) - 1; i > 0; i-- {
+			if path[i] != '.' {
+				continue
+			}
+			if sub, ok := v[path[:i]]; ok {
+				if e, ok := lookupPath(sub, path[i+1:]); ok {
+					return e, true
+				}
+			}
+		}
+	case []interface{}:
+		key, rest, nested := strings.Cut(path, ".")
+		n, err := strconv.Atoi(key)
+		if err != nil || n < 0 || n >= len(v) {
+			return nil, false
+		}
+		if !nested {
+			return v[n], true
+		}
+		return lookupPath(v[n], rest)
 	}
-	head, rest, found := strings.Cut(path, ".")
-	if !found {
-		return nil, false
-	}
-	sub, ok := source[head].(map[string]interface{})
-	if !ok {
-		return nil, false
-	}
-	return lookupPath(sub, rest)
+	return nil, false
 }
 
 func flattenStrings(v interface{}, rv []string) []string {

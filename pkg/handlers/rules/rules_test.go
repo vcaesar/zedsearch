@@ -17,8 +17,10 @@ package rules
 
 import (
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -141,6 +143,8 @@ func TestRuleset_Errors(t *testing.T) {
 		{"put empty", PutRuleset, params, nil, `{"rules":[]}`, http.StatusBadRequest},
 		{"put too many", PutRuleset, params, nil, `{"rules":[` + many + `]}`, http.StatusBadRequest},
 		{"put invalid", PutRuleset, params, nil, `{"rules":[{"rule_id":"a","type":"x"}]}`, http.StatusBadRequest},
+		{"put null rule", PutRuleset, params, nil, `{"rules":[null]}`, http.StatusBadRequest},
+		{"put null among rules", PutRuleset, params, nil, `{"rules":[` + pinRule + `,null]}`, http.StatusBadRequest},
 		{"put duplicate", PutRuleset, params, nil, `{"rules":[` + pinRule + `,` + pinRule + `]}`, http.StatusBadRequest},
 		{"get missing", GetRuleset, params, nil, "", http.StatusNotFound},
 		{"delete missing", DeleteRuleset, params, nil, "", http.StatusNotFound},
@@ -156,11 +160,29 @@ func TestRuleset_Errors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			w, resp := call(t, tt.h, tt.params, tt.query, tt.body)
+			var w *httptest.ResponseRecorder
+			var resp obj
+			require.NotPanics(t, func() { w, resp = call(t, tt.h, tt.params, tt.query, tt.body) })
 			assert.Equal(t, tt.code, w.Code, w.Body.String())
 			assert.NotNil(t, errorType(resp))
 		})
 	}
+
+	t.Run("list overflowing page end", func(t *testing.T) {
+		t.Cleanup(func() {
+			if err := metadata.QueryRules.Delete(id); err != nil {
+				t.Log(err)
+			}
+		})
+		w, _ := call(t, PutRuleset, params, nil, `{"rules":[`+pinRule+`]}`)
+		require.Equal(t, http.StatusCreated, w.Code)
+		var resp obj
+		require.NotPanics(t, func() {
+			w, resp = call(t, ListRulesets, nil, map[string]string{"from": "1", "size": strconv.Itoa(math.MaxInt)}, "")
+		})
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.NotNil(t, resp["results"])
+	})
 
 	t.Run("rule missing in set", func(t *testing.T) {
 		t.Cleanup(func() {

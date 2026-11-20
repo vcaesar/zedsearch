@@ -27,6 +27,7 @@ package synonyms
 
 import (
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"sort"
@@ -35,6 +36,7 @@ import (
 	"sync"
 
 	"github.com/rs/zerolog/log"
+	"github.com/vcaesar/riot/analysis"
 
 	"github.com/vcaesar/zedsearch/pkg/core"
 	"github.com/vcaesar/zedsearch/pkg/errors"
@@ -123,8 +125,9 @@ func ListSets(c zhttp.Context) {
 	}
 	sort.Slice(sets, func(i, j int) bool { return sets[i].ID < sets[j].ID })
 
-	results := make([]SetSummary, 0, size)
-	for _, set := range paginate(sets, from, size) {
+	pageSets := paginate(sets, from, size)
+	results := make([]SetSummary, 0, len(pageSets))
+	for _, set := range pageSets {
 		results = append(results, SetSummary{SynonymsSet: set.ID, Count: len(set.Rules)})
 	}
 	zutils.RenderJSON(c, http.StatusOK, ListResponse{Count: len(sets), Results: results})
@@ -222,13 +225,14 @@ func DeleteSet(c zhttp.Context) {
 		renderSetNotFound(c, id)
 		return
 	}
-	if used := indexesUsing(id); len(used) > 0 {
-		renderError(c, http.StatusBadRequest, errorTypeIllegal, fmt.Sprintf(
-			"synonyms set [%s] cannot be deleted as it is used by the indices [%s]", id, strings.Join(used, ", ")))
+	used, err := core.DeleteSynonymSet(id)
+	if err != nil {
+		renderError(c, http.StatusInternalServerError, errors.ErrorTypeRuntimeException, err.Error())
 		return
 	}
-	if err := metadata.Synonyms.Delete(id); err != nil {
-		renderError(c, http.StatusInternalServerError, errors.ErrorTypeRuntimeException, err.Error())
+	if len(used) > 0 {
+		renderError(c, http.StatusBadRequest, errorTypeIllegal, fmt.Sprintf(
+			"synonyms set [%s] cannot be deleted as it is used by the indices [%s]", id, strings.Join(used, ", ")))
 		return
 	}
 	zutils.RenderJSON(c, http.StatusOK, zhttp.H{"acknowledged": true})
@@ -321,11 +325,7 @@ func DeleteRule(c zhttp.Context) {
 		return
 	}
 	set.Rules = slices.Delete(set.Rules, i, i+1)
-	if err := metadata.Synonyms.Set(set.ID, *set); err != nil {
-		renderError(c, http.StatusInternalServerError, errors.ErrorTypeRuntimeException, err.Error())
-		return
-	}
-	zutils.RenderJSON(c, http.StatusOK, UpdateResponse{Result: "deleted", ReloadAnalyzersDetails: reloadSet(set.ID)})
+	storeSet(c, set, http.StatusOK, "deleted")
 }
 
 // ReloadSearchAnalyzers rebuilds the analyzers of an index, picking up
@@ -342,6 +342,8 @@ func DeleteRule(c zhttp.Context) {
 // @Router /es/{index}/_reload_search_analyzers [post]
 func ReloadSearchAnalyzers(c zhttp.Context) {
 	name := c.Param("target")
+	lock.Lock()
+	defer lock.Unlock()
 	index, ok := core.GetIndex(name)
 	if !ok {
 		renderError(c, http.StatusNotFound, "index_not_found_exception", fmt.Sprintf("no such index [%s]", name))
@@ -378,17 +380,33 @@ func prepareRules(rules []meta.SynonymRule) error {
 	return nil
 }
 
-// saveSet stores set, reloads the analyzers using it and renders the result.
+// saveSet stores set as created or updated, see storeSet.
 func saveSet(c zhttp.Context, set *meta.SynonymSet, created bool) {
+	if created {
+		storeSet(c, set, http.StatusCreated, "created")
+		return
+	}
+	storeSet(c, set, http.StatusOK, "updated")
+}
+
+// storeSet builds the analyzers of the indexes using set with its new rules
+// and, only when they all build, stores set, installs them and renders the
+// result, so invalid rules never reach the storage.
+func storeSet(c zhttp.Context, set *meta.SynonymSet, code int, result string) {
+	rebuilds, err := buildSet(set)
+	if err != nil {
+		renderError(c, http.StatusBadRequest, errorTypeIllegal, err.Error())
+		return
+	}
 	if err := metadata.Synonyms.Set(set.ID, *set); err != nil {
 		renderError(c, http.StatusInternalServerError, errors.ErrorTypeRuntimeException, err.Error())
 		return
 	}
-	code, result := http.StatusOK, "updated"
-	if created {
-		code, result = http.StatusCreated, "created"
+	details := ReloadDetails{ReloadDetails: []ReloadDetail{}}
+	for _, r := range rebuilds {
+		install(&details, r.index, r.analyzers, r.built, nil)
 	}
-	zutils.RenderJSON(c, code, UpdateResponse{Result: result, ReloadAnalyzersDetails: reloadSet(set.ID)})
+	zutils.RenderJSON(c, code, UpdateResponse{Result: result, ReloadAnalyzersDetails: details})
 }
 
 // loadSet returns the set id, nil when missing; it renders storage errors.
@@ -428,29 +446,89 @@ func ruleIndex(set *meta.SynonymSet, ruleID string) int {
 	return slices.IndexFunc(set.Rules, func(r meta.SynonymRule) bool { return r.ID == ruleID })
 }
 
-// reloadSet rebuilds the analyzers of every index using the set id.
-func reloadSet(id string) ReloadDetails {
-	details := ReloadDetails{ReloadDetails: []ReloadDetail{}}
+// rebuild is the analyzers of an index built with candidate synonyms rules.
+type rebuild struct {
+	index     *core.Index
+	analyzers []string
+	built     map[string]*analysis.Analyzer
+}
+
+// buildSet builds the analyzers of every index using set with its rules in
+// place of the stored ones.
+func buildSet(set *meta.SynonymSet) ([]rebuild, error) {
+	rules := make([]string, len(set.Rules))
+	for i, rule := range set.Rules {
+		rules[i] = rule.Synonyms
+	}
+	var rebuilds []rebuild
 	for _, index := range sortedIndexes() {
-		analysis := analysisOf(index)
-		if analysis == nil {
+		settings := analysisOf(index)
+		if settings == nil {
 			continue
 		}
-		if analyzers := analyzersUsing(analysis, setFilters(analysis, id)); len(analyzers) > 0 {
-			reload(&details, index, analyzers)
+		analyzers := analyzersUsing(settings, setFilters(settings, set.ID))
+		if len(analyzers) == 0 {
+			continue
 		}
+		built, err := zedanalysis.RequestAnalyzer(withRules(settings, set.ID, rules))
+		if err != nil {
+			return nil, fmt.Errorf("synonyms set [%s] breaks the analyzers of index [%s]: %s", set.ID, index.GetName(), err)
+		}
+		rebuilds = append(rebuilds, rebuild{index: index, analyzers: analyzers, built: built})
 	}
-	return details
+	return rebuilds, nil
+}
+
+// withRules returns a copy of settings whose token filters using the set id
+// get rules inline instead; RequestAnalyzer mutates its input, so the maps
+// and analyzers are copied.
+func withRules(settings *meta.IndexAnalysis, id string, rules []string) *meta.IndexAnalysis {
+	clone := *settings
+	clone.Analyzer = make(map[string]*meta.Analyzer, len(settings.Analyzer))
+	for name, analyzer := range settings.Analyzer {
+		a := *analyzer
+		clone.Analyzer[name] = &a
+	}
+	clone.TokenFilter = filtersWithRules(settings.TokenFilter, id, rules)
+	clone.Filter = filtersWithRules(settings.Filter, id, rules)
+	return &clone
+}
+
+func filtersWithRules(filters map[string]interface{}, id string, rules []string) map[string]interface{} {
+	if filters == nil {
+		return nil
+	}
+	out := make(map[string]interface{}, len(filters))
+	for name, options := range filters {
+		if v, err := zutils.GetStringFromMap(options, "synonyms_set"); err == nil && v == id {
+			opts := maps.Clone(options.(map[string]interface{}))
+			delete(opts, "synonyms_set")
+			inline, err := zutils.GetStringSliceFromMap(opts, "synonyms")
+			if err != nil {
+				inline = nil
+			}
+			opts["synonyms"] = slices.Concat(inline, rules)
+			options = opts
+		}
+		out[name] = options
+	}
+	return out
 }
 
 // reload rebuilds the analyzers of index, reporting the given names.
 func reload(details *ReloadDetails, index *core.Index, analyzers []string) {
-	details.Shards.Total++
 	var settings *meta.IndexAnalysis
 	if s := index.GetSettings(); s != nil {
 		settings = s.Analysis
 	}
 	built, err := zedanalysis.RequestAnalyzer(settings)
+	install(details, index, analyzers, built, err)
+}
+
+// install sets the built analyzers of index unless err, reporting the
+// given names.
+func install(details *ReloadDetails, index *core.Index, analyzers []string, built map[string]*analysis.Analyzer, err error) {
+	details.Shards.Total++
 	if err == nil {
 		err = index.SetAnalyzers(built)
 	}
@@ -468,18 +546,6 @@ func reload(details *ReloadDetails, index *core.Index, analyzers []string) {
 		ReloadedAnalyzers: analyzers,
 		ReloadedNodeIDs:   []string{},
 	})
-}
-
-// indexesUsing returns the sorted names of the indexes with a token filter
-// using the set id.
-func indexesUsing(id string) []string {
-	var names []string
-	for _, index := range sortedIndexes() {
-		if analysis := analysisOf(index); analysis != nil && len(setFilters(analysis, id)) > 0 {
-			names = append(names, index.GetName())
-		}
-	}
-	return names
 }
 
 func sortedIndexes() []*core.Index {
@@ -539,7 +605,7 @@ func paginate[T any](items []T, from, size int) []T {
 	if from >= len(items) {
 		return nil
 	}
-	return items[from:min(from+size, len(items))]
+	return items[from : from+min(size, len(items)-from)]
 }
 
 func renderSetNotFound(c zhttp.Context, id string) {

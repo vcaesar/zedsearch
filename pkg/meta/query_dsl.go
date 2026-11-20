@@ -203,7 +203,7 @@ type BoolQueryForSDK struct {
 type BoostingQuery struct {
 	Positive      interface{} `json:"positive,omitempty"` // singe or multiple queries
 	Negative      interface{} `json:"negative,omitempty"` // singe or multiple queries
-	NegativeBoost float64     `json:"negative_boost,omitempty"`
+	NegativeBoost *float64    `json:"negative_boost,omitempty"`
 }
 
 type MatchAllQuery struct{}

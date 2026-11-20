@@ -66,6 +66,11 @@ func TestValidateQueryRule(t *testing.T) {
 			}
 		})
 	}
+	t.Run("nil", func(t *testing.T) {
+		require.NotPanics(t, func() {
+			assert.ErrorContains(t, ValidateQueryRule(nil), "[query_rule] must be an object")
+		})
+	})
 }
 
 func TestMatchQueryRules(t *testing.T) {

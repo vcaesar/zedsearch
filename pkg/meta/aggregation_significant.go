@@ -27,6 +27,9 @@ package meta
 const (
 	DefaultSignificantTermsSize        = 10
 	DefaultSignificantTermsMinDocCount = 3
+	// MaxSignificantTermsSize bounds size and shard_size, so that
+	// RequestSize cannot overflow.
+	MaxSignificantTermsSize = 10000
 )
 
 // AggregationSignificantTerms is the significant_terms (and significant_text)
@@ -46,7 +49,7 @@ type AggregationSignificantTerms struct {
 	GND               *SignificanceHeuristic `json:"gnd"`
 	Percentage        *struct{}              `json:"percentage"`
 
-	// significant_text options, accepted for compatibility
+	// significant_text options, not supported: rejected when set
 	FilterDuplicateText bool     `json:"filter_duplicate_text"`
 	SourceFields        []string `json:"source_fields"`
 }

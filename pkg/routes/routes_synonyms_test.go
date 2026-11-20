@@ -51,3 +51,37 @@ func TestSetSynonymsRoutes(t *testing.T) {
 		}
 	}
 }
+
+func TestSetupCORS(t *testing.T) {
+	r := zhttp.New()
+	Setup(r)
+
+	routes := []struct{ method, path string }{
+		{http.MethodGet, "/api/_synonyms"},
+		{http.MethodGet, "/es/_synonyms/set"},
+		{http.MethodGet, "/es/_query_rules"},
+		{http.MethodGet, "/api/cluster/nodes"},
+		{http.MethodGet, "/es/_ilm/policy"},
+		{http.MethodPost, "/api/_sql"},
+		{http.MethodGet, "/api/index"},
+	}
+	for _, route := range routes {
+		t.Run(route.method+" "+route.path, func(t *testing.T) {
+			req := httptest.NewRequest(route.method, route.path, nil)
+			req.Header.Set("Origin", "http://example.com")
+			w := serve(r, req)
+			assert.Equal(t, http.StatusUnauthorized, w.Code)
+			assert.Equal(t, "*", w.Header().Get("Access-Control-Allow-Origin"))
+			assert.Equal(t, "true", w.Header().Get("Access-Control-Allow-Credentials"))
+			assert.Equal(t, "Content-Length", w.Header().Get("Access-Control-Expose-Headers"))
+		})
+	}
+	t.Run("preflight", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodOptions, "/es/_synonyms/set", nil)
+		req.Header.Set("Origin", "http://example.com")
+		w := serve(r, req)
+		assert.Equal(t, http.StatusNoContent, w.Code)
+		assert.Equal(t, "*", w.Header().Get("Access-Control-Allow-Origin"))
+		assert.Contains(t, w.Header().Get("Access-Control-Allow-Methods"), http.MethodPut)
+	})
+}

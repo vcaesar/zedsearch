@@ -38,7 +38,9 @@ type significance struct {
 	readers   []*riot.Reader
 	mappings  *meta.Mappings
 	analyzers map[string]*analysis.Analyzer
-	numDocs   uint64
+	// total loads the background size, numDocs once loaded
+	total   func() (uint64, error)
+	numDocs *uint64
 }
 
 // SignificantTerms rewrites the responses of the significant_terms and
@@ -47,7 +49,8 @@ type significance struct {
 // scored against the background frequencies of the terms in the readers
 // (or in the documents matching background_filter). fgCount is the number of
 // documents matched by the search; nested aggregations use the doc_count of
-// their parent bucket as foreground size.
+// their parent bucket as foreground size. The readers are those of the
+// search, so a time range query narrows the background to the shards in it.
 func SignificantTerms(readers []*riot.Reader, aggs map[string]meta.AggregationResponse, req map[string]meta.Aggregations, fgCount uint64, mappings *meta.Mappings, analyzers map[string]*analysis.Analyzer) error {
 	if len(req) == 0 || len(aggs) == 0 {
 		return nil
@@ -55,12 +58,22 @@ func SignificantTerms(readers []*riot.Reader, aggs map[string]meta.AggregationRe
 	if mappings == nil {
 		mappings = meta.NewMappings()
 	}
-	numDocs, err := totalDocs(readers)
-	if err != nil {
-		return err
-	}
-	s := &significance{readers: readers, mappings: mappings, analyzers: analyzers, numDocs: numDocs}
+	s := &significance{readers: readers, mappings: mappings, analyzers: analyzers, total: func() (uint64, error) {
+		return totalDocs(readers)
+	}}
 	return s.walk(aggs, req, fgCount)
+}
+
+// bgTotal is the number of documents of the readers, counted on first use.
+func (s *significance) bgTotal() (uint64, error) {
+	if s.numDocs == nil {
+		n, err := s.total()
+		if err != nil {
+			return 0, err
+		}
+		s.numDocs = &n
+	}
+	return *s.numDocs, nil
 }
 
 func (s *significance) walk(resp map[string]meta.AggregationResponse, req map[string]meta.Aggregations, fgSize uint64) error {
@@ -144,7 +157,7 @@ type scoredBucket struct {
 }
 
 func (s *significance) rewrite(kind string, r *meta.AggregationResponse, sig *meta.AggregationSignificantTerms, fgSize uint64) error {
-	score, err := sigHeuristic(kind, sig)
+	score, superset, err := sigHeuristic(kind, sig)
 	if err != nil {
 		return err
 	}
@@ -162,14 +175,20 @@ func (s *significance) rewrite(kind string, r *meta.AggregationResponse, sig *me
 	}
 
 	var bgFilter riot.Query
-	bgSize := s.numDocs
+	var bgSize uint64
 	if sig.BackgroundFilter != nil {
 		if bgFilter, err = query.Query(sig.BackgroundFilter, s.mappings, s.analyzers); err != nil {
 			return errors.New(errors.ErrorTypeParsingException, fmt.Sprintf("[%s] background_filter parse err", kind)).Cause(err)
 		}
-		if bgSize, err = countMatches(s.readers, bgFilter); err != nil {
-			return err
-		}
+		bgSize, err = countMatches(s.readers, bgFilter)
+	} else {
+		bgSize, err = s.bgTotal()
+	}
+	if err != nil {
+		return err
+	}
+	if superset && fgSize > bgSize {
+		return notSuperset(kind, "subset size", fgSize, "superset size", bgSize)
 	}
 	prop, _ := s.mappings.GetProperty(sig.Field)
 	useDict := bgFilter == nil && (prop.Type == "" || prop.Type == "text" || prop.Type == "keyword")
@@ -193,6 +212,9 @@ func (s *significance) rewrite(kind string, r *meta.AggregationResponse, sig *me
 		}
 		if err != nil {
 			return err
+		}
+		if superset && fg > bg {
+			return notSuperset(kind, "subset freq of ["+key+"]", fg, "superset freq", bg)
 		}
 		v := score(float64(fg), float64(fgSize), float64(bg), float64(bgSize))
 		if math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 {
@@ -239,41 +261,51 @@ func (s *significance) filteredFreq(field, value string, filter riot.Query) (uin
 	return countMatches(s.readers, q)
 }
 
-func sigHeuristic(kind string, sig *meta.AggregationSignificantTerms) (heuristic, error) {
+// notSuperset reports foreground counts above the background ones, which
+// background_is_superset forbids.
+func notSuperset(kind, fgName string, fg uint64, bgName string, bg uint64) error {
+	return errors.New(errors.ErrorTypeIllegalArgumentException,
+		fmt.Sprintf("[%s] %s [%d] > %s [%d], try to set background_is_superset: false", kind, fgName, fg, bgName, bg))
+}
+
+// sigHeuristic returns the requested score and whether it requires the
+// background to be a superset of the foreground.
+func sigHeuristic(kind string, sig *meta.AggregationSignificantTerms) (heuristic, bool, error) {
 	var rv heuristic
+	var isSuperset bool
 	n := 0
-	set := func(h heuristic) {
-		rv = h
+	set := func(h heuristic, superset bool) {
+		rv, isSuperset = h, superset
 		n++
 	}
 	if sig.JLH != nil {
-		set(jlhScore)
+		set(jlhScore, false)
 	}
 	if sig.Percentage != nil {
-		set(percentageScore)
+		set(percentageScore, false)
 	}
 	if h := sig.MutualInformation; h != nil {
 		set(func(fg, fgSize, bg, bgSize float64) float64 {
 			return mutualInformationScore(fg, fgSize, bg, bgSize, h.IncludeNegatives, superset(h))
-		})
+		}, superset(h))
 	}
 	if h := sig.ChiSquare; h != nil {
 		set(func(fg, fgSize, bg, bgSize float64) float64 {
 			return chiSquareScore(fg, fgSize, bg, bgSize, h.IncludeNegatives, superset(h))
-		})
+		}, superset(h))
 	}
 	if h := sig.GND; h != nil {
 		set(func(fg, fgSize, bg, bgSize float64) float64 {
 			return gndScore(fg, fgSize, bg, bgSize, superset(h))
-		})
+		}, superset(h))
 	}
 	switch n {
 	case 0:
-		return jlhScore, nil
+		return jlhScore, false, nil
 	case 1:
-		return rv, nil
+		return rv, isSuperset, nil
 	default:
-		return nil, errors.New(errors.ErrorTypeParsingException, fmt.Sprintf("[%s] only one significance heuristic is allowed", kind))
+		return nil, false, errors.New(errors.ErrorTypeParsingException, fmt.Sprintf("[%s] only one significance heuristic is allowed", kind))
 	}
 }
 

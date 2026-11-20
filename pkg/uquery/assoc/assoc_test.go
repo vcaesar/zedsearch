@@ -16,6 +16,7 @@
 package assoc
 
 import (
+	"math"
 	"sort"
 	"strconv"
 	"testing"
@@ -63,6 +64,12 @@ func testMappings() *meta.Mappings {
 // newTestReader indexes docs into an in-memory index and returns its reader.
 func newTestReader(t *testing.T, docs []testDoc) *riot.Reader {
 	t.Helper()
+	return newIndexReader(t, testIndex, docs)
+}
+
+// newIndexReader indexes docs as documents of index.
+func newIndexReader(t *testing.T, index string, docs []testDoc) *riot.Reader {
+	t.Helper()
 	writer, err := riot.OpenWriter(riot.InMemoryOnlyConfig())
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, writer.Close()) })
@@ -75,7 +82,7 @@ func newTestReader(t *testing.T, docs []testDoc) *riot.Reader {
 			AddField(riot.NewKeywordField("tag", d.tag).Aggregatable()).
 			AddField(riot.NewNumericField("n", d.n).Aggregatable()).
 			AddField(riot.NewStoredOnlyField("_source", source)).
-			AddField(riot.NewStoredOnlyField("_index", []byte(testIndex)))
+			AddField(riot.NewStoredOnlyField("_index", []byte(index)))
 		batch.Update(riot.Identifier(d.id), doc)
 	}
 	require.NoError(t, writer.Batch(batch))
@@ -192,12 +199,24 @@ func TestHelpers(t *testing.T) {
 			"obj":   map[string]interface{}{"inner": map[string]interface{}{"leaf": "deep"}},
 			"title": "multi",
 			"d.e":   "dotted",
+			"people": []interface{}{
+				map[string]interface{}{"name": "Ada", "tags": []interface{}{"x", "y"}},
+				map[string]interface{}{"name": "Bob"},
+			},
+			"o": map[string]interface{}{"p.q": "dotted inner"},
 		}
 		assert.Equal(t, []string{"x"}, fieldValues(src, "a"))
 		assert.Equal(t, []string{"y", "2"}, fieldValues(src, "b"))
 		assert.Equal(t, []string{"deep"}, fieldValues(src, "obj.inner.leaf"))
 		assert.Equal(t, []string{"multi"}, fieldValues(src, "title.keyword"))
 		assert.Equal(t, []string{"dotted"}, fieldValues(src, "d.e"))
+		assert.Equal(t, []string{"Ada"}, fieldValues(src, "people.0.name"))
+		assert.Equal(t, []string{"Bob"}, fieldValues(src, "people.1.name"))
+		assert.Equal(t, []string{"y"}, fieldValues(src, "people.0.tags.1"))
+		assert.Equal(t, []string{"Ada"}, fieldValues(src, "people.0.name.keyword"))
+		assert.Equal(t, []string{"dotted inner"}, fieldValues(src, "o.p.q"))
+		assert.Nil(t, fieldValues(src, "people.2.name"))
+		assert.Nil(t, fieldValues(src, "people.x.name"))
 		assert.Nil(t, fieldValues(src, "obj"))
 		assert.Nil(t, fieldValues(src, "missing"))
 		assert.Nil(t, fieldValues(nil, "a"))
@@ -232,26 +251,50 @@ func TestHelpers(t *testing.T) {
 }
 
 func TestParams(t *testing.T) {
-	_, err := paramInt("k", "v", true)
-	assert.Error(t, err)
-	_, err = paramInt("k", "v", "x")
-	assert.Error(t, err)
-	n, err := paramInt("k", "v", float64(3))
-	assert.NoError(t, err)
-	assert.Equal(t, 3, n)
-	_, err = paramFloat("k", "v", false)
-	assert.Error(t, err)
-	_, err = paramFloat("k", "v", []interface{}{})
-	assert.Error(t, err)
-	_, err = paramBool("k", "v", "maybe")
-	assert.Error(t, err)
-	_, err = paramString("k", "v", 1)
-	assert.Error(t, err)
-	s, err := paramStrings("k", "v", []string{"a"})
-	assert.NoError(t, err)
-	assert.Equal(t, []string{"a"}, s)
-	_, err = paramStrings("k", "v", []interface{}{1})
-	assert.Error(t, err)
-	_, err = paramStrings("k", "v", 1)
-	assert.Error(t, err)
+	tests := []struct {
+		name    string
+		parse   func(v interface{}) (interface{}, error)
+		in      interface{}
+		want    interface{}
+		wantErr bool
+	}{
+		{"int from integral float", intParam, float64(3), 3, false},
+		{"int from int", intParam, 2, 2, false},
+		{"int from string", intParam, "4", 4, false},
+		{"int rejects bool", intParam, true, nil, true},
+		{"int rejects word", intParam, "x", nil, true},
+		{"int rejects fraction", intParam, 1.9, nil, true},
+		{"int rejects negative fraction", intParam, -0.5, nil, true},
+		{"int rejects NaN", intParam, math.NaN(), nil, true},
+		{"int rejects Inf", intParam, math.Inf(1), nil, true},
+		{"float", floatParam, 1.5, 1.5, false},
+		{"float rejects bool", floatParam, false, nil, true},
+		{"float rejects array", floatParam, []interface{}{}, nil, true},
+		{"bool", boolParam, "true", true, false},
+		{"bool rejects word", boolParam, "maybe", nil, true},
+		{"string", stringParam, "s", "s", false},
+		{"string rejects number", stringParam, 1, nil, true},
+		{"strings from string", stringsParam, "a", []string{"a"}, false},
+		{"strings from slice", stringsParam, []string{"a"}, []string{"a"}, false},
+		{"strings from array", stringsParam, []interface{}{"a", "b"}, []string{"a", "b"}, false},
+		{"strings rejects number items", stringsParam, []interface{}{1}, nil, true},
+		{"strings rejects number", stringsParam, 1, nil, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := tt.parse(tt.in)
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }
+
+func intParam(v interface{}) (interface{}, error)     { return paramInt("k", "v", v) }
+func floatParam(v interface{}) (interface{}, error)   { return paramFloat("k", "v", v) }
+func boolParam(v interface{}) (interface{}, error)    { return paramBool("k", "v", v) }
+func stringParam(v interface{}) (interface{}, error)  { return paramString("k", "v", v) }
+func stringsParam(v interface{}) (interface{}, error) { return paramStrings("k", "v", v) }

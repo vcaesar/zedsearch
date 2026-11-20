@@ -17,6 +17,7 @@ package assoc
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/vcaesar/zedsearch/pkg/errors"
 	"github.com/vcaesar/zedsearch/pkg/zutils"
@@ -27,8 +28,13 @@ func paramError(kind, key string, v interface{}) error {
 }
 
 func paramInt(kind, key string, v interface{}) (int, error) {
-	if _, ok := v.(bool); ok {
+	switch v := v.(type) {
+	case bool:
 		return 0, paramError(kind, key, v)
+	case float64:
+		if v != math.Trunc(v) || math.IsInf(v, 0) {
+			return 0, paramError(kind, key, v)
+		}
 	}
 	n, err := zutils.ToInt(v)
 	if err != nil {
