@@ -301,6 +301,9 @@ func TestSignificantTerms_Rewrite(t *testing.T) {
 		{"jlh has no superset check", meta.AggregationSignificantTerms{Field: "body", MinDocCount: intPtr(1),
 			BackgroundFilter: map[string]interface{}{"term": map[string]interface{}{"tag": "tech"}}}, 4, ""},
 		{"superset counts accepted", meta.AggregationSignificantTerms{Field: "body", MinDocCount: intPtr(1), ChiSquare: &meta.SignificanceHeuristic{}}, 4, ""},
+		{"chi_square more foreground docs without the term", meta.AggregationSignificantTerms{Field: "body", MinDocCount: intPtr(1), ChiSquare: &meta.SignificanceHeuristic{IncludeNegatives: true}}, 10, "subset docs without ["},
+		{"not superset accepts complementary counts", meta.AggregationSignificantTerms{Field: "body", MinDocCount: intPtr(1),
+			ChiSquare: &meta.SignificanceHeuristic{IncludeNegatives: true, BackgroundIsSuperset: boolPtr(false)}}, 10, ""},
 	}
 	for _, tt := range supersetTests {
 		t.Run(tt.name, func(t *testing.T) {

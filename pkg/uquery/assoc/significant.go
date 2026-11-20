@@ -216,6 +216,10 @@ func (s *significance) rewrite(kind string, r *meta.AggregationResponse, sig *me
 		if superset && fg > bg {
 			return notSuperset(kind, "subset freq of ["+key+"]", fg, "superset freq", bg)
 		}
+		// fgSize-fg > bgSize-bg, written without unsigned underflow
+		if superset && fgSize+bg > bgSize+fg {
+			return notSuperset(kind, "subset docs without ["+key+"]", fgSize-min(fg, fgSize), "superset docs without it", bgSize-min(bg, bgSize))
+		}
 		v := score(float64(fg), float64(fgSize), float64(bg), float64(bgSize))
 		if math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 {
 			continue

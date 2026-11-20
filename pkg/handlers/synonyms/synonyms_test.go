@@ -469,7 +469,9 @@ func TestSynonymsBuildBeforeSave(t *testing.T) {
 		assert.Len(t, stored.Rules, 3)
 	})
 	t.Run("delete rule", func(t *testing.T) {
-		w, _ := call(t, DeleteRule, map[string]string{"set_id": set, "rule_id": "r1"}, nil, "")
+		w, _ := call(t, PutRule, map[string]string{"set_id": set, "rule_id": "r3"}, nil, `{"synonyms":"s(1,3,'forbear',v,1,0)."}`)
+		require.Less(t, w.Code, 300)
+		w, _ = call(t, DeleteRule, map[string]string{"set_id": set, "rule_id": "r1"}, nil, "")
 		assert.Equal(t, http.StatusOK, w.Code)
 		assert.Equal(t, []string{"forbear", "refrain"}, terms(index, "forbear"))
 	})
@@ -478,6 +480,30 @@ func TestSynonymsBuildBeforeSave(t *testing.T) {
 		assert.Equal(t, set, syn["synonyms_set"])
 		assert.NotContains(t, syn, "synonyms")
 	})
+}
+
+func TestSynonymsBuildUnreferencedFilter(t *testing.T) {
+	set := "TestSynonymsBuildUnreferencedFilter.set_1"
+	name := "TestSynonymsBuildUnreferencedFilter.index_1"
+	cleanupSet(t, set)
+	w, _ := call(t, PutSet, map[string]string{"set_id": set}, nil, `{"synonyms_set":[{"id":"r1","synonyms":"s(1,1,'abstain',v,1,0)."}]}`)
+	require.Equal(t, http.StatusCreated, w.Code)
+	index, err := core.NewIndex(name, "disk", 1)
+	require.NoError(t, err)
+	require.NoError(t, core.StoreIndex(index))
+	t.Cleanup(func() { assert.NoError(t, core.DeleteIndex(name)) })
+	require.NoError(t, index.SetSettings(&meta.IndexSettings{Analysis: &meta.IndexAnalysis{
+		TokenFilter: map[string]interface{}{"unused": map[string]interface{}{"type": "synonym", "synonyms_set": set, "format": "wordnet"}},
+		Analyzer:    map[string]*meta.Analyzer{"plain": {Tokenizer: "standard"}},
+	}}))
+
+	w, resp := call(t, PutRule, map[string]string{"set_id": set, "rule_id": "r2"}, nil, `{"synonyms":"a, b"}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, resp["error"].(map[string]interface{})["reason"], name)
+
+	w, resp = call(t, PutRule, map[string]string{"set_id": set, "rule_id": "r2"}, nil, `{"synonyms":"s(1,2,'refrain',v,1,0)."}`)
+	assert.Equal(t, http.StatusCreated, w.Code)
+	assert.Equal(t, []interface{}{}, resp["reload_analyzers_details"].(map[string]interface{})["reload_details"])
 }
 
 func TestWithRules(t *testing.T) {

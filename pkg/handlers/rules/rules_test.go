@@ -169,19 +169,29 @@ func TestRuleset_Errors(t *testing.T) {
 	}
 
 	t.Run("list overflowing page end", func(t *testing.T) {
-		t.Cleanup(func() {
-			if err := metadata.QueryRules.Delete(id); err != nil {
-				t.Log(err)
-			}
-		})
-		w, _ := call(t, PutRuleset, params, nil, `{"rules":[`+pinRule+`]}`)
-		require.Equal(t, http.StatusCreated, w.Code)
+		// two owned rulesets keep from=1 below the list length, so the page
+		// end is computed; the second one sorts after the first
+		second := "TestRuleset_Errors.rs_2"
+		for _, rs := range []string{id, second} {
+			t.Cleanup(func() {
+				if err := metadata.QueryRules.Delete(rs); err != nil {
+					t.Log(err)
+				}
+			})
+			w, _ := call(t, PutRuleset, map[string]string{"ruleset_id": rs}, nil, `{"rules":[`+pinRule+`]}`)
+			require.Equal(t, http.StatusCreated, w.Code)
+		}
+		var w *httptest.ResponseRecorder
 		var resp obj
 		require.NotPanics(t, func() {
 			w, resp = call(t, ListRulesets, nil, map[string]string{"from": "1", "size": strconv.Itoa(math.MaxInt)}, "")
 		})
 		assert.Equal(t, http.StatusOK, w.Code)
-		assert.NotNil(t, resp["results"])
+		var ids []interface{}
+		for _, r := range resp["results"].([]interface{}) {
+			ids = append(ids, r.(map[string]interface{})["ruleset_id"])
+		}
+		assert.Contains(t, ids, second)
 	})
 
 	t.Run("rule missing in set", func(t *testing.T) {

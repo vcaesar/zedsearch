@@ -127,9 +127,14 @@ func rankFeatureFunc(name string, body map[string]interface{}) (func(float64) fl
 }
 
 // sigmoid is v^exp / (v^exp + pivot^exp), written as 1 / (1 + (pivot/v)^exp)
-// so that large powers do not overflow to Inf/Inf.
+// so that large powers do not overflow to Inf/Inf. When pivot/v itself
+// overflows or underflows, the power is taken in the log domain.
 func sigmoid(v, pivot, exp float64) float64 {
-	return 1 / (1 + math.Pow(pivot/v, exp))
+	ratio := pivot / v
+	if v > 0 && pivot > 0 && (ratio == 0 || math.IsInf(ratio, 0)) {
+		return 1 / (1 + math.Exp(exp*(math.Log(pivot)-math.Log(v))))
+	}
+	return 1 / (1 + math.Pow(ratio, exp))
 }
 
 type rankFeatureQuery struct {

@@ -34,6 +34,9 @@ func TestRequestSignificantTerms(t *testing.T) {
 	for field, typ := range map[string]string{"body": "text", "tag": "keyword", "n": "numeric", "ok": "bool", "ts": "date"} {
 		mappings.SetProperty(field, meta.NewProperty(typ))
 	}
+	aggText := meta.NewProperty("text")
+	aggText.Aggregatable = true
+	mappings.SetProperty("agg_body", aggText)
 	sub := map[string]meta.Aggregations{"max_n": {Max: &meta.AggregationMetric{Field: "n"}}}
 	countSub := map[string]meta.Aggregations{"count": {Max: &meta.AggregationMetric{Field: "n"}}}
 	tests := []struct {
@@ -44,7 +47,13 @@ func TestRequestSignificantTerms(t *testing.T) {
 		{name: "keyword", agg: meta.Aggregations{SignificantTerms: &meta.AggregationSignificantTerms{Field: "tag"}}},
 		{name: "numeric with sub aggregations", agg: meta.Aggregations{SignificantTerms: &meta.AggregationSignificantTerms{Field: "n", Size: 50}, Aggregations: sub}},
 		{name: "bool", agg: meta.Aggregations{SignificantTerms: &meta.AggregationSignificantTerms{Field: "ok"}}},
-		{name: "significant_text", agg: meta.Aggregations{SignificantText: &meta.AggregationSignificantTerms{Field: "body"}}},
+		{name: "significant_text", agg: meta.Aggregations{SignificantText: &meta.AggregationSignificantTerms{Field: "agg_body"}}},
+		{name: "significant_text on default text", agg: meta.Aggregations{SignificantText: &meta.AggregationSignificantTerms{Field: "body"}},
+			wantErr: "[significant_text] field [body] of type [text] must be mapped with aggregatable: true"},
+		{name: "sub aggregation named score", agg: meta.Aggregations{SignificantTerms: &meta.AggregationSignificantTerms{Field: "tag"}, Aggregations: map[string]meta.Aggregations{"score": {Max: &meta.AggregationMetric{Field: "n"}}}},
+			wantErr: "[significant_terms] sub aggregation name [score] is reserved"},
+		{name: "sub aggregation named bg_count", agg: meta.Aggregations{SignificantTerms: &meta.AggregationSignificantTerms{Field: "tag"}, Aggregations: map[string]meta.Aggregations{"bg_count": {Max: &meta.AggregationMetric{Field: "n"}}}},
+			wantErr: "[significant_terms] sub aggregation name [bg_count] is reserved"},
 		{name: "unsupported type", agg: meta.Aggregations{SignificantTerms: &meta.AggregationSignificantTerms{Field: "ts"}},
 			wantErr: "[significant_terms] aggregation doesn't support values of type: [ts:[date]]"},
 		{name: "significant_text unmapped", agg: meta.Aggregations{SignificantText: &meta.AggregationSignificantTerms{Field: "nope"}},
@@ -61,14 +70,14 @@ func TestRequestSignificantTerms(t *testing.T) {
 			wantErr: "[significant_terms] size must be in [0, 10000]"},
 		{name: "negative size", agg: meta.Aggregations{SignificantTerms: &meta.AggregationSignificantTerms{Field: "tag", Size: -1}},
 			wantErr: "[significant_terms] size must be in [0, 10000]"},
-		{name: "shard_size above limit", agg: meta.Aggregations{SignificantText: &meta.AggregationSignificantTerms{Field: "body", ShardSize: meta.MaxSignificantTermsSize + 1}},
+		{name: "shard_size above limit", agg: meta.Aggregations{SignificantText: &meta.AggregationSignificantTerms{Field: "agg_body", ShardSize: meta.MaxSignificantTermsSize + 1}},
 			wantErr: "[significant_text] shard_size must be in [0, 10000]"},
 		{name: "size at limit", agg: meta.Aggregations{SignificantTerms: &meta.AggregationSignificantTerms{Field: "tag", Size: meta.MaxSignificantTermsSize}}},
 		{name: "include list and exclude regexp", agg: meta.Aggregations{SignificantTerms: &meta.AggregationSignificantTerms{Field: "tag",
 			Include: []interface{}{"a", 1}, Exclude: "b.*"}}},
 		{name: "bad include regexp", agg: meta.Aggregations{SignificantTerms: &meta.AggregationSignificantTerms{Field: "tag", Include: "["}},
 			wantErr: "[significant_terms] invalid include regexp [[]"},
-		{name: "unsupported exclude", agg: meta.Aggregations{SignificantText: &meta.AggregationSignificantTerms{Field: "body", Exclude: map[string]interface{}{"partition": 0}}},
+		{name: "unsupported exclude", agg: meta.Aggregations{SignificantText: &meta.AggregationSignificantTerms{Field: "agg_body", Exclude: map[string]interface{}{"partition": 0}}},
 			wantErr: "[significant_text] exclude doesn't support values of type"},
 	}
 	for _, tt := range tests {

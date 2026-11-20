@@ -138,18 +138,11 @@ func MultiSearch(indexNames []string, query *meta.ZedQuery) (*meta.SearchRespons
 	}
 
 	resp, err := searchV2(shardNum, int64(len(readers)), dmi, query, mappings, analyzers, indexes)
-	if err != nil {
-		return nil, err
+	if err == nil {
+		err = ext.finish(ctx, resp)
 	}
-	if err := ext.finish(ctx, resp); err != nil {
-		if err == context.DeadlineExceeded {
-			return &meta.SearchResponse{
-				TimedOut: true,
-				Error:    err.Error(),
-				Hits:     meta.Hits{Hits: []meta.Hit{}},
-			}, nil
-		}
-		return nil, err
+	if err != nil {
+		return searchFailed(err)
 	}
 	return resp, nil
 }

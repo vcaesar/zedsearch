@@ -520,13 +520,18 @@ func synonymLines(options interface{}) ([]synonymRule, error) {
 	return lines, nil
 }
 
-// readSynonymsPath reads the file at path relative to the data path,
+// SynonymsDir is the directory under the data path synonyms_path is read
+// from, so that it cannot reach the metadata or index data.
+const SynonymsDir = "synonyms"
+
+// readSynonymsPath reads the file at path relative to the synonyms directory,
 // refusing absolute paths and any path, symlinks included, leaving it.
 func readSynonymsPath(path string) ([]byte, error) {
 	if !filepath.IsLocal(path) {
-		return nil, errors.New(errors.ErrorTypeParsingException, fmt.Sprintf("[synonym] synonyms_path [%s] must be a relative path inside the data path", path))
+		return nil, errors.New(errors.ErrorTypeParsingException,
+			fmt.Sprintf("[synonym] synonyms_path [%s] must be a relative path inside the [%s] directory of the data path", path, SynonymsDir))
 	}
-	f, err := os.OpenInRoot(config.Global.DataPath, path)
+	f, err := os.OpenInRoot(filepath.Join(config.Global.DataPath, SynonymsDir), path)
 	if err != nil {
 		return nil, readSynonymsPathError(path)
 	}

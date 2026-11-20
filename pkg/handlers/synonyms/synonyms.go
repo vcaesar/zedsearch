@@ -466,15 +466,19 @@ func buildSet(set *meta.SynonymSet) ([]rebuild, error) {
 		if settings == nil {
 			continue
 		}
-		analyzers := analyzersUsing(settings, setFilters(settings, set.ID))
-		if len(analyzers) == 0 {
+		// RequestAnalyzer builds every filter, so an unreferenced filter
+		// using the set is validated too
+		filters := setFilters(settings, set.ID)
+		if len(filters) == 0 {
 			continue
 		}
 		built, err := zedanalysis.RequestAnalyzer(withRules(settings, set.ID, rules))
 		if err != nil {
 			return nil, fmt.Errorf("synonyms set [%s] breaks the analyzers of index [%s]: %s", set.ID, index.GetName(), err)
 		}
-		rebuilds = append(rebuilds, rebuild{index: index, analyzers: analyzers, built: built})
+		if analyzers := analyzersUsing(settings, filters); len(analyzers) > 0 {
+			rebuilds = append(rebuilds, rebuild{index: index, analyzers: analyzers, built: built})
+		}
 	}
 	return rebuilds, nil
 }

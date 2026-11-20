@@ -66,8 +66,8 @@ func transformQuery(q map[string]interface{}, fns map[string]TransformFunc) (map
 					return rewritten, err
 				}
 				// the replacement can keep sub queries of body, as the organic
-				// query of a rule, which are transformed in turn
-				return transformChildren(rewritten, fns)
+				// query of a rule, and can itself be a matching clause
+				return transformQuery(rewritten, fns)
 			}
 		}
 	}

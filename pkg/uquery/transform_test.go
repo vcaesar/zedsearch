@@ -58,4 +58,18 @@ func TestTransform_ReplacementChildren(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+
+	t.Run("replacement that is itself a matching clause", func(t *testing.T) {
+		// an unmatched rule gives back its organic query unchanged
+		unmatched := map[string]TransformFunc{
+			"rule": func(body map[string]interface{}) (map[string]interface{}, error) {
+				return body["organic"].(map[string]interface{}), nil
+			},
+			"more_like_this": fns["more_like_this"],
+		}
+		nested := map[string]interface{}{"rule": map[string]interface{}{"organic": map[string]interface{}{"rule": map[string]interface{}{"organic": mlt}}}}
+		got, err := Transform(nested, unmatched)
+		require.NoError(t, err)
+		assert.Equal(t, rewrittenMLT, got)
+	})
 }

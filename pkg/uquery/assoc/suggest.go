@@ -749,12 +749,23 @@ func prefixDistance(prefix, term []rune, transpositions bool, limit int) int {
 	for j := range prev {
 		prev[j] = min(j, over)
 	}
+	lo, hi := 1, len(term)
 	for i := 1; i <= len(prefix); i++ {
-		for j := range cur {
-			cur[j] = over
+		lo, hi = max(1, i-limit), min(len(term), i+limit)
+		if i-limit > len(term) {
+			// every cell of the row needs more than limit deletions
+			return over
 		}
+		// only the band and the cells next to it are read, by this row and
+		// the next two, so the rest of the reused row is left stale
 		cur[0] = min(i, over)
-		for j := max(1, i-limit); j <= min(len(term), i+limit); j++ {
+		if lo > 1 {
+			cur[lo-1] = over
+		}
+		if hi < len(term) {
+			cur[hi+1] = over
+		}
+		for j := lo; j <= hi; j++ {
 			cost := 1
 			if prefix[i-1] == term[j-1] {
 				cost = 0
@@ -768,7 +779,7 @@ func prefixDistance(prefix, term []rune, transpositions bool, limit int) int {
 		prev2, prev, cur = prev, cur, prev2
 	}
 	rv := over
-	for _, d := range prev {
+	for _, d := range prev[lo-1 : hi+1] {
 		rv = min(rv, d)
 	}
 	return rv

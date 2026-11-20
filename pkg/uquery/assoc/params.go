@@ -32,7 +32,8 @@ func paramInt(kind, key string, v interface{}) (int, error) {
 	case bool:
 		return 0, paramError(kind, key, v)
 	case float64:
-		if v != math.Trunc(v) || math.IsInf(v, 0) {
+		// float64(math.MaxInt) rounds up to 2^63, which int cannot hold
+		if v != math.Trunc(v) || v >= float64(math.MaxInt) || v < float64(math.MinInt) {
 			return 0, paramError(kind, key, v)
 		}
 	}

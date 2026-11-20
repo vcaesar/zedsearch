@@ -103,20 +103,26 @@ func (index *Index) Search(query *meta.ZedQuery) (*meta.SearchResponse, error) {
 	}
 
 	resp, err := searchV2(index.GetAllShardNum(), int64(len(readers)), dmi, query, mappings, analyzers, nil)
-	if err != nil {
-		return nil, err
+	if err == nil {
+		err = ext.finish(ctx, resp)
 	}
-	if err := ext.finish(ctx, resp); err != nil {
-		if err == context.DeadlineExceeded {
-			return &meta.SearchResponse{
-				TimedOut: true,
-				Error:    err.Error(),
-				Hits:     meta.Hits{Hits: []meta.Hit{}},
-			}, nil
-		}
-		return nil, err
+	if err != nil {
+		return searchFailed(err)
 	}
 	return resp, nil
+}
+
+// searchFailed answers a search past its deadline with an empty timed out
+// response and fails it otherwise.
+func searchFailed(err error) (*meta.SearchResponse, error) {
+	if err == context.DeadlineExceeded {
+		return &meta.SearchResponse{
+			TimedOut: true,
+			Error:    err.Error(),
+			Hits:     meta.Hits{Hits: []meta.Hit{}},
+		}, nil
+	}
+	return nil, err
 }
 
 // searchV2 renders the hits of dmi. Highlighting and fields use the mappings

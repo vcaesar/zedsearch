@@ -35,8 +35,10 @@ import (
 // scriptDocField finds the doc['field'] references of a script.
 var scriptDocField = regexp.MustCompile(`doc\s*\[\s*['"]([^'"]+)['"]\s*\]`)
 
-// scriptDocEmpty finds the doc['field'].empty checks of a script.
-var scriptDocEmpty = regexp.MustCompile(`(doc\s*\[\s*['"][^'"]+['"]\s*\])\.empty\b`)
+// scriptRewrite finds the doc['field'].empty checks and .size() calls of a
+// script, and its string literals, which are matched to be left unchanged:
+// a literal starts before any check it contains, so it is matched first.
+var scriptRewrite = regexp.MustCompile(`(doc\s*\[\s*['"][^'"]+['"]\s*\])\.empty\b|\.size\(\)|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'`)
 
 // scriptFunctions are the painless score functions and Math helpers a
 // script_score script may call; scripts are evaluated with expr, so the
@@ -135,8 +137,15 @@ func ScriptScoreQuery(query map[string]interface{}, mappings *meta.Mappings, ana
 // painlessToExpr rewrites the painless method calls expr has no syntax for;
 // .empty is parenthesized so that operators like ! apply to the whole check.
 func painlessToExpr(source string) string {
-	source = scriptDocEmpty.ReplaceAllString(source, "($1.size == 0)")
-	return strings.ReplaceAll(source, ".size()", ".size")
+	return scriptRewrite.ReplaceAllStringFunc(source, func(m string) string {
+		switch {
+		case m == ".size()":
+			return ".size"
+		case strings.HasPrefix(m, "doc"):
+			return "(" + strings.TrimSuffix(m, ".empty") + ".size == 0)"
+		}
+		return m
+	})
 }
 
 func appendUnique(list []string, s string) []string {

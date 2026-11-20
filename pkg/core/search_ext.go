@@ -78,6 +78,11 @@ func prepareSearch(query *meta.ZedQuery, mappings *meta.Mappings, analyzers map[
 		if !scoreSorted(query.Sort) {
 			return nil, errors.New(errors.ErrorTypeIllegalArgumentException, "[rescore] cannot be used with a [sort] other than [_score] descending")
 		}
+		// bounding both before adding them keeps from + size from overflowing
+		if query.From < 0 || query.Size < 0 || query.From > config.Global.MaxResults || query.Size > config.Global.MaxResults {
+			return nil, errors.New(errors.ErrorTypeIllegalArgumentException,
+				fmt.Sprintf("[rescore] from and size must be within [0, %d] but were [%d] and [%d]", config.Global.MaxResults, query.From, query.Size))
+		}
 		window := uquery.RescoreWindow(ext.rescorers, query.From, query.Size)
 		if window > config.Global.MaxResults {
 			return nil, errors.New(errors.ErrorTypeIllegalArgumentException,

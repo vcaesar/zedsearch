@@ -448,7 +448,9 @@ func TestSynonymTokenFilterWordnet(t *testing.T) {
 func TestSynonymTokenFilterPath(t *testing.T) {
 	dir := t.TempDir()
 	content := "# comment\n\nhello, hi\r\nbye => goodbye\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "synonyms.txt"), []byte(content), 0o600))
+	require.NoError(t, os.Mkdir(filepath.Join(dir, SynonymsDir), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, SynonymsDir, "synonyms.txt"), []byte(content), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "outside.txt"), []byte("a, b\n"), 0o600))
 
 	oldPath := config.Global.DataPath
 	config.Global.DataPath = dir
@@ -465,12 +467,18 @@ func TestSynonymTokenFilterPath(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, []string{"x", "y", "hello", "hi"}, testutil.Terms(f.Filter(testutil.Tokens("x hello"))))
 	})
+
+	t.Run("data path files outside the synonyms directory", func(t *testing.T) {
+		_, err := NewSynonymTokenFilter(map[string]interface{}{"synonyms_path": "outside.txt"})
+		assert.ErrorContains(t, err, "failed to read synonyms_path [outside.txt]")
+	})
 }
 
 func TestSynonymTokenFilterPathConfined(t *testing.T) {
 	parent := t.TempDir()
-	dir := filepath.Join(parent, "data")
-	require.NoError(t, os.Mkdir(dir, 0o700))
+	data := filepath.Join(parent, "data")
+	dir := filepath.Join(data, SynonymsDir)
+	require.NoError(t, os.MkdirAll(dir, 0o700))
 	outside := filepath.Join(parent, "secret.txt")
 	require.NoError(t, os.WriteFile(outside, []byte("secret, value\n"), 0o600))
 	files := map[string]string{
@@ -488,7 +496,7 @@ func TestSynonymTokenFilterPathConfined(t *testing.T) {
 	}
 
 	oldPath := config.Global.DataPath
-	config.Global.DataPath = dir
+	config.Global.DataPath = data
 	t.Cleanup(func() { config.Global.DataPath = oldPath })
 
 	tests := []struct {
@@ -496,10 +504,10 @@ func TestSynonymTokenFilterPathConfined(t *testing.T) {
 		options map[string]interface{}
 		want    string
 	}{
-		{name: "absolute", options: map[string]interface{}{"synonyms_path": outside}, want: "must be a relative path inside the data path"},
-		{name: "parent", options: map[string]interface{}{"synonyms_path": "../secret.txt"}, want: "must be a relative path inside the data path"},
-		{name: "nested parent", options: map[string]interface{}{"synonyms_path": "x/../../secret.txt"}, want: "must be a relative path inside the data path"},
-		{name: "empty", options: map[string]interface{}{"synonyms_path": ""}, want: "must be a relative path inside the data path"},
+		{name: "absolute", options: map[string]interface{}{"synonyms_path": outside}, want: "must be a relative path inside the [synonyms] directory of the data path"},
+		{name: "parent", options: map[string]interface{}{"synonyms_path": "../secret.txt"}, want: "must be a relative path inside the [synonyms] directory of the data path"},
+		{name: "nested parent", options: map[string]interface{}{"synonyms_path": "x/../../secret.txt"}, want: "must be a relative path inside the [synonyms] directory of the data path"},
+		{name: "empty", options: map[string]interface{}{"synonyms_path": ""}, want: "must be a relative path inside the [synonyms] directory of the data path"},
 		{name: "solr line number", options: map[string]interface{}{"synonyms_path": "solr.txt"}, want: "[synonyms_path line 2]: term is empty"},
 		{name: "wordnet line number", options: map[string]interface{}{"synonyms_path": "wordnet.txt", "format": "wordnet"}, want: "[synonyms_path line 2]: invalid wordnet line"},
 		{name: "wordnet blank word", options: map[string]interface{}{"synonyms_path": "blank.txt", "format": "wordnet"}, want: "[synonyms_path line 2]: invalid wordnet line"},

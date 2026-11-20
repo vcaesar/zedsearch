@@ -46,6 +46,23 @@ func TestScriptScoreQuery_Painless(t *testing.T) {
 	}
 }
 
+func TestPainlessToExpr(t *testing.T) {
+	tests := []struct {
+		in, want string
+	}{
+		{"!doc['age'].empty", "!(doc['age'].size == 0)"},
+		{"doc ['a'].size() + doc['b'].size()", "doc ['a'].size + doc['b'].size"},
+		{`params.label == "doc['age'].empty" ? 1 : 0`, `params.label == "doc['age'].empty" ? 1 : 0`},
+		{`'x.size()' + doc['a'].empty`, `'x.size()' + (doc['a'].size == 0)`},
+		{`"a \"doc['b'].empty\"" + doc['c'].size()`, `"a \"doc['b'].empty\"" + doc['c'].size`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			assert.Equal(t, tt.want, painlessToExpr(tt.in))
+		})
+	}
+}
+
 func TestScriptDocField(t *testing.T) {
 	tests := []struct {
 		in   string
@@ -77,6 +94,8 @@ func TestScriptSigmoid_Stable(t *testing.T) {
 		{"huge value", 1e20, 10, 20, 1},
 		{"tiny value", 1e-20, 10, 20, 0},
 		{"at pivot", 10, 10, 20, 0.5},
+		{"ratio overflows", 1e-200, 1e200, 0.001, 1 / (1 + math.Exp(0.001*400*math.Ln10))},
+		{"ratio underflows", 1e200, 1e-200, 0.001, 1 / (1 + math.Exp(-0.001*400*math.Ln10))},
 		{"regular", 100, 10, 0.5, math.Sqrt(100) / (math.Sqrt(100) + math.Sqrt(10))},
 	}
 	for _, tt := range tests {

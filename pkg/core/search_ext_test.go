@@ -17,6 +17,7 @@ package core
 
 import (
 	"context"
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -106,6 +107,17 @@ func TestSearch_Rescore(t *testing.T) {
 		assert.ErrorContains(t, err, "must be less than or equal to [100] but was [105]")
 		assert.Equal(t, 95, q.From)
 		assert.Equal(t, 10, q.Size)
+	})
+
+	t.Run("overflowing or negative page is rejected", func(t *testing.T) {
+		for _, page := range [][2]int{{math.MaxInt, math.MaxInt}, {-1, 10}, {0, -1}, {1, math.MaxInt}} {
+			q := rescoreQuery(map[string]interface{}{"query": map[string]interface{}{"rescore_query": map[string]interface{}{"match_all": map[string]interface{}{}}}})
+			q.From, q.Size = page[0], page[1]
+			_, err := index.Search(q)
+			assert.ErrorContains(t, err, "[rescore] from and size must be within")
+			assert.Equal(t, page[0], q.From)
+			assert.Equal(t, page[1], q.Size)
+		}
 	})
 
 	t.Run("page is restored after a failed rescore query", func(t *testing.T) {

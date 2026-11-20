@@ -33,6 +33,8 @@ func TestRankFeatureSigmoid_Stable(t *testing.T) {
 		{"tiny value", 1e-20, 10, 20, 0},
 		{"at pivot", 10, 10, 20, 0.5},
 		{"at huge pivot", 1e200, 1e200, 20, 0.5},
+		{"ratio overflows", 1e-200, 1e200, 0.001, 1 / (1 + math.Exp(0.001*400*math.Ln10))},
+		{"ratio underflows", 1e200, 1e-200, 0.001, 1 / (1 + math.Exp(-0.001*400*math.Ln10))},
 		{"regular", 100, 10, 0.5, math.Sqrt(100) / (math.Sqrt(100) + math.Sqrt(10))},
 	}
 	for _, tt := range tests {

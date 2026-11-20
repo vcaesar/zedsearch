@@ -172,14 +172,23 @@ func Request(req zedaggregation.SearchAggregation, aggs map[string]meta.Aggregat
 			if sig.ShardSize < 0 || sig.ShardSize > meta.MaxSignificantTermsSize {
 				return errors.New(errors.ErrorTypeParsingException, fmt.Sprintf("[%s] shard_size must be in [0, %d]", kind, meta.MaxSignificantTermsSize))
 			}
-			if _, ok := agg.Aggregations["count"]; ok {
-				// the terms collector counts the bucket documents under "count"
-				return errors.New(errors.ErrorTypeParsingException, fmt.Sprintf("[%s] sub aggregation name [count] is reserved", kind))
+			// the terms collector counts the bucket documents under "count",
+			// and the significance rewrite sets "score" and "bg_count"
+			for _, reserved := range []string{"count", "score", "bg_count"} {
+				if _, ok := agg.Aggregations[reserved]; ok {
+					return errors.New(errors.ErrorTypeParsingException, fmt.Sprintf("[%s] sub aggregation name [%s] is reserved", kind, reserved))
+				}
 			}
 			var source int
 			prop, _ := mappings.GetProperty(sig.Field)
 			switch prop.Type {
 			case "text", "keyword", "bool", "boolean":
+				if prop.Type == "text" && !prop.Aggregatable {
+					// terms are read from doc values, which a text field only
+					// writes when it is aggregatable
+					return errors.New(errors.ErrorTypeParsingException,
+						fmt.Sprintf("[%s] field [%s] of type [text] must be mapped with aggregatable: true", kind, sig.Field))
+				}
 				// bool values are written as "true" / "false" keywords
 				source = zedaggregation.TextValuesSource
 			case "numeric":
