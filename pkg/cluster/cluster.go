@@ -420,17 +420,16 @@ func heartbeat() (ttl, interval time.Duration) {
 }
 
 // UpdateInSync records the in-sync replicas of an index this node owns, nil
-// drops the entry. It fails when the partition of the index is owned by
-// another node, or moved since this node last heard of it. A no-op with
-// clustering disabled.
-func UpdateInSync(ctx context.Context, index string, nodes []string) error {
+// drops the entry. epoch is the ownership epoch the caller took over the
+// index at; it fails when the partition is owned by another node, or moved
+// since that epoch. A no-op with clustering disabled.
+func UpdateInSync(ctx context.Context, index string, nodes []string, epoch int64) error {
 	n := get()
 	if n == nil {
 		return nil
 	}
-	owner, epoch, ok := n.fence.Owner(index)
-	if ok && owner != n.local.ID {
-		return &EpochError{Index: index, Owner: owner, Want: epoch}
+	if err := n.fence.CheckEpoch(index, epoch); err != nil {
+		return err
 	}
 	return n.assigner.UpdateInSync(ctx, index, nodes, epoch)
 }

@@ -30,6 +30,9 @@ import (
 	"github.com/vcaesar/zedsearch/pkg/core"
 )
 
+// errStaleEpoch is what the fake answers an in-sync write of an old epoch.
+var errStaleEpoch = errors.New("fake: partition moved")
+
 // fakeTopology is a hand-set cluster view.
 type fakeTopology struct {
 	mu        sync.Mutex
@@ -37,6 +40,7 @@ type fakeTopology struct {
 	owners    map[string]string
 	replicas  map[string][]string
 	insync    map[string][]string
+	epoch     int64
 	insyncErr error
 	listErr   error
 }
@@ -47,6 +51,7 @@ func newFakeTopology(local string) *fakeTopology {
 		owners:   map[string]string{},
 		replicas: map[string][]string{},
 		insync:   map[string][]string{},
+		epoch:    7,
 	}
 }
 
@@ -81,13 +86,27 @@ func (f *fakeTopology) Replicas(index string) []string {
 	return append([]string(nil), f.replicas[index]...)
 }
 
-func (f *fakeTopology) Epoch(string) int64 { return 7 }
+func (f *fakeTopology) Epoch(string) int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.epoch
+}
 
-func (f *fakeTopology) UpdateInSync(_ context.Context, index string, nodes []string) error {
+// setEpoch moves ownership to a new epoch, as a handoff away and back would.
+func (f *fakeTopology) setEpoch(epoch int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.epoch = epoch
+}
+
+func (f *fakeTopology) UpdateInSync(_ context.Context, index string, nodes []string, epoch int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.insyncErr != nil {
 		return f.insyncErr
+	}
+	if epoch != f.epoch {
+		return errStaleEpoch
 	}
 	if nodes == nil {
 		delete(f.insync, index)

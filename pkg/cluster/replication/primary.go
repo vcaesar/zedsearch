@@ -40,6 +40,7 @@ import (
 // owner it followed and recover instead of mixing two histories.
 type primary struct {
 	index  string
+	epoch  int64 // ownership epoch the term belongs to, guards in-sync writes
 	term   string
 	remote bool
 	// storageType is the bucket of a remote index
@@ -54,6 +55,7 @@ type primary struct {
 	opsBytes int    // size of the retained entries
 	acked    map[string]uint64
 	insync   []string
+	shipped  uint64   // last operation a commit took to the replicas
 	uploaded uint64   // remote: last operation in the bucket
 	sums     sumCache // of the owned segments, for incremental snapshots
 
@@ -83,6 +85,11 @@ func (p *primary) dirty() bool {
 	defer p.mu.Unlock()
 	if p.remote {
 		return p.uploaded < p.seq
+	}
+	// a write no commit shipped yet also reaches a replica that is not in
+	// sync: a new index is replicated from its first bulk, not the next probe
+	if p.shipped < p.seq {
+		return true
 	}
 	for _, node := range p.insync {
 		if p.acked[node] < p.seq {
@@ -146,11 +153,14 @@ func (m *manager) record(index, shard string, entry []byte) {
 }
 
 // primaryFor returns the state of an owned writable index, created on
-// first use. Nil for cold indexes, which take no writes.
+// first use and again once ownership moved to a new epoch: a commit still
+// running on the old one fails its in-sync write. Nil for cold indexes,
+// which take no writes.
 func (m *manager) primaryFor(name string) *primary {
+	epoch := m.topo.Epoch(name)
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if p, ok := m.primaries[name]; ok {
+	if p, ok := m.primaries[name]; ok && p.epoch == epoch {
 		return p
 	}
 	index, ok := core.GetIndex(name)
@@ -159,7 +169,8 @@ func (m *manager) primaryFor(name string) *primary {
 	}
 	p := &primary{
 		index: name,
-		term:  newTerm(m.topo.Epoch(name)),
+		epoch: epoch,
+		term:  newTerm(epoch),
 		acked: make(map[string]uint64),
 	}
 	if !index.IsDisk() {
@@ -219,7 +230,7 @@ func (m *manager) promote(ctx context.Context, p *primary) error {
 	}
 	local := m.topo.LocalID()
 	nodes := slices.DeleteFunc(append([]string{}, insync[p.index]...), func(node string) bool { return node == local })
-	if err := m.topo.UpdateInSync(ctx, p.index, nodes); err != nil {
+	if err := m.topo.UpdateInSync(ctx, p.index, nodes, p.epoch); err != nil {
 		return err
 	}
 	p.mu.Lock()
@@ -274,12 +285,13 @@ func (m *manager) commit(ctx context.Context, p *primary, probe bool) error {
 	sort.Strings(next)
 
 	p.mu.Lock()
+	p.shipped = max(p.shipped, target)
 	p.trim(replicas)
 	p.mu.Unlock()
 	if slices.Equal(next, insync) {
 		return nil
 	}
-	if err := m.topo.UpdateInSync(ctx, p.index, next); err != nil {
+	if err := m.topo.UpdateInSync(ctx, p.index, next, p.epoch); err != nil {
 		if removed := slices.ContainsFunc(insync, func(node string) bool { return !slices.Contains(next, node) }); removed {
 			return fmt.Errorf("replication: cannot mark stale replicas of [%s]: %w", p.index, err)
 		}
@@ -300,6 +312,7 @@ func (m *manager) ship(ctx context.Context, p *primary, node string, target uint
 	p.mu.Lock()
 	from := p.acked[node] + 1
 	known := p.acked[node] > 0
+	insync := slices.Contains(p.insync, node)
 	p.mu.Unlock()
 	if !probe && known && from > target {
 		return true
@@ -310,12 +323,14 @@ func (m *manager) ship(ctx context.Context, p *primary, node string, target uint
 		ops, ok := p.opsFrom(from, target)
 		p.mu.Unlock()
 		batch := &Batch{Index: p.index, Term: p.term, From: from, Ops: ops}
-		if !ok {
-			// the operations are gone: ask where the replica is
+		if !ok || !insync {
+			// the operations are gone, or the replica may be recovering and
+			// would refuse the whole log: ask where it is
 			batch = &Batch{Index: p.index, Term: p.term, From: target + 1}
 		} else if len(ops) > 0 {
 			batch.Mappings = mappings
 		}
+		insync = true
 		ack, err := m.transport.Replicate(ctx, node, batch)
 		if err == nil {
 			p.mu.Lock()

@@ -239,16 +239,34 @@ func TestEtcdStoreCreateAndSwap(t *testing.T) {
 	// a guard is compared in the same transaction as the write
 	guard, err := store.Put(ctx, "/cas/guard", []byte("g"), NoLease)
 	require.NoError(t, err)
-	_, ok, err = store.CompareAndSwap(ctx, "/cas/k", []byte("d"), swapped, NoLease, Guard{Key: "/cas/guard", Revision: guard - 1})
-	require.NoError(t, err)
-	assert.False(t, ok, "a guard at another revision rejects the write")
-	_, ok, err = store.CompareAndSwap(ctx, "/cas/k", []byte("d"), swapped, NoLease, Guard{Key: "/cas/absent", Revision: 1})
-	require.NoError(t, err)
-	assert.False(t, ok, "a guard on a missing key only holds at revision 0")
-	_, ok, err = store.CompareAndSwap(ctx, "/cas/k", []byte("d"), swapped, NoLease,
-		Guard{Key: "/cas/guard", Revision: guard}, Guard{Key: "/cas/absent"})
-	require.NoError(t, err)
-	assert.True(t, ok)
+	tests := []struct {
+		name   string
+		guards []Guard
+		ok     bool
+	}{
+		{name: "guard at another revision", guards: []Guard{{Key: "/cas/guard", Revision: guard - 1}}},
+		{name: "guard on a missing key only holds at revision 0", guards: []Guard{{Key: "/cas/absent", Revision: 1}}},
+		{name: "all guards hold", guards: []Guard{{Key: "/cas/guard", Revision: guard}, {Key: "/cas/absent"}}, ok: true},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			key := "/cas/guarded-" + strconv.Itoa(i)
+			target, err := store.Put(ctx, key, []byte("v"), NoLease)
+			require.NoError(t, err)
+			_, ok, err := store.CompareAndSwap(ctx, key, []byte("w"), target, NoLease, tt.guards...)
+			require.NoError(t, err)
+			assert.Equal(t, tt.ok, ok)
+			kv, err := store.Get(ctx, key)
+			require.NoError(t, err)
+			if tt.ok {
+				assert.Equal(t, "w", string(kv.Value))
+				assert.Greater(t, kv.Revision, target)
+				return
+			}
+			assert.Equal(t, "v", string(kv.Value), "a rejected write leaves the value")
+			assert.Equal(t, target, kv.Revision, "a rejected write leaves the revision")
+		})
+	}
 }
 
 func TestEtcdStoreLeases(t *testing.T) {

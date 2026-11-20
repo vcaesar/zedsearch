@@ -108,7 +108,8 @@ func TestHealthCluster(t *testing.T) {
 	startTestCluster(t, map[string]string{owned: "node-a", replicated: "node-a", orphan: "node-gone"})
 	config.Global.Cluster.Replicas = 1 // restored with the cluster config
 	// replicated, but its replica has not caught up yet
-	require.NoError(t, zcluster.UpdateInSync(context.Background(), replicated, []string{}))
+	_, epoch, _ := zcluster.Owner(replicated)
+	require.NoError(t, zcluster.UpdateInSync(context.Background(), replicated, []string{}, epoch))
 
 	tests := []struct {
 		name           string

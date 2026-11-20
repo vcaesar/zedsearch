@@ -83,7 +83,8 @@ func (a *Assigner) UpdateInSync(ctx context.Context, index string, nodes []strin
 		}
 		current, ok := insync[index]
 		if nodes == nil && !ok || nodes != nil && ok && slices.Equal(current, nodes) {
-			return nil
+			// nothing to write, but a caller whose partition moved still fails
+			return a.checkOwned(ctx, owned, index)
 		}
 		if nodes == nil {
 			delete(insync, index)
@@ -102,16 +103,25 @@ func (a *Assigner) UpdateInSync(ctx context.Context, index string, nodes []strin
 			return nil
 		}
 		// lost to another in-sync update, or the partition is not ours any more
-		assignment, err := a.store.Get(ctx, owned.Key)
-		if err != nil && !errors.Is(err, errors.ErrKeyNotFound) {
+		if err := a.checkOwned(ctx, owned, index); err != nil {
 			return err
-		}
-		if assignment.Revision != epoch {
-			return fmt.Errorf("cluster: in-sync set of %q not changed, its partition moved (epoch %d, presented %d)",
-				index, assignment.Revision, epoch)
 		}
 	}
 	return fmt.Errorf("cluster: in-sync set of %q kept changing", index)
+}
+
+// checkOwned fails when the assignment of the partition of index is no
+// longer at the revision of owned.
+func (a *Assigner) checkOwned(ctx context.Context, owned Guard, index string) error {
+	assignment, err := a.store.Get(ctx, owned.Key)
+	if err != nil && !errors.Is(err, errors.ErrKeyNotFound) {
+		return err
+	}
+	if assignment.Revision != owned.Revision {
+		return fmt.Errorf("cluster: in-sync set of %q not changed, its partition moved (epoch %d, presented %d)",
+			index, assignment.Revision, owned.Revision)
+	}
+	return nil
 }
 
 // EligibleOwners maps every partition holding a replicated index to the

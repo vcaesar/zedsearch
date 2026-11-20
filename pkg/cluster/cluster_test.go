@@ -319,7 +319,7 @@ func TestClusterReplicasAndInSync(t *testing.T) {
 	ctx := context.Background()
 	assert.Nil(t, Replicas("logs"))
 	assert.False(t, IsLocalReplica("logs"))
-	assert.NoError(t, UpdateInSync(ctx, "logs", []string{"node-b"}))
+	assert.NoError(t, UpdateInSync(ctx, "logs", []string{"node-b"}, 0))
 	insync, err := InSync(ctx)
 	require.NoError(t, err)
 	assert.Empty(t, insync)
@@ -330,7 +330,8 @@ func TestClusterReplicasAndInSync(t *testing.T) {
 
 	// the in-sync set is written under the epoch this node owns the index at
 	require.Eventually(t, func() bool { return len(Assignments()) == 4 }, 3*time.Second, 10*time.Millisecond)
-	require.NoError(t, UpdateInSync(ctx, "logs", []string{"node-b"}))
+	_, epoch, _ := Owner("logs")
+	require.NoError(t, UpdateInSync(ctx, "logs", []string{"node-b"}, epoch))
 	insync, err = InSync(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, map[string][]string{"logs": {"node-b"}}, insync)
@@ -342,8 +343,19 @@ func TestClusterReplicasAndInSync(t *testing.T) {
 	require.True(t, ok)
 	require.Eventually(t, func() bool { return !IsLocalOwner("logs") }, 3*time.Second, 10*time.Millisecond)
 	var moved *EpochError
-	require.ErrorAs(t, UpdateInSync(ctx, "logs", []string{}), &moved)
+	require.ErrorAs(t, UpdateInSync(ctx, "logs", []string{}, epoch), &moved)
 	assert.Equal(t, "node-b", moved.Owner)
+
+	// it came back under a new epoch: a write begun under the old one still fails
+	back := Assignments()[PartitionOfN("logs", 4)]
+	_, ok, err = get().assigner.Set(ctx, back.Partition, "node-a", back.Epoch)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Eventually(t, func() bool { return IsLocalOwner("logs") }, 3*time.Second, 10*time.Millisecond)
+	require.ErrorAs(t, UpdateInSync(ctx, "logs", []string{}, epoch), &moved)
+	assert.Equal(t, "node-a", moved.Owner)
+	_, backEpoch, _ := Owner("logs")
+	require.NoError(t, UpdateInSync(ctx, "logs", []string{}, backEpoch))
 
 	_, ok = NodeAddr("node-a")
 	assert.False(t, ok, "a node without an advertise address cannot be routed to")

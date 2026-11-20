@@ -173,11 +173,45 @@ func TestShip(t *testing.T) {
 	tests := []struct {
 		name      string
 		trimmed   bool // the owner dropped its retained operations
+		insync    bool // the replica is in the in-sync set
 		answers   func(p *primary) []func(*Batch) (Ack, error)
 		recoverOK bool
 		want      bool
 		recovered bool
 	}{
+		{
+			name:   "in-sync replica is sent the log at once",
+			insync: true,
+			answers: func(p *primary) []func(*Batch) (Ack, error) {
+				return []func(*Batch) (Ack, error){func(b *Batch) (Ack, error) {
+					if b.From != 1 || len(b.Ops) != 3 {
+						return Ack{}, errors.New("unexpected batch")
+					}
+					return Ack{Term: p.term, Seq: 3}, nil
+				}}
+			},
+			want: true,
+		},
+		{
+			name: "replica not in sync is probed before the log is sent",
+			answers: func(p *primary) []func(*Batch) (Ack, error) {
+				return []func(*Batch) (Ack, error){
+					func(b *Batch) (Ack, error) {
+						if b.From != 4 || len(b.Ops) != 0 {
+							return Ack{}, errors.New("unexpected batch")
+						}
+						return Ack{Term: p.term, Seq: 1}, ErrOutOfSync
+					},
+					func(b *Batch) (Ack, error) {
+						if b.From != 2 || len(b.Ops) != 2 {
+							return Ack{}, errors.New("unexpected batch")
+						}
+						return Ack{Term: p.term, Seq: 3}, nil
+					},
+				}
+			},
+			want: true,
+		},
 		{
 			name:    "trimmed log probes the replica",
 			trimmed: true,
@@ -283,6 +317,9 @@ func TestShip(t *testing.T) {
 			if tt.trimmed {
 				p.ops = nil
 			}
+			if tt.insync {
+				p.insync = []string{"node-b"}
+			}
 			answers = tt.answers(p)
 			assert.Equal(t, tt.want, m.ship(context.Background(), p, "node-b", 3, nil, false))
 			assert.Equal(t, tt.recovered, recovered)
@@ -314,6 +351,50 @@ func TestCommitToleratesUnrecordedJoin(t *testing.T) {
 	topo.insyncErr = errors.New("etcd down")
 	require.NoError(t, m.commit(context.Background(), p, false))
 	assert.Empty(t, p.insync)
+}
+
+// A bulk ships what it wrote to a replica that is not in sync yet: a new
+// index is replicated from its first bulk, not from the next probe.
+func TestCommitAllShipsToReplicaNotInSync(t *testing.T) {
+	name := "TestCommitAllShipsToReplicaNotInSync.index_1"
+	newDiskIndex(t, name)
+	topo := newFakeTopology("node-a")
+	topo.set(name, "node-a", "node-b")
+	var mu sync.Mutex
+	var seq uint64 // what the replica holds
+	calls := 0
+	transport := &funcTransport{replicate: func(_ string, b *Batch) (Ack, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		if b.From > seq+1 {
+			return Ack{Term: b.Term, Seq: seq}, ErrOutOfSync
+		}
+		seq = max(seq, b.From-1+uint64(len(b.Ops)))
+		return Ack{Term: b.Term, Seq: seq}, nil
+	}}
+	m := newManager(t, ModeDocument, topo, transport)
+	activate(t, m)
+	ctx := context.Background()
+	p, err := m.prepare(ctx, name)
+	require.NoError(t, err)
+
+	m.record(name, "0", []byte(testEntry))
+	require.True(t, p.dirty())
+	require.NoError(t, CommitAll(ctx))
+	assert.Equal(t, uint64(1), seq)
+	insync, _ := topo.inSyncOf(name)
+	assert.Equal(t, []string{"node-b"}, insync)
+
+	m.record(name, "0", []byte(testEntry))
+	m.record(name, "0", []byte(testEntry))
+	require.NoError(t, CommitAll(ctx))
+	assert.Equal(t, uint64(3), seq)
+
+	shipped := calls
+	assert.False(t, p.dirty())
+	require.NoError(t, CommitAll(ctx))
+	assert.Equal(t, shipped, calls, "nothing was written since the last commit")
 }
 
 // The background tick promotes owned indexes, probes their replicas,
@@ -406,8 +487,8 @@ func TestCleanup(t *testing.T) {
 	topo.set("TestCleanup.gone", "node-a")
 	m := newManager(t, ModeDocument, topo, newLoopTransport())
 	ctx := context.Background()
-	require.NoError(t, topo.UpdateInSync(ctx, name, []string{"node-b"}))
-	require.NoError(t, topo.UpdateInSync(ctx, "TestCleanup.gone", []string{"node-b"}))
+	require.NoError(t, topo.UpdateInSync(ctx, name, []string{"node-b"}, topo.Epoch(name)))
+	require.NoError(t, topo.UpdateInSync(ctx, "TestCleanup.gone", []string{"node-b"}, 7))
 	m.primaries["TestCleanup.gone"] = &primary{}
 	m.primaries[name] = &primary{}
 
@@ -541,10 +622,10 @@ func TestActiveManagerAPI(t *testing.T) {
 	require.NoError(t, PrepareAll(ctx))
 	assert.NoError(t, Commit(ctx, replicated))
 
+	m.primaries[owned].insync = []string{"node-b"}
 	m.record(owned, "0", []byte(testEntry))
 	require.NoError(t, Commit(ctx, owned))
 	m.record(owned, "0", []byte(testEntry))
-	m.primaries[owned].insync = []string{"node-b"}
 	require.NoError(t, CommitAll(ctx))
 	mu.Lock()
 	assert.Equal(t, 2, shipped)
@@ -600,4 +681,21 @@ func TestReadable(t *testing.T) {
 			assert.Equal(t, tt.want, Readable(tt.index))
 		})
 	}
+}
+
+// A copy is current once it applied what the owner shipped; a cold index
+// is the same data on every node.
+func TestCurrent(t *testing.T) {
+	const disk, cold = "TestCurrent.index_1", "TestCurrent.index_2"
+	index := newDiskIndex(t, disk)
+	newColdIndex(t, cold)
+
+	assert.True(t, Current(cold))
+	assert.False(t, Current("TestCurrent.missing"))
+	assert.True(t, Current(disk), "nothing was shipped")
+
+	entry := []byte(`{"@_id":"1","@_action":"insert","@_shard":-1,"name":"one"}`)
+	require.NoError(t, core.ApplyReplicaEntries(index, firstShard(t, index), [][]byte{entry}))
+	waitDocs(t, index, 1)
+	assert.Eventually(t, func() bool { return Current(disk) }, 30*time.Second, 10*time.Millisecond)
 }

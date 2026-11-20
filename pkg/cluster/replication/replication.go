@@ -83,7 +83,7 @@ type topology interface {
 	IsReplica(index string) bool
 	Replicas(index string) []string
 	Epoch(index string) int64
-	UpdateInSync(ctx context.Context, index string, nodes []string) error
+	UpdateInSync(ctx context.Context, index string, nodes []string, epoch int64) error
 	InSync(ctx context.Context) (map[string][]string, error)
 }
 
@@ -116,8 +116,8 @@ func (clusterTopology) Epoch(index string) int64 {
 	return epoch
 }
 
-func (clusterTopology) UpdateInSync(ctx context.Context, index string, nodes []string) error {
-	return cluster.UpdateInSync(ctx, index, nodes)
+func (clusterTopology) UpdateInSync(ctx context.Context, index string, nodes []string, epoch int64) error {
+	return cluster.UpdateInSync(ctx, index, nodes, epoch)
 }
 
 func (clusterTopology) InSync(ctx context.Context) (map[string][]string, error) {
@@ -387,7 +387,7 @@ func (m *manager) cleanup(ctx context.Context) {
 		if _, exists := core.GetIndex(name); exists || !m.topo.IsOwner(name) {
 			continue
 		}
-		if err := m.topo.UpdateInSync(ctx, name, nil); err != nil {
+		if err := m.topo.UpdateInSync(ctx, name, nil, m.topo.Epoch(name)); err != nil {
 			log.Warn().Err(err).Str("index", name).Msg("replication: drop in-sync entry")
 		}
 	}
@@ -501,4 +501,13 @@ func Ready(index string) bool {
 func Readable(name string) bool {
 	index, ok := core.GetIndex(name)
 	return ok && (index.IsCold() || Ready(name))
+}
+
+// Current reports whether the copy this node replicates has applied every
+// operation the owner shipped to it: until then a read here misses writes
+// the owner already acknowledged and serves itself. A segment replica keeps
+// its operations aside and answers from its last checkpoint.
+func Current(name string) bool {
+	index, ok := core.GetIndex(name)
+	return ok && (index.IsCold() || index.Applied())
 }

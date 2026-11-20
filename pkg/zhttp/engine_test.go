@@ -323,6 +323,33 @@ func TestEngineServe(t *testing.T) {
 	}
 }
 
+// A body larger than net/http's buffer still goes out with its length:
+// chunked, a node proxying the response would flush every chunk.
+func TestEngineDataDeclaresLength(t *testing.T) {
+	body := strings.Repeat("x", 5000)
+	e := New()
+	e.GET("/data", func(c Context) { c.Data(http.StatusOK, "text/plain", []byte(body)) })
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	served := make(chan error, 1)
+	go func() { served <- e.Serve(ln) }()
+
+	resp, err := http.Get("http://" + ln.Addr().String() + "/data")
+	require.NoError(t, err)
+	got, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	assert.Equal(t, body, string(got))
+	assert.Equal(t, int64(len(body)), resp.ContentLength)
+	assert.Empty(t, resp.TransferEncoding)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, e.Shutdown(ctx))
+	assert.NoError(t, <-served)
+}
+
 func TestEngineClose(t *testing.T) {
 	e := New()
 	e.GET("/ping", func(c Context) { c.Status(http.StatusOK) })

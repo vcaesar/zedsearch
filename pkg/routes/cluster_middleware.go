@@ -104,8 +104,8 @@ func ClusterRoute() zhttp.HandlerFunc {
 		}
 		if owner != localNodeID() {
 			read := !isMutating(c.Method(), c.Path())
-			if read && cluster.IsLocalReplica(target) && replicaReadable(target) {
-				c.Next() // warm replica of a read-only object-storage index
+			if read && servesReplica(target, owner) {
+				c.Next() // warm replica of a cold index, or a copy that holds every write
 				return
 			}
 			var fallbacks []string
@@ -525,7 +525,7 @@ func groupByOwner(indexes []string) (groups, replicas map[string][]string) {
 	for _, name := range indexes {
 		owner, _, ok := cluster.Owner(name)
 		switch {
-		case !ok || (owner != local && cluster.IsLocalReplica(name) && replicaReadable(name)):
+		case !ok || (owner != local && servesReplica(name, owner)):
 			owner = local
 		case !reachable(owner) && (replicaReadable(name) || replicated(name)):
 			for _, replica := range cluster.Replicas(name) {
@@ -545,6 +545,24 @@ func groupByOwner(indexes []string) (groups, replicas map[string][]string) {
 // replicaReadable reports whether this node may serve reads of an index it
 // replicates. A variable for tests.
 var replicaReadable = replication.Readable
+
+// replicaCurrent reports whether the copy this node replicates has applied
+// everything the owner shipped. A variable for tests.
+var replicaCurrent = replication.Current
+
+// servesReplica reports whether this node answers a read of an index owner
+// owns from its own copy. A copy still applying what the owner shipped
+// would miss acknowledged writes, so the owner answers while it is there.
+func servesReplica(name, owner string) bool {
+	if !cluster.IsLocalReplica(name) || !replicaReadable(name) {
+		return false
+	}
+	if replicaCurrent(name) {
+		return true
+	}
+	addr, ok := cluster.NodeAddr(owner)
+	return !ok || addr == ""
+}
 
 // replicated reports whether the replicas of a disk index hold a copy, so
 // a read may fall back to them when the owner is gone.

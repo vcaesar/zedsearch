@@ -313,6 +313,7 @@ func TestIndexWaitApplied(t *testing.T) {
 	require.NoError(t, shard.OpenWAL())
 	// nothing applies the WAL once the consumer is gone
 	ZED_INDEX_SHARD_WAL_LIST.Remove(shard.GetShardName())
+	assert.True(t, index.Applied(), "an empty WAL has nothing to apply")
 	require.NoError(t, index.CreateDocument("1", map[string]interface{}{"name": "pending"}, false))
 
 	t.Run("pending", func(t *testing.T) {
@@ -321,12 +322,14 @@ func TestIndexWaitApplied(t *testing.T) {
 		committed, err := shard.committedIndex()
 		require.NoError(t, err)
 		assert.Less(t, committed, last)
+		assert.False(t, index.Applied())
 		assert.ErrorContains(t, index.WaitApplied(50*time.Millisecond), "not applied within")
 	})
 	t.Run("closed", func(t *testing.T) {
 		require.NoError(t, index.Close())
 		_, err := shard.committedIndex()
 		assert.ErrorContains(t, err, "WAL closed")
+		assert.True(t, index.Applied(), "no open WAL, nothing to apply")
 		assert.NoError(t, index.WaitApplied(time.Second), "no open WAL, nothing to wait for")
 	})
 }

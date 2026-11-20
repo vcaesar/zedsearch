@@ -248,6 +248,22 @@ func TestInSyncAndAssignmentAreFenced(t *testing.T) {
 		})
 		assert.ErrorIs(t, assigner.UpdateInSync(ctx, "logs", []string{}, 0), errFault)
 	})
+
+	t.Run("a deposed owner fails even when nothing changes", func(t *testing.T) {
+		assigner := NewAssigner(NewMemoryStore(), "/test/insync-fenced-e/", 1)
+		owned, ok, err := assigner.Set(ctx, 0, "n1", 0)
+		require.NoError(t, err)
+		require.True(t, ok)
+		require.NoError(t, assigner.UpdateInSync(ctx, "logs", []string{"n2"}, owned.Epoch))
+		require.NoError(t, assigner.UpdateInSync(ctx, "logs", []string{"n2"}, owned.Epoch), "an unchanged set is accepted")
+		require.NoError(t, assigner.UpdateInSync(ctx, "absent", nil, owned.Epoch))
+
+		_, ok, err = assigner.Set(ctx, 0, "n2", owned.Epoch)
+		require.NoError(t, err)
+		require.True(t, ok)
+		assert.ErrorContains(t, assigner.UpdateInSync(ctx, "logs", []string{"n2"}, owned.Epoch), "partition moved")
+		assert.ErrorContains(t, assigner.UpdateInSync(ctx, "absent", nil, owned.Epoch), "partition moved")
+	})
 }
 
 func TestInSyncFailures(t *testing.T) {

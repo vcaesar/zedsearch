@@ -45,6 +45,8 @@ func TestIndexHealth(t *testing.T) {
 			health: IndexHealth{Status: HealthYellow, Missing: 1}},
 		{name: "fewer replicas than asked", owner: "n1", insync: []string{"n2"}, replicated: true, want: 2,
 			health: IndexHealth{Status: HealthYellow, Replicas: 1, Missing: 1}},
+		{name: "a replica listed twice counts once", owner: "n1", insync: []string{"n2", "n2"}, replicated: true, want: 2,
+			health: IndexHealth{Status: HealthYellow, Replicas: 1, Missing: 1}},
 		{name: "owner is not counted as its replica", owner: "n1", insync: []string{"n1"}, replicated: true, want: 1,
 			health: IndexHealth{Status: HealthYellow, Missing: 1}},
 		{name: "no replicas asked", owner: "n1", insync: []string{}, replicated: true, want: 0,
@@ -80,7 +82,8 @@ func TestHealth(t *testing.T) {
 	assert.Equal(t, green, Health(ctx, []string{"logs"}))
 
 	// replicated, but no replica has caught up
-	require.NoError(t, UpdateInSync(ctx, "logs", []string{}))
+	_, epoch, _ := Owner("logs")
+	require.NoError(t, UpdateInSync(ctx, "logs", []string{}, epoch))
 	assert.Equal(t, map[string]IndexHealth{"logs": {Status: HealthYellow, Missing: 1}}, Health(ctx, []string{"logs"}))
 
 	// the owner is gone and no in-sync replica can take over: the leader

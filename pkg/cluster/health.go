@@ -95,8 +95,10 @@ func Health(ctx context.Context, indexes []string) map[string]IndexHealth {
 func indexHealth(owner string, alive map[string]bool, insync []string, replicated bool, want int) IndexHealth {
 	health := IndexHealth{Status: HealthGreen}
 	if replicated {
+		seen := make(map[string]bool, len(insync))
 		for _, node := range insync {
-			if node != owner && alive[node] {
+			if node != owner && alive[node] && !seen[node] {
+				seen[node] = true
 				health.Replicas++
 			}
 		}

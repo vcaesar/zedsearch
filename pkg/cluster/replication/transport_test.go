@@ -71,7 +71,7 @@ func TestClusterTopology(t *testing.T) {
 	assert.Empty(t, topo.Replicas(name))
 	assert.Positive(t, topo.Epoch(name))
 
-	require.NoError(t, topo.UpdateInSync(ctx, name, []string{"node-b"}))
+	require.NoError(t, topo.UpdateInSync(ctx, name, []string{"node-b"}, topo.Epoch(name)))
 	insync, err := topo.InSync(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"node-b"}, insync[name])
