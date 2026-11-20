@@ -27,6 +27,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -326,7 +327,8 @@ func scatterSearch(c zhttp.Context, target string) {
 
 // scatter asks every owner for its indexes and, in one request too, the
 // first replica of the indexes whose owner is gone. What that replica
-// cannot serve is then asked index by index from each replica in turn.
+// cannot serve is then asked index by index from each replica in turn,
+// skipping the nodes that failed as a whole.
 // The responses keep a stable order, which also breaks ties between
 // identical owner sort keys.
 func scatter(ctx context.Context, groups, replicas map[string][]string, query *meta.ZedQuery, authorization string) ([]*meta.SearchResponse, error) {
@@ -372,10 +374,17 @@ func scatter(ctx context.Context, groups, replicas map[string][]string, query *m
 		nodes []string
 		err   error // what the first replica answered
 	}
+	// a node that failed as a whole is not asked again for any index; one
+	// that rejected a batch may still serve some of its indexes alone
+	var mu sync.Mutex
+	down := make(map[string]bool)
 	var retries []retry
 	for i, p := range parts {
 		if unavailable[i] == nil {
 			continue
+		}
+		if errors.Is(unavailable[i], errNodeUnavailable) {
+			down[p.node] = true
 		}
 		for _, index := range p.indexes {
 			nodes := replicas[index]
@@ -392,7 +401,18 @@ func scatter(ctx context.Context, groups, replicas map[string][]string, query *m
 		group.Go(func() error {
 			err := r.err
 			for _, node := range r.nodes {
+				mu.Lock()
+				skip := down[node]
+				mu.Unlock()
+				if skip {
+					continue
+				}
 				retried[i], err = internalSearch(groupCtx, node, []string{r.index}, query, authorization, true)
+				if errors.Is(err, errNodeUnavailable) {
+					mu.Lock()
+					down[node] = true
+					mu.Unlock()
+				}
 				if !errors.Is(err, errReplicaUnavailable) {
 					return err
 				}
@@ -410,6 +430,10 @@ func scatter(ctx context.Context, groups, replicas map[string][]string, query *m
 // node does not respond, fails, or holds no usable copy of the index.
 var errReplicaUnavailable = errors.New("replica index unavailable")
 
+// errNodeUnavailable marks a replica that failed as a whole: it left, did
+// not respond or broke off its answer, whatever indexes it was asked for.
+var errNodeUnavailable = errors.New("node unavailable")
+
 // internalSearch asks one node for its part of a scattered search. A
 // replica is told so: it answers only from a copy it may serve. The client
 // credentials go along as they are, like in forward, so the nodes must
@@ -419,7 +443,7 @@ func internalSearch(ctx context.Context, owner string, indexes []string, query *
 	// stood in for by the next one
 	unavailable := func(err error) error {
 		if replica {
-			return fmt.Errorf("cluster: node %s: %w: %w", owner, errReplicaUnavailable, err)
+			return fmt.Errorf("cluster: node %s: %w: %w: %w", owner, errReplicaUnavailable, errNodeUnavailable, err)
 		}
 		return err
 	}

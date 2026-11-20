@@ -22,6 +22,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -466,6 +467,8 @@ func TestScatterSearchReplicaErrors(t *testing.T) {
 				w.Header().Set("Content-Length", "100")
 				_, err := io.WriteString(w, `{"hits":`)
 				assert.NoError(t, err)
+				// the headers and part of the body leave before the abort
+				w.(http.Flusher).Flush()
 				panic(http.ErrAbortHandler)
 			},
 			wantCode: http.StatusOK, wantBody: "node-c:" + remoteIndex, wantC: 1,
@@ -548,6 +551,76 @@ func TestScatterSearchRefusesRedirects(t *testing.T) {
 	assert.Equal(t, http.StatusBadGateway, w.Code)
 	assert.Contains(t, w.Body.String(), "307 Temporary Redirect")
 	env.received(t)
+}
+
+// A replica that fails as a whole on a batch is not asked again index by
+// index: the next replica serves them all.
+func TestScatterSearchSkipsFailedNode(t *testing.T) {
+	const first, second = "TestScatterSearchSkipsFailedNode.index_1", "TestScatterSearchSkipsFailedNode.index_2"
+	env := setupClusterEnv(t)
+	nodeC := &replicaNode{}
+	nodeC.reset(func([]string) bool { return true })
+	ready := httptest.NewServer(nodeC.handler(t, "node-c"))
+	defer ready.Close()
+	env.join(t, "node-c", ready.URL)
+
+	var mu sync.Mutex
+	var flakyAsked [][]string
+	asked := func() [][]string {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(flakyAsked)
+	}
+	flaky := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Indexes []string `json:"indexes"`
+		}
+		data, err := io.ReadAll(r.Body)
+		assert.NoError(t, err)
+		assert.NoError(t, json.Unmarshal(data, &payload))
+		mu.Lock()
+		flakyAsked = append(flakyAsked, payload.Indexes)
+		mu.Unlock()
+		panic(http.ErrAbortHandler) // the connection drops without an answer
+	}))
+	defer flaky.Close()
+	env.join(t, "node-flaky", flaky.URL)
+
+	replicas := map[string][]string{first: {"node-flaky", "node-c"}, second: {"node-flaky", "node-c"}}
+	responses, err := scatter(context.Background(), nil, replicas, nil, "")
+	require.NoError(t, err)
+	require.Len(t, responses, 3, "the failed batch and one retry per index")
+	assert.Nil(t, responses[0])
+	assert.Equal(t, [][]string{{first, second}}, asked(), "asked once, for the batch")
+	assert.ElementsMatch(t, [][]string{{first}, {second}}, nodeC.requests())
+
+	t.Run("a node failing during the retries is passed over", func(t *testing.T) {
+		env.respond = http.NotFound
+		nodeC.reset(func([]string) bool { return true })
+		responses, err := scatter(context.Background(), nil, map[string][]string{first: {"node-b", "node-flaky", "node-c"}}, nil, "")
+		require.NoError(t, err)
+		require.Len(t, responses, 2)
+		assert.Equal(t, "node-c:"+first, responses[1].Hits.Hits[0].ID)
+		assert.Equal(t, [][]string{{first, second}, {first}}, asked())
+		env.received(t)
+	})
+
+	t.Run("an answer broken off fails the node", func(t *testing.T) {
+		broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Length", "100")
+			_, err := io.WriteString(w, `{"hits":`)
+			assert.NoError(t, err)
+			w.(http.Flusher).Flush()
+			panic(http.ErrAbortHandler)
+		}))
+		defer broken.Close()
+		env.join(t, "node-broken", broken.URL)
+
+		_, err := internalSearch(context.Background(), "node-broken", []string{first}, nil, "", true)
+		assert.ErrorIs(t, err, io.ErrUnexpectedEOF, "the body read failed, not the request")
+		assert.ErrorIs(t, err, errNodeUnavailable)
+		assert.ErrorIs(t, err, errReplicaUnavailable)
+	})
 }
 
 func TestReplicaIndexMissing(t *testing.T) {
