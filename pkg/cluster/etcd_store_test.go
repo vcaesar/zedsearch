@@ -235,6 +235,20 @@ func TestEtcdStoreCreateAndSwap(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, ok)
 	assert.Zero(t, rev, "a missing key has no revision")
+
+	// a guard is compared in the same transaction as the write
+	guard, err := store.Put(ctx, "/cas/guard", []byte("g"), NoLease)
+	require.NoError(t, err)
+	_, ok, err = store.CompareAndSwap(ctx, "/cas/k", []byte("d"), swapped, NoLease, Guard{Key: "/cas/guard", Revision: guard - 1})
+	require.NoError(t, err)
+	assert.False(t, ok, "a guard at another revision rejects the write")
+	_, ok, err = store.CompareAndSwap(ctx, "/cas/k", []byte("d"), swapped, NoLease, Guard{Key: "/cas/absent", Revision: 1})
+	require.NoError(t, err)
+	assert.False(t, ok, "a guard on a missing key only holds at revision 0")
+	_, ok, err = store.CompareAndSwap(ctx, "/cas/k", []byte("d"), swapped, NoLease,
+		Guard{Key: "/cas/guard", Revision: guard}, Guard{Key: "/cas/absent"})
+	require.NoError(t, err)
+	assert.True(t, ok)
 }
 
 func TestEtcdStoreLeases(t *testing.T) {

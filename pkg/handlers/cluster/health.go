@@ -16,6 +16,7 @@
 package cluster
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/vcaesar/zedsearch/pkg/cluster"
@@ -27,8 +28,9 @@ import (
 
 // Health returns the health of the cluster
 //
-// ZedSearch runs on a single node, there is no shard allocation, so the
-// cluster is always green with one node and no relocating/unassigned shards.
+// A single node is always green. In a cluster an index is red while no
+// live node owns it and yellow while it is replicated to fewer nodes than
+// `zed_cluster_replicas`; the cluster reports its worst index.
 //
 // @Id ClusterHealth
 // @Summary Get cluster health for compatible ES
@@ -39,36 +41,70 @@ import (
 // @Success 200 {object} elastic.ClusterHealthResponse
 // @Router /es/_cluster/health [get]
 func Health(c zhttp.Context) {
-	shards := activeShards(c.Param("target"))
+	shards := countShards(c.Context(), c.Param("target"))
 	nodes := len(cluster.Nodes())
 	zutils.RenderJSON(c, http.StatusOK, elastic.ClusterHealthResponse{
 		ClusterName:                 clusterName(),
-		Status:                      statusGreen,
+		Status:                      shards.status,
 		TimedOut:                    false,
 		NumberOfNodes:               nodes,
 		NumberOfDataNodes:           nodes,
-		ActivePrimaryShards:         shards,
-		ActiveShards:                shards,
+		ActivePrimaryShards:         shards.primaries,
+		ActiveShards:                shards.active(),
 		RelocatingShards:            0,
 		InitializingShards:          0,
-		UnassignedShards:            0,
+		UnassignedShards:            int(shards.unassigned),
 		DelayedUnassignedShards:     0,
 		NumberOfPendingTasks:        0,
 		NumberOfInFlightFetch:       0,
 		TaskMaxWaitingInQueueMillis: 0,
-		ActiveShardsPercentAsNumber: 100.0,
+		ActiveShardsPercentAsNumber: shards.activePercent(),
 	})
 }
 
-// activeShards sums the shards of every index matching the target patterns.
-func activeShards(target string) int64 {
-	patterns := elastic.SplitPatterns(target)
-	var shards int64
-	for _, index := range core.ZED_INDEX_LIST.List() {
-		if !elastic.MatchAnyPattern(index.GetName(), patterns) {
-			continue
-		}
-		shards += index.GetShardNum()
+// shardCounts is the health of a set of indexes, counted in shards like
+// Elasticsearch counts it.
+type shardCounts struct {
+	status     string // the worst index
+	primaries  int64  // shards of indexes a live node owns
+	replicas   int64  // copies on live in-sync replicas
+	unassigned int64  // shards without an owner, and replica copies still missing
+}
+
+func (s shardCounts) active() int64 {
+	return s.primaries + s.replicas
+}
+
+func (s shardCounts) activePercent() float64 {
+	total := s.active() + s.unassigned
+	if total == 0 {
+		return 100.0
 	}
-	return shards
+	return float64(s.active()) * 100 / float64(total)
+}
+
+// countShards judges every index matching the target patterns.
+func countShards(ctx context.Context, target string) shardCounts {
+	patterns := elastic.SplitPatterns(target)
+	shards := make(map[string]int64)
+	names := make([]string, 0, core.ZED_INDEX_LIST.Len())
+	for _, index := range core.ZED_INDEX_LIST.List() {
+		if name := index.GetName(); elastic.MatchAnyPattern(name, patterns) {
+			shards[name] = index.GetShardNum()
+			names = append(names, name)
+		}
+	}
+
+	counts := shardCounts{status: cluster.HealthGreen}
+	for name, health := range cluster.Health(ctx, names) {
+		counts.status = cluster.WorseHealth(counts.status, health.Status)
+		if health.Status == cluster.HealthRed {
+			counts.unassigned += shards[name]
+		} else {
+			counts.primaries += shards[name]
+		}
+		counts.replicas += int64(health.Replicas) * shards[name]
+		counts.unassigned += int64(health.Missing) * shards[name]
+	}
+	return counts
 }

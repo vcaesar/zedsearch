@@ -31,6 +31,12 @@ import (
 // failed a write before acknowledging that write. The leader reads it to
 // promote only replicas that cannot have lost an acknowledged write.
 //
+// The set and the assignments are separate keys, so each is written in a
+// transaction with the revision of the other: the owner changes the set only
+// while its partition is still at its epoch, the leader moves a partition
+// only while the set is still the one it read. Whichever commits first makes
+// the other fail, a replica dropped from the set is never promoted.
+//
 // An index with an entry, even an empty one, is replicated; a partition
 // whose owner died with no live in-sync replica is left on the dead owner
 // (unavailable) instead of being handed to a node with stale data.
@@ -60,11 +66,14 @@ func (a *Assigner) ListInSync(ctx context.Context) (map[string][]string, int64, 
 }
 
 // UpdateInSync sets the in-sync replicas of index, nil removes the entry.
-func (a *Assigner) UpdateInSync(ctx context.Context, index string, nodes []string) error {
+// epoch is the ownership epoch of the caller, 0 while the partition is
+// unassigned; the update fails once the partition moved.
+func (a *Assigner) UpdateInSync(ctx context.Context, index string, nodes []string, epoch int64) error {
 	if nodes != nil {
 		nodes = append([]string{}, nodes...)
 		sort.Strings(nodes)
 	}
+	owned := Guard{Key: a.key(PartitionOfN(index, a.partitions)), Revision: epoch}
 	a.insyncMu.Lock()
 	defer a.insyncMu.Unlock()
 	for range maxInSyncRetries {
@@ -85,12 +94,21 @@ func (a *Assigner) UpdateInSync(ctx context.Context, index string, nodes []strin
 		if err != nil {
 			return err
 		}
-		_, swapped, err := a.store.CompareAndSwap(ctx, a.InSyncKey(), value, rev, NoLease)
+		_, swapped, err := a.store.CompareAndSwap(ctx, a.InSyncKey(), value, rev, NoLease, owned)
 		if err != nil {
 			return err
 		}
 		if swapped {
 			return nil
+		}
+		// lost to another in-sync update, or the partition is not ours any more
+		assignment, err := a.store.Get(ctx, owned.Key)
+		if err != nil && !errors.Is(err, errors.ErrKeyNotFound) {
+			return err
+		}
+		if assignment.Revision != epoch {
+			return fmt.Errorf("cluster: in-sync set of %q not changed, its partition moved (epoch %d, presented %d)",
+				index, assignment.Revision, epoch)
 		}
 	}
 	return fmt.Errorf("cluster: in-sync set of %q kept changing", index)

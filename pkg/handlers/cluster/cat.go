@@ -35,7 +35,6 @@ import (
 const (
 	// ClusterName is the single node cluster name reported to ES clients.
 	ClusterName = "zedsearch"
-	statusGreen = "green"
 	statusOpen  = "open"
 )
 
@@ -74,6 +73,11 @@ func CatIndices(c zhttp.Context) {
 	sort.Slice(indexes, func(i, j int) bool {
 		return indexes[i].GetName() < indexes[j].GetName()
 	})
+	names := make([]string, 0, len(indexes))
+	for _, index := range indexes {
+		names = append(names, index.GetName())
+	}
+	health := cluster.Health(c.Context(), names)
 
 	items := make([]elastic.CatIndexResponse, 0, len(indexes))
 	for _, index := range indexes {
@@ -83,7 +87,7 @@ func CatIndices(c zhttp.Context) {
 			replicas = settings.NumberOfReplicas
 		}
 		items = append(items, elastic.CatIndexResponse{
-			Health: statusGreen,
+			Health: health[index.GetName()].Status,
 			Status: statusOpen,
 			Index:  index.GetName(),
 			// zed has no index uuid, the name identifies the index
@@ -125,23 +129,23 @@ func CatIndices(c zhttp.Context) {
 // @Router /es/_cat/health [get]
 func CatHealth(c zhttp.Context) {
 	now := time.Now()
-	shards := activeShards("")
+	shards := countShards(c.Context(), "")
 	nodes := strconv.Itoa(len(cluster.Nodes()))
 	item := elastic.CatHealthResponse{
 		Epoch:               strconv.FormatInt(now.Unix(), 10),
 		Timestamp:           now.UTC().Format("15:04:05"),
 		Cluster:             clusterName(),
-		Status:              statusGreen,
+		Status:              shards.status,
 		NodeTotal:           nodes,
 		NodeData:            nodes,
-		Shards:              strconv.FormatInt(shards, 10),
-		Pri:                 strconv.FormatInt(shards, 10),
+		Shards:              strconv.FormatInt(shards.active(), 10),
+		Pri:                 strconv.FormatInt(shards.primaries, 10),
 		Relo:                "0",
 		Init:                "0",
-		Unassign:            "0",
+		Unassign:            strconv.FormatInt(shards.unassigned, 10),
 		PendingTasks:        "0",
 		MaxTaskWaitTime:     "-",
-		ActiveShardsPercent: "100.0%",
+		ActiveShardsPercent: fmt.Sprintf("%.1f%%", shards.activePercent()),
 	}
 
 	if isJSONFormat(c) {

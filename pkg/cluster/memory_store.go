@@ -153,7 +153,7 @@ func (m *MemoryStore) Create(_ context.Context, key string, value []byte, lease 
 	return m.put(key, value, lease), true, nil
 }
 
-func (m *MemoryStore) CompareAndSwap(_ context.Context, key string, value []byte, rev int64, lease LeaseID) (int64, bool, error) {
+func (m *MemoryStore) CompareAndSwap(_ context.Context, key string, value []byte, rev int64, lease LeaseID, guards ...Guard) (int64, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.expire()
@@ -163,6 +163,12 @@ func (m *MemoryStore) CompareAndSwap(_ context.Context, key string, value []byte
 		return 0, false, nil
 	case ok && kv.Revision != rev:
 		return kv.Revision, false, nil
+	}
+	for _, guard := range guards {
+		// a missing key reads as revision 0
+		if m.kvs[guard.Key].Revision != guard.Revision {
+			return kv.Revision, false, nil
+		}
 	}
 	return m.put(key, value, lease), true, nil
 }

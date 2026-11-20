@@ -151,11 +151,15 @@ func (s *EtcdStore) Create(ctx context.Context, key string, value []byte, lease 
 	return existingRevision(resp), false, nil
 }
 
-func (s *EtcdStore) CompareAndSwap(ctx context.Context, key string, value []byte, rev int64, lease LeaseID) (int64, bool, error) {
+func (s *EtcdStore) CompareAndSwap(ctx context.Context, key string, value []byte, rev int64, lease LeaseID, guards ...Guard) (int64, bool, error) {
 	ctx, cancel := s.ctx(ctx)
 	defer cancel()
+	cmps := []client.Cmp{client.Compare(client.ModRevision(key), "=", rev)}
+	for _, guard := range guards {
+		cmps = append(cmps, client.Compare(client.ModRevision(guard.Key), "=", guard.Revision))
+	}
 	resp, err := s.cli.Txn(ctx).
-		If(client.Compare(client.ModRevision(key), "=", rev)).
+		If(cmps...).
 		Then(client.OpPut(key, string(value), leaseOpts(lease)...)).
 		Else(client.OpGet(key)).
 		Commit()

@@ -172,6 +172,27 @@ func TestClusterFailedStartLeaves(t *testing.T) {
 	assert.Empty(t, nodes)
 }
 
+// A node configured with another partition count would route an index to a
+// different owner than its peers: it must not join at all.
+func TestClusterRejectsPartitionMismatch(t *testing.T) {
+	previous := config.Global.Cluster
+	t.Cleanup(func() { config.Global.Cluster = previous })
+	config.Global.Cluster.Name = "test-cluster"
+	config.Global.Cluster.NodeID = "node-a"
+	config.Global.Cluster.Partitions = 16
+
+	ctx := context.Background()
+	store := NewMemoryStore()
+	defer func() { require.NoError(t, store.Close()) }()
+	require.NoError(t, NewAssigner(store, KeyPrefix(), 8).ClaimPartitions(ctx))
+
+	assert.ErrorContains(t, StartWith(ctx, store), "the cluster was created with 8")
+	assert.False(t, Enabled())
+	nodes, err := NewMembership(store, KeyPrefix(), Node{ID: "probe"}, time.Minute, time.Second).ListNodes(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, nodes, "a rejected node never registers")
+}
+
 func TestClusterConcurrentStart(t *testing.T) {
 	previous := config.Global.Cluster
 	config.Global.Cluster.Name = "test-cluster"
@@ -307,12 +328,24 @@ func TestClusterReplicasAndInSync(t *testing.T) {
 	assert.Empty(t, Replicas("logs"))
 	assert.False(t, IsLocalReplica("logs"))
 
+	// the in-sync set is written under the epoch this node owns the index at
+	require.Eventually(t, func() bool { return len(Assignments()) == 4 }, 3*time.Second, 10*time.Millisecond)
 	require.NoError(t, UpdateInSync(ctx, "logs", []string{"node-b"}))
 	insync, err = InSync(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, map[string][]string{"logs": {"node-b"}}, insync)
 
-	_, ok := NodeAddr("node-a")
+	// another node took the partition: this one may not change the set
+	current := Assignments()[PartitionOfN("logs", 4)]
+	_, ok, err := get().assigner.Set(ctx, current.Partition, "node-b", current.Epoch)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Eventually(t, func() bool { return !IsLocalOwner("logs") }, 3*time.Second, 10*time.Millisecond)
+	var moved *EpochError
+	require.ErrorAs(t, UpdateInSync(ctx, "logs", []string{}), &moved)
+	assert.Equal(t, "node-b", moved.Owner)
+
+	_, ok = NodeAddr("node-a")
 	assert.False(t, ok, "a node without an advertise address cannot be routed to")
 }
 

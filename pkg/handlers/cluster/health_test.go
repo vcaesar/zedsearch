@@ -16,11 +16,15 @@
 package cluster
 
 import (
+	"context"
 	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
+	zcluster "github.com/vcaesar/zedsearch/pkg/cluster"
+	"github.com/vcaesar/zedsearch/pkg/config"
 	"github.com/vcaesar/zedsearch/pkg/core"
 	"github.com/vcaesar/zedsearch/pkg/meta/elastic"
 	"github.com/vcaesar/zedsearch/pkg/zutils/json"
@@ -91,4 +95,82 @@ func TestHealth(t *testing.T) {
 	t.Run("cleanup", func(t *testing.T) {
 		assert.NoError(t, core.DeleteIndex(indexName))
 	})
+}
+
+func TestHealthCluster(t *testing.T) {
+	owned, replicated, orphan := "TestHealthCluster.owned", "TestHealthCluster.replicated", "TestHealthCluster.orphan"
+	for _, name := range []string{owned, replicated, orphan} {
+		index, err := core.NewIndex(name, "disk", 2)
+		require.NoError(t, err)
+		require.NoError(t, core.StoreIndex(index))
+		t.Cleanup(func() { assert.NoError(t, core.DeleteIndex(name)) })
+	}
+	startTestCluster(t, map[string]string{owned: "node-a", replicated: "node-a", orphan: "node-gone"})
+	config.Global.Cluster.Replicas = 1 // restored with the cluster config
+	// replicated, but its replica has not caught up yet
+	require.NoError(t, zcluster.UpdateInSync(context.Background(), replicated, []string{}))
+
+	tests := []struct {
+		name           string
+		target         string
+		status         string
+		primaries      int64
+		unassigned     int
+		activePercent  float64
+		catIndexHealth string
+	}{
+		{name: "owned by a live node", target: owned, status: "green", primaries: 2, activePercent: 100, catIndexHealth: "green"},
+		{name: "replica missing", target: replicated, status: "yellow", primaries: 2, unassigned: 2, activePercent: 50, catIndexHealth: "yellow"},
+		{name: "owner is gone", target: orphan, status: "red", unassigned: 2, activePercent: 0, catIndexHealth: "red"},
+		{name: "the worst index wins", target: "TestHealthCluster.*", status: "red", primaries: 4, unassigned: 4, activePercent: 50},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, w := utils.NewContext()
+			utils.SetRequestParams(c, map[string]string{"target": tt.target})
+			Health(c)
+			require.Equal(t, http.StatusOK, w.Code)
+
+			resp := new(elastic.ClusterHealthResponse)
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), resp))
+			assert.Equal(t, tt.status, resp.Status)
+			assert.Equal(t, tt.primaries, resp.ActivePrimaryShards)
+			assert.Equal(t, tt.primaries, resp.ActiveShards)
+			assert.Equal(t, tt.unassigned, resp.UnassignedShards)
+			assert.Equal(t, tt.activePercent, resp.ActiveShardsPercentAsNumber)
+
+			if tt.catIndexHealth == "" {
+				return
+			}
+			c, w = utils.NewContext()
+			utils.SetRequestParams(c, map[string]string{"target": tt.target})
+			utils.SetRequestURL(c, "/es/_cat/indices", map[string]string{"format": "json"})
+			CatIndices(c)
+			require.Equal(t, http.StatusOK, w.Code)
+			items := make([]elastic.CatIndexResponse, 0)
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &items))
+			require.Len(t, items, 1)
+			assert.Equal(t, tt.catIndexHealth, items[0].Health)
+		})
+	}
+
+	t.Run("cat health", func(t *testing.T) {
+		c, w := utils.NewContext()
+		utils.SetRequestURL(c, "/es/_cat/health", map[string]string{"format": "json"})
+		CatHealth(c)
+		require.Equal(t, http.StatusOK, w.Code)
+		items := make([]elastic.CatHealthResponse, 0)
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &items))
+		require.Len(t, items, 1)
+		assert.Equal(t, "red", items[0].Status)
+		assert.NotEqual(t, "0", items[0].Unassign)
+		assert.NotEqual(t, "100.0%", items[0].ActiveShardsPercent)
+	})
+}
+
+func TestShardCounts(t *testing.T) {
+	assert.Equal(t, 100.0, shardCounts{}.activePercent(), "no shards at all is fully active")
+	counts := shardCounts{primaries: 3, replicas: 3, unassigned: 2}
+	assert.Equal(t, int64(6), counts.active())
+	assert.Equal(t, 75.0, counts.activePercent())
 }

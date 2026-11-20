@@ -123,14 +123,14 @@ func (s *faultStore) Create(ctx context.Context, key string, value []byte, lease
 	return s.Store.Create(ctx, key, value, lease)
 }
 
-func (s *faultStore) CompareAndSwap(ctx context.Context, key string, value []byte, rev int64, lease LeaseID) (int64, bool, error) {
+func (s *faultStore) CompareAndSwap(ctx context.Context, key string, value []byte, rev int64, lease LeaseID, guards ...Guard) (int64, bool, error) {
 	if err := s.fault("CompareAndSwap", key); err != nil {
 		if errors.Is(err, errLose) {
 			return 0, false, nil
 		}
 		return 0, false, err
 	}
-	return s.Store.CompareAndSwap(ctx, key, value, rev, lease)
+	return s.Store.CompareAndSwap(ctx, key, value, rev, lease, guards...)
 }
 
 func (s *faultStore) Watch(ctx context.Context, prefix string) (<-chan Event, error) {

@@ -128,6 +128,12 @@ func startLocked(ctx context.Context, store Store) error {
 	fence := NewFence(assigner, local.ID, partitions)
 
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	// before joining: the leader must not hand partitions to a node that
+	// maps indexes onto them differently
+	if err := assigner.ClaimPartitions(runCtx); err != nil {
+		cancel()
+		return err
+	}
 	if err := membership.Join(runCtx); err != nil {
 		cancel()
 		return err
@@ -414,13 +420,19 @@ func heartbeat() (ttl, interval time.Duration) {
 }
 
 // UpdateInSync records the in-sync replicas of an index this node owns, nil
-// drops the entry. A no-op with clustering disabled.
+// drops the entry. It fails when the partition of the index is owned by
+// another node, or moved since this node last heard of it. A no-op with
+// clustering disabled.
 func UpdateInSync(ctx context.Context, index string, nodes []string) error {
 	n := get()
 	if n == nil {
 		return nil
 	}
-	return n.assigner.UpdateInSync(ctx, index, nodes)
+	owner, epoch, ok := n.fence.Owner(index)
+	if ok && owner != n.local.ID {
+		return &EpochError{Index: index, Owner: owner, Want: epoch}
+	}
+	return n.assigner.UpdateInSync(ctx, index, nodes, epoch)
 }
 
 // InSync returns the in-sync map, empty with clustering disabled.

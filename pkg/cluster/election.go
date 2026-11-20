@@ -259,14 +259,14 @@ func (c *Coordinator) RebalanceOnce(ctx context.Context) error {
 		return err
 	}
 
-	insync, _, err := c.assigner.ListInSync(ctx)
+	insync, insyncRev, err := c.assigner.ListInSync(ctx)
 	if err != nil {
 		return err
 	}
 	changes := RebalanceWarm(owners, replicas, ids, c.partitions)
 	changes = ConstrainChanges(changes, owners, ids, EligibleOwners(insync, c.partitions))
 	if len(changes) > 0 {
-		if err := c.assigner.Apply(ctx, current, changes); err != nil {
+		if err := c.assigner.Apply(ctx, current, changes, insyncRev); err != nil {
 			return err
 		}
 	}
