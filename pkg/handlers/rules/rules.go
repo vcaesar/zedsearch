@@ -74,6 +74,11 @@ type MatchedRule struct {
 	RuleID    string `json:"rule_id"`
 }
 
+// TestRequest is the body of the test API; the match_criteria keys are free-form.
+type TestRequest struct {
+	MatchCriteria map[string]interface{} `json:"match_criteria" binding:"required"`
+}
+
 // TestResponse is the response of the test API.
 type TestResponse struct {
 	TotalMatchedRules int           `json:"total_matched_rules"`
@@ -153,7 +158,8 @@ func GetRuleset(c zhttp.Context) {
 // @Produce json
 // @Param   id      path string            true "Ruleset id"
 // @Param   ruleset body meta.QueryRuleset true "Rules"
-// @Success 200 {object} rules.ResultResponse
+// @Success 200 {object} rules.ResultResponse "Updated"
+// @Success 201 {object} rules.ResultResponse "Created"
 // @Failure 400 {object} map[string]interface{}
 // @Router /es/_query_rules/{id} [put]
 func PutRuleset(c zhttp.Context) {
@@ -251,7 +257,8 @@ func GetRule(c zhttp.Context) {
 // @Param   id      path string         true "Ruleset id"
 // @Param   rule_id path string         true "Rule id"
 // @Param   rule    body meta.QueryRule true "Rule"
-// @Success 200 {object} rules.ResultResponse
+// @Success 200 {object} rules.ResultResponse "Updated"
+// @Success 201 {object} rules.ResultResponse "Created"
 // @Failure 400 {object} map[string]interface{}
 // @Router /es/_query_rules/{id}/_rule/{rule_id} [put]
 func PutRule(c zhttp.Context) {
@@ -336,14 +343,13 @@ func DeleteRule(c zhttp.Context) {
 // @Accept  json
 // @Produce json
 // @Param   id   path string                 true "Ruleset id"
-// @Param   body body map[string]interface{} true "{\"match_criteria\": {...}}"
+// @Param   body body rules.TestRequest true "Criteria to match, e.g. {\"match_criteria\":{\"query_string\":\"boots\"}}"
 // @Success 200 {object} rules.TestResponse
+// @Failure 400 {object} map[string]interface{}
 // @Failure 404 {object} map[string]interface{}
 // @Router /es/_query_rules/{id}/_test [post]
 func TestRuleset(c zhttp.Context) {
-	body := struct {
-		MatchCriteria map[string]interface{} `json:"match_criteria"`
-	}{}
+	var body TestRequest
 	if err := zutils.BindJSON(c, &body); err != nil {
 		renderError(c, http.StatusBadRequest, errors.ErrorTypeParsingException, err.Error())
 		return

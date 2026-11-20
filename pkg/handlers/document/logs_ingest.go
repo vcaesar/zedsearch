@@ -46,7 +46,7 @@ import (
 // @Success 200 {object} logs.IngestResponse
 // @Failure 400 {object} meta.HTTPResponseError
 // @Failure 500 {object} meta.HTTPResponseError
-// @Failure 503 {object} meta.HTTPResponseError "Storage failure, retry the batch"
+// @Failure 503 {object} meta.HTTPResponseError "Storage failure; records stored before it are kept, so retrying the whole batch can store them twice"
 // @Router /api/{index}/_json [post]
 func LogsJSON(c zhttp.Context) {
 	docs, ok := parseLogsBody(c, logs.ParseJSON)
@@ -74,7 +74,7 @@ func LogsJSON(c zhttp.Context) {
 // @Success 200 {object} map[string]interface{}
 // @Failure 400 {object} map[string]interface{}
 // @Failure 500 {object} map[string]interface{}
-// @Failure 503 {object} map[string]interface{} "Storage failure, retry the batch"
+// @Failure 503 {object} map[string]interface{} "Storage failure; records stored before it are kept, so retrying the whole batch can store them twice"
 // @Router /api/{index}/_hec [post]
 func LogsHEC(c zhttp.Context) {
 	body, err := readLogsBody(c)
@@ -112,7 +112,7 @@ func LogsHEC(c zhttp.Context) {
 // @Success 204
 // @Failure 400 {object} logs.IngestResponse "Some records failed; an invalid request answers meta.HTTPResponseError instead"
 // @Failure 500 {object} meta.HTTPResponseError
-// @Failure 503 {object} meta.HTTPResponseError "Storage failure, retry the batch"
+// @Failure 503 {object} meta.HTTPResponseError "Storage failure; records stored before it are kept, so retrying the whole batch can store them twice"
 // @Router /api/{index}/loki/api/v1/push [post]
 func LokiPush(c zhttp.Context) {
 	docs, ok := parseLogsBody(c, logs.ParseLoki)
@@ -145,7 +145,7 @@ func LokiPush(c zhttp.Context) {
 // @Failure 400 {object} meta.HTTPResponseError
 // @Failure 415 {object} meta.HTTPResponseError
 // @Failure 500 {object} meta.HTTPResponseError
-// @Failure 503 {object} meta.HTTPResponseError "Storage failure, retry the batch"
+// @Failure 503 {object} meta.HTTPResponseError "Storage failure; records stored before it are kept, so retrying the whole batch can store them twice"
 // @Router /api/{index}/v1/logs [post]
 func OTLPLogs(c zhttp.Context) {
 	if ct := c.GetHeader("Content-Type"); ct != "" && !isJSONMediaType(ct) {

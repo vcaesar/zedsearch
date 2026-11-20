@@ -685,9 +685,6 @@ definitions:
         description: regexp string or array of terms
       field:
         type: string
-      filter_duplicate_text:
-        description: 'significant_text options, not supported: rejected when set'
-        type: boolean
       gnd:
         $ref: '#/definitions/meta.SignificanceHeuristic'
       include:
@@ -707,10 +704,6 @@ definitions:
       size:
         description: default 10
         type: integer
-      source_fields:
-        items:
-          type: string
-        type: array
     type: object
   meta.AggregationStdDeviationBounds:
     properties:
@@ -1846,6 +1839,14 @@ definitions:
       ruleset_id:
         type: string
     type: object
+  rules.TestRequest:
+    properties:
+      match_criteria:
+        additionalProperties: true
+        type: object
+    required:
+    - match_criteria
+    type: object
   rules.TestResponse:
     properties:
       matched_rules:
@@ -2395,7 +2396,8 @@ paths:
             additionalProperties: true
             type: object
         "503":
-          description: Storage failure, retry the batch
+          description: Storage failure; records stored before it are kept, so retrying
+            the whole batch can store them twice
           schema:
             additionalProperties: true
             type: object
@@ -2440,7 +2442,8 @@ paths:
           schema:
             $ref: '#/definitions/meta.HTTPResponseError'
         "503":
-          description: Storage failure, retry the batch
+          description: Storage failure; records stored before it are kept, so retrying
+            the whole batch can store them twice
           schema:
             $ref: '#/definitions/meta.HTTPResponseError'
       security:
@@ -2718,7 +2721,8 @@ paths:
           schema:
             $ref: '#/definitions/meta.HTTPResponseError'
         "503":
-          description: Storage failure, retry the batch
+          description: Storage failure; records stored before it are kept, so retrying
+            the whole batch can store them twice
           schema:
             $ref: '#/definitions/meta.HTTPResponseError'
       security:
@@ -2765,7 +2769,8 @@ paths:
           schema:
             $ref: '#/definitions/meta.HTTPResponseError'
         "503":
-          description: Storage failure, retry the batch
+          description: Storage failure; records stored before it are kept, so retrying
+            the whole batch can store them twice
           schema:
             $ref: '#/definitions/meta.HTTPResponseError'
       security:
@@ -3699,9 +3704,14 @@ paths:
       - application/json
       responses:
         "200":
-          description: OK
+          description: One result per query; a failed query has error set
           schema:
-            $ref: '#/definitions/meta.SearchResponse'
+            properties:
+              responses:
+                items:
+                  $ref: '#/definitions/meta.SearchResponse'
+                type: array
+            type: object
         "400":
           description: Bad Request
           schema:
@@ -3812,7 +3822,11 @@ paths:
       - application/json
       responses:
         "200":
-          description: OK
+          description: Updated
+          schema:
+            $ref: '#/definitions/rules.ResultResponse'
+        "201":
+          description: Created
           schema:
             $ref: '#/definitions/rules.ResultResponse'
         "400":
@@ -3912,7 +3926,11 @@ paths:
       - application/json
       responses:
         "200":
-          description: OK
+          description: Updated
+          schema:
+            $ref: '#/definitions/rules.ResultResponse'
+        "201":
+          description: Created
           schema:
             $ref: '#/definitions/rules.ResultResponse'
         "400":
@@ -3936,13 +3954,12 @@ paths:
         name: id
         required: true
         type: string
-      - description: '{\'
+      - description: Criteria to match, e.g. {\
         in: body
         name: body
         required: true
         schema:
-          additionalProperties: true
-          type: object
+          $ref: '#/definitions/rules.TestRequest'
       produces:
       - application/json
       responses:
@@ -3950,6 +3967,11 @@ paths:
           description: OK
           schema:
             $ref: '#/definitions/rules.TestResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
         "404":
           description: Not Found
           schema:
@@ -3992,6 +4014,9 @@ paths:
     post:
       consumes:
       - application/json
+      description: The response format is the body format, else the format query parameter,
+        else the Accept header (text/plain, text/csv, text/tab-separated-values),
+        else JSON.
       operationId: SQLSearch
       parameters:
       - description: Query
@@ -4006,9 +4031,12 @@ paths:
         type: string
       produces:
       - application/json
+      - text/plain
+      - text/csv
+      - text/tab-separated-values
       responses:
         "200":
-          description: OK
+          description: JSON format; txt, csv and tsv return plain text rows
           schema:
             $ref: '#/definitions/sql.Response'
         "400":
@@ -4055,10 +4083,12 @@ paths:
       parameters:
       - description: Starting offset
         in: query
+        minimum: 0
         name: from
         type: integer
       - description: Max results, default 10
         in: query
+        minimum: 0
         name: size
         type: integer
       produces:
@@ -4120,10 +4150,12 @@ paths:
         type: string
       - description: Starting offset
         in: query
+        minimum: 0
         name: from
         type: integer
       - description: Max results, default 10
         in: query
+        minimum: 0
         name: size
         type: integer
       produces:
@@ -4133,6 +4165,11 @@ paths:
           description: OK
           schema:
             $ref: '#/definitions/synonyms.SetResponse'
+        "400":
+          description: Negative or non-integer from or size
+          schema:
+            additionalProperties: true
+            type: object
         "404":
           description: Not Found
           schema:

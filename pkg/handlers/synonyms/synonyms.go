@@ -108,8 +108,8 @@ type ListResponse struct {
 // @security BasicAuth
 // @Tags    Synonyms
 // @Produce json
-// @Param   from query int false "Starting offset"
-// @Param   size query int false "Max results, default 10"
+// @Param   from query int false "Starting offset" minimum(0)
+// @Param   size query int false "Max results, default 10" minimum(0)
 // @Success 200 {object} synonyms.ListResponse
 // @Failure 400 {object} map[string]interface{}
 // @Router /es/_synonyms [get]
@@ -141,9 +141,10 @@ func ListSets(c zhttp.Context) {
 // @Tags    Synonyms
 // @Produce json
 // @Param   id   path  string true  "Synonyms set id"
-// @Param   from query int    false "Starting offset"
-// @Param   size query int    false "Max results, default 10"
+// @Param   from query int    false "Starting offset" minimum(0)
+// @Param   size query int    false "Max results, default 10" minimum(0)
 // @Success 200 {object} synonyms.SetResponse
+// @Failure 400 {object} map[string]interface{} "Negative or non-integer from or size"
 // @Failure 404 {object} map[string]interface{}
 // @Router /es/_synonyms/{id} [get]
 func GetSet(c zhttp.Context) {

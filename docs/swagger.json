@@ -1446,7 +1446,7 @@
                         }
                     },
                     "503": {
-                        "description": "Storage failure, retry the batch",
+                        "description": "Storage failure; records stored before it are kept, so retrying the whole batch can store them twice",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -1515,7 +1515,7 @@
                         }
                     },
                     "503": {
-                        "description": "Storage failure, retry the batch",
+                        "description": "Storage failure; records stored before it are kept, so retrying the whole batch can store them twice",
                         "schema": {
                             "$ref": "#/definitions/meta.HTTPResponseError"
                         }
@@ -1947,7 +1947,7 @@
                         }
                     },
                     "503": {
-                        "description": "Storage failure, retry the batch",
+                        "description": "Storage failure; records stored before it are kept, so retrying the whole batch can store them twice",
                         "schema": {
                             "$ref": "#/definitions/meta.HTTPResponseError"
                         }
@@ -2019,7 +2019,7 @@
                         }
                     },
                     "503": {
-                        "description": "Storage failure, retry the batch",
+                        "description": "Storage failure; records stored before it are kept, so retrying the whole batch can store them twice",
                         "schema": {
                             "$ref": "#/definitions/meta.HTTPResponseError"
                         }
@@ -2631,9 +2631,17 @@
                 ],
                 "responses": {
                     "200": {
-                        "description": "OK",
+                        "description": "One result per query; a failed query has error set",
                         "schema": {
-                            "$ref": "#/definitions/meta.SearchResponse"
+                            "type": "object",
+                            "properties": {
+                                "responses": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/definitions/meta.SearchResponse"
+                                    }
+                                }
+                            }
                         }
                     },
                     "400": {
@@ -2768,7 +2776,13 @@
                 ],
                 "responses": {
                     "200": {
-                        "description": "OK",
+                        "description": "Updated",
+                        "schema": {
+                            "$ref": "#/definitions/rules.ResultResponse"
+                        }
+                    },
+                    "201": {
+                        "description": "Created",
                         "schema": {
                             "$ref": "#/definitions/rules.ResultResponse"
                         }
@@ -2914,7 +2928,13 @@
                 ],
                 "responses": {
                     "200": {
-                        "description": "OK",
+                        "description": "Updated",
+                        "schema": {
+                            "$ref": "#/definitions/rules.ResultResponse"
+                        }
+                    },
+                    "201": {
+                        "description": "Created",
                         "schema": {
                             "$ref": "#/definitions/rules.ResultResponse"
                         }
@@ -3003,13 +3023,12 @@
                         "required": true
                     },
                     {
-                        "description": "{\\",
+                        "description": "Criteria to match, e.g. {\\",
                         "name": "body",
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": true
+                            "$ref": "#/definitions/rules.TestRequest"
                         }
                     }
                 ],
@@ -3018,6 +3037,13 @@
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/rules.TestResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
                         }
                     },
                     "404": {
@@ -3082,11 +3108,15 @@
                         "BasicAuth": []
                     }
                 ],
+                "description": "The response format is the body format, else the format query parameter, else the Accept header (text/plain, text/csv, text/tab-separated-values), else JSON.",
                 "consumes": [
                     "application/json"
                 ],
                 "produces": [
-                    "application/json"
+                    "application/json",
+                    "text/plain",
+                    "text/csv",
+                    "text/tab-separated-values"
                 ],
                 "tags": [
                     "Search"
@@ -3112,7 +3142,7 @@
                 ],
                 "responses": {
                     "200": {
-                        "description": "OK",
+                        "description": "JSON format; txt, csv and tsv return plain text rows",
                         "schema": {
                             "$ref": "#/definitions/sql.Response"
                         }
@@ -3189,12 +3219,14 @@
                 "operationId": "ListSynonymsSets",
                 "parameters": [
                     {
+                        "minimum": 0,
                         "type": "integer",
                         "description": "Starting offset",
                         "name": "from",
                         "in": "query"
                     },
                     {
+                        "minimum": 0,
                         "type": "integer",
                         "description": "Max results, default 10",
                         "name": "size",
@@ -3242,12 +3274,14 @@
                         "required": true
                     },
                     {
+                        "minimum": 0,
                         "type": "integer",
                         "description": "Starting offset",
                         "name": "from",
                         "in": "query"
                     },
                     {
+                        "minimum": 0,
                         "type": "integer",
                         "description": "Max results, default 10",
                         "name": "size",
@@ -3259,6 +3293,13 @@
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/synonyms.SetResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Negative or non-integer from or size",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
                         }
                     },
                     "404": {
@@ -5101,10 +5142,6 @@
                 "field": {
                     "type": "string"
                 },
-                "filter_duplicate_text": {
-                    "description": "significant_text options, not supported: rejected when set",
-                    "type": "boolean"
-                },
                 "gnd": {
                     "$ref": "#/definitions/meta.SignificanceHeuristic"
                 },
@@ -5131,12 +5168,6 @@
                 "size": {
                     "description": "default 10",
                     "type": "integer"
-                },
-                "source_fields": {
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
                 }
             }
         },
@@ -6821,6 +6852,18 @@
                 },
                 "ruleset_id": {
                     "type": "string"
+                }
+            }
+        },
+        "rules.TestRequest": {
+            "type": "object",
+            "required": [
+                "match_criteria"
+            ],
+            "properties": {
+                "match_criteria": {
+                    "type": "object",
+                    "additionalProperties": true
                 }
             }
         },

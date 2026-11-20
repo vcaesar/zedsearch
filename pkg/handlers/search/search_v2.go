@@ -88,7 +88,7 @@ func SearchDSL(c zhttp.Context) {
 // @Accept  plain
 // @Produce json
 // @Param   query  body  string  true  "Query"
-// @Success 200 {object} meta.SearchResponse
+// @Success 200 {object} object{responses=[]meta.SearchResponse} "One result per query; a failed query has error set"
 // @Failure 400 {object} meta.HTTPResponseError
 // @Router /es/_msearch [post]
 func MultipleSearch(c zhttp.Context) {

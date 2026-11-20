@@ -26,13 +26,16 @@ import (
 
 type spec struct {
 	Paths map[string]map[string]struct {
+		Produces  []string `json:"produces"`
 		Responses map[string]struct {
 			Schema struct {
-				Ref string `json:"$ref"`
+				Ref        string                 `json:"$ref"`
+				Properties map[string]interface{} `json:"properties"`
 			} `json:"schema"`
 		} `json:"responses"`
 	} `json:"paths"`
 	Definitions map[string]struct {
+		Required   []string               `json:"required"`
 		Properties map[string]interface{} `json:"properties"`
 	} `json:"definitions"`
 }
@@ -61,5 +64,17 @@ func TestSwaggerSpec(t *testing.T) {
 		})
 	}
 	assert.Contains(t, s.Paths["/api/{index}/_hec"]["post"].Responses, "503")
+
+	for _, path := range []string{"/es/_query_rules/{id}", "/es/_query_rules/{id}/_rule/{rule_id}"} {
+		assert.Equal(t, "#/definitions/rules.ResultResponse", s.Paths[path]["put"].Responses["201"].Schema.Ref, path)
+	}
+	assert.Contains(t, s.Paths["/es/_query_rules/{id}/_test"]["post"].Responses, "400")
+	assert.Equal(t, []string{"match_criteria"}, s.Definitions["rules.TestRequest"].Required)
+	assert.Contains(t, s.Paths["/es/_sql"]["post"].Produces, "text/csv")
+	assert.Contains(t, s.Paths["/es/_synonyms/{id}"]["get"].Responses, "400")
+	assert.Contains(t, s.Paths["/es/_msearch"]["post"].Responses["200"].Schema.Properties, "responses")
+	sig := s.Definitions["meta.AggregationSignificantTerms"].Properties
+	assert.NotContains(t, sig, "filter_duplicate_text")
+	assert.NotContains(t, sig, "source_fields")
 	assert.NotContains(t, s.Paths, "/api/fleet/enroll", "docs must not include untracked work")
 }
