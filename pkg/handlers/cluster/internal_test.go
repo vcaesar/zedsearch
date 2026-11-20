@@ -267,6 +267,10 @@ func TestInternalSearchReplica(t *testing.T) {
 			name: "a pattern names no copy", body: `{"indexes":` + list("TestInternalSearchReplica.*") + `,"replica":true}`,
 			wantCode: http.StatusNotFound, wantError: "is not installed on this replica",
 		},
+		{
+			name: "a replica search names its indexes", body: `{"indexes":[],"replica":true}`,
+			wantCode: http.StatusBadRequest, wantError: "a replica search must name its indexes",
+		},
 		{name: "the owner serves both", body: `{"indexes":` + list(cold, disk) + `}`, wantCode: http.StatusOK, wantTotal: 2},
 		{name: "the owner serves a pattern", body: `{"indexes":` + list("TestInternalSearchReplica.*") + `}`, wantCode: http.StatusOK, wantTotal: 2},
 	}
@@ -283,6 +287,37 @@ func TestInternalSearchReplica(t *testing.T) {
 			resp := new(meta.SearchResponse)
 			require.NoError(t, json.Unmarshal(w.Body.Bytes(), resp))
 			assert.Equal(t, tt.wantTotal, resp.Hits.Total.Value)
+		})
+	}
+}
+
+// A node whose storage fails answers 503, which the coordinator retries on
+// another replica, while a query it rejects stays a 400.
+func TestInternalSearchStorageFailure(t *testing.T) {
+	const name = "TestInternalSearchStorageFailure.index_1"
+	index, err := core.NewIndex(name, "disk", 1)
+	require.NoError(t, err)
+	require.NoError(t, core.StoreIndex(index))
+	t.Cleanup(func() { assert.NoError(t, core.DeleteIndex(name)) })
+	// a retired copy left in the list cannot open its readers
+	require.NoError(t, core.DropLocalIndex(name))
+	core.ZED_INDEX_LIST.Add(index)
+
+	tests := []struct {
+		name     string
+		body     string
+		wantCode int
+	}{
+		{name: "single index", body: `{"indexes":["` + name + `"]}`, wantCode: http.StatusServiceUnavailable},
+		{name: "pattern", body: `{"indexes":["TestInternalSearchStorageFailure.*"]}`, wantCode: http.StatusServiceUnavailable},
+		{name: "rejected query", body: `{"indexes":["TestInternalSearchStorageFailure.missing.*"]}`, wantCode: http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, w := utils.NewContext()
+			utils.SetRequestData(c, tt.body)
+			InternalSearch(c)
+			assert.Equal(t, tt.wantCode, w.Code, w.Body.String())
 		})
 	}
 }
@@ -355,6 +390,7 @@ func TestAddPartialAggregations(t *testing.T) {
 		wantCount   uint64
 		wantSum     float64
 		wantPartial bool
+		wantNilAvg  bool
 	}{
 		{
 			name: "avg gets its counters",
@@ -383,6 +419,7 @@ func TestAddPartialAggregations(t *testing.T) {
 					"avg_n": {Value: nil},
 				},
 			},
+			wantNilAvg: true,
 		},
 		{
 			name: "no aggregations at all",
@@ -398,6 +435,11 @@ func TestAddPartialAggregations(t *testing.T) {
 			addPartialAggregations(tt.resp, &meta.ZedQuery{Aggregations: avgDef})
 			if tt.resp == nil {
 				return
+			}
+			if tt.wantNilAvg {
+				agg, ok := tt.resp.Aggregations["avg_n"]
+				require.True(t, ok, "the average is kept")
+				assert.Nil(t, agg.Value)
 			}
 			for name, agg := range tt.resp.Aggregations {
 				partial, ok := agg.Aggregations[zcluster.PartialAggName]

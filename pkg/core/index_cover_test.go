@@ -294,10 +294,13 @@ func TestIndex_NestedWriteFailures(t *testing.T) {
 		assert.ErrorIs(t, err, ErrIndexReadOnly)
 		_, err = index.GetReaders(0, 0)
 		assert.Error(t, err)
+		var readerErr *ReaderError
 		_, err = index.Search(&meta.ZedQuery{Query: matchAll, Size: 10})
-		assert.Error(t, err)
+		assert.ErrorAs(t, err, &readerErr, "a storage failure, not a bad query")
 		_, err = MultiSearch([]string{name}, &meta.ZedQuery{Query: matchAll, Size: 10})
-		assert.Error(t, err)
+		assert.ErrorAs(t, err, &readerErr)
+		assert.ErrorIs(t, readerErr, readerErr.Err)
+		assert.Equal(t, readerErr.Err.Error(), readerErr.Error(), "the message is unchanged")
 	})
 }
 

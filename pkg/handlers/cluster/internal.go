@@ -16,6 +16,7 @@
 package cluster
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -73,6 +74,7 @@ type InternalIndexesResponse struct {
 // @Success 200 {object} meta.SearchResponse
 // @Failure 400 {object} meta.HTTPResponseError
 // @Failure 404 {object} meta.HTTPResponseError
+// @Failure 503 {object} meta.HTTPResponseError
 // @Router /api/_internal/search [post]
 func InternalSearch(c zhttp.Context) {
 	req := new(InternalSearchRequest)
@@ -84,6 +86,11 @@ func InternalSearch(c zhttp.Context) {
 		req.Query = &meta.ZedQuery{Size: 10}
 	}
 
+	if req.Replica && len(req.Indexes) == 0 {
+		// every local index would include copies this node may not serve
+		zutils.RenderJSON(c, http.StatusBadRequest, meta.HTTPResponseError{Error: "a replica search must name its indexes"})
+		return
+	}
 	for _, name := range req.Indexes {
 		if req.Replica {
 			if !replication.Readable(name) {
@@ -107,7 +114,12 @@ func InternalSearch(c zhttp.Context) {
 	resp, err := searchLocal(req.Indexes, req.Query)
 	if err != nil {
 		log.Error().Err(err).Strs("indexes", req.Indexes).Msg("cluster: internal search")
-		zutils.RenderJSON(c, http.StatusBadRequest, meta.HTTPResponseError{Error: err.Error()})
+		// a storage failure is retryable on another replica, a bad query is not
+		status := http.StatusBadRequest
+		if _, ok := errors.AsType[*core.ReaderError](err); ok {
+			status = http.StatusServiceUnavailable
+		}
+		zutils.RenderJSON(c, status, meta.HTTPResponseError{Error: err.Error()})
 		return
 	}
 	addPartialAggregations(resp, req.Query)

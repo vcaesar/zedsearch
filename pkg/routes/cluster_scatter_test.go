@@ -327,8 +327,10 @@ func (env *clusterTestEnv) join(t *testing.T, id, addr string) {
 // The indexes of a lost owner are asked from their first replica in one
 // request, what it cannot serve index by index from each replica in turn.
 func TestScatterSearchBatchesReplicas(t *testing.T) {
-	const second = remoteIndex + "-3" // another partition than remoteIndex
+	const second = "TestScatterSearchBatchesReplicas.index_2"
 	env := setupClusterEnv(t)
+	require.NotContains(t, []int{cluster.PartitionOfN(localIndex, testPartitions), cluster.PartitionOfN(remoteIndex, testPartitions)},
+		cluster.PartitionOfN(second, testPartitions), "another partition than the fixture indexes")
 	withSearchRoutes(t, env)
 	registerIndex(t, second)
 	env.own(t, remoteIndex, "node-gone")
@@ -360,7 +362,7 @@ func TestScatterSearchBatchesReplicas(t *testing.T) {
 	only := func(index string) func([]string) bool {
 		return func(indexes []string) bool { return len(indexes) == 1 && indexes[0] == index }
 	}
-	batch := []string{remoteIndex, second}
+	batch := []string{second, remoteIndex} // sorted
 
 	tests := []struct {
 		name         string
@@ -373,7 +375,7 @@ func TestScatterSearchBatchesReplicas(t *testing.T) {
 			name:  "one request for the indexes of a replica",
 			nodeB: all, nodeC: all,
 			wantCode: http.StatusOK,
-			wantBody: []string{"node-b:" + remoteIndex + "+" + second},
+			wantBody: []string{"node-b:" + second + "+" + remoteIndex},
 			wantB:    [][]string{batch},
 		},
 		{
@@ -403,7 +405,7 @@ func TestScatterSearchBatchesReplicas(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			nodeB.reset(tt.nodeB)
 			nodeC.reset(tt.nodeC)
-			w := env.do(httptest.NewRequest(http.MethodPost, "/es/"+remoteIndex+"*/_search", nil))
+			w := env.do(httptest.NewRequest(http.MethodPost, "/es/"+remoteIndex+","+second+"/_search", nil))
 			for len(env.requests) > 0 {
 				<-env.requests
 			}
@@ -458,6 +460,17 @@ func TestScatterSearchReplicaErrors(t *testing.T) {
 			wantCode: http.StatusOK, wantBody: "node-c:" + remoteIndex, wantC: 1,
 		},
 		{
+			name:     "a replica that breaks off its answer is skipped",
+			replicas: []string{"node-b", "node-c"},
+			nodeB: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Length", "100")
+				_, err := io.WriteString(w, `{"hits":`)
+				assert.NoError(t, err)
+				panic(http.ErrAbortHandler)
+			},
+			wantCode: http.StatusOK, wantBody: "node-c:" + remoteIndex, wantC: 1,
+		},
+		{
 			name:     "a replica that rejects the query ends the search",
 			replicas: []string{"node-b", "node-c"},
 			nodeB:    status(http.StatusBadRequest, `{"error":"bad query"}`),
@@ -490,6 +503,51 @@ func TestScatterSearchReplicaErrors(t *testing.T) {
 			assert.Len(t, nodeC.requests(), tt.wantC)
 		})
 	}
+}
+
+// A replica picked before it left the cluster is skipped like one that is
+// down, an owner without an address still ends the search.
+func TestScatterSearchReplicaLeft(t *testing.T) {
+	env := setupClusterEnv(t)
+	nodeC := &replicaNode{}
+	nodeC.reset(func([]string) bool { return true })
+	ready := httptest.NewServer(nodeC.handler(t, "node-c"))
+	defer ready.Close()
+	env.join(t, "node-c", ready.URL)
+	ctx := context.Background()
+
+	responses, err := scatter(ctx, nil, map[string][]string{remoteIndex: {"node-left", "node-c"}}, nil, "")
+	require.NoError(t, err)
+	require.Len(t, responses, 2)
+	assert.Nil(t, responses[0], "the batch node-left was asked for")
+	require.NotNil(t, responses[1])
+	assert.Equal(t, "node-c:"+remoteIndex, responses[1].Hits.Hits[0].ID)
+	assert.Equal(t, [][]string{{remoteIndex}}, nodeC.requests())
+
+	_, err = internalSearch(ctx, "node-left", []string{remoteIndex}, nil, "", false)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, errReplicaUnavailable)
+	assert.Contains(t, err.Error(), "node-left is unreachable")
+}
+
+// A node that redirects keeps the credentials: the redirect is not followed.
+func TestScatterSearchRefusesRedirects(t *testing.T) {
+	env := setupClusterEnv(t)
+	withSearchRoutes(t, env)
+	trap := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("the redirect was followed")
+	}))
+	defer trap.Close()
+	env.respond = func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, trap.URL+InternalSearchPath, http.StatusTemporaryRedirect)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/es/"+remoteIndex+"*/_search", nil)
+	req.Header.Set("Authorization", "Basic dXNlcjpwYXNz")
+	w := env.do(req)
+	assert.Equal(t, http.StatusBadGateway, w.Code)
+	assert.Contains(t, w.Body.String(), "307 Temporary Redirect")
+	env.received(t)
 }
 
 func TestReplicaIndexMissing(t *testing.T) {

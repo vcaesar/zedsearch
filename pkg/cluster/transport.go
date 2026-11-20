@@ -39,3 +39,11 @@ var peerTransport = sync.OnceValue(func() http.RoundTripper {
 func Transport() http.RoundTripper {
 	return peerTransport()
 }
+
+// NoRedirect is the CheckRedirect of node to node clients. The internal
+// endpoints never redirect, and following one would hand the caller's
+// Authorization or the cluster secret to a host nobody selected, so the
+// redirect is returned as the response instead.
+func NoRedirect(*http.Request, []*http.Request) error {
+	return http.ErrUseLastResponse
+}

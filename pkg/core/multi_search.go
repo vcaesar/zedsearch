@@ -66,7 +66,7 @@ func MultiSearch(indexNames []string, query *meta.ZedQuery) (*meta.SearchRespons
 
 		reader, err := index.GetReaders(timeMin, timeMax)
 		if err != nil {
-			return nil, err
+			return nil, &ReaderError{Err: err}
 		}
 		readers = append(readers, reader...)
 		shardNum += index.GetShardNum()

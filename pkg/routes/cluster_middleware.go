@@ -57,8 +57,9 @@ const (
 	scatterTimeout     = 30 * time.Second
 )
 
-// clusterClient is shared so node to node calls reuse connections.
-var clusterClient = &http.Client{Timeout: scatterTimeout, Transport: cluster.Transport()}
+// clusterClient is shared so node to node calls reuse connections. It never
+// follows a redirect: the credentials stay with the node that was asked.
+var clusterClient = &http.Client{Timeout: scatterTimeout, Transport: cluster.Transport(), CheckRedirect: cluster.NoRedirect}
 
 // The replication steps around a write, variables for tests.
 var (
@@ -414,9 +415,17 @@ var errReplicaUnavailable = errors.New("replica index unavailable")
 // credentials go along as they are, like in forward, so the nodes must
 // advertise https addresses unless the network between them is trusted.
 func internalSearch(ctx context.Context, owner string, indexes []string, query *meta.ZedQuery, authorization string, replica bool) (*meta.SearchResponse, error) {
+	// a replica that left, stopped answering or broke off its answer may be
+	// stood in for by the next one
+	unavailable := func(err error) error {
+		if replica {
+			return fmt.Errorf("cluster: node %s: %w: %w", owner, errReplicaUnavailable, err)
+		}
+		return err
+	}
 	addr, ok := cluster.NodeAddr(owner)
 	if !ok || addr == "" {
-		return nil, errors.New("cluster: node " + owner + " is unreachable")
+		return nil, unavailable(errors.New("cluster: node " + owner + " is unreachable"))
 	}
 	// sort_keys: the merge orders top_hits by the doc values of the owners
 	payload, err := json.Marshal(map[string]interface{}{"indexes": indexes, "query": query, "replica": replica, "sort_keys": true})
@@ -436,10 +445,7 @@ func internalSearch(ctx context.Context, owner string, indexes []string, query *
 
 	resp, err := clusterClient.Do(req)
 	if err != nil {
-		if replica {
-			return nil, fmt.Errorf("cluster: node %s: %w: %w", owner, errReplicaUnavailable, err)
-		}
-		return nil, err
+		return nil, unavailable(err)
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
@@ -449,7 +455,7 @@ func internalSearch(ctx context.Context, owner string, indexes []string, query *
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return nil, unavailable(err)
 	}
 	if replica && (resp.StatusCode >= http.StatusInternalServerError || replicaIndexMissing(resp.StatusCode, data, indexes)) {
 		return nil, fmt.Errorf("cluster: node %s: %w: %s: %s", owner, errReplicaUnavailable, resp.Status, data)

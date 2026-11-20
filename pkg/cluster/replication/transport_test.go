@@ -111,6 +111,23 @@ func TestStartWithCluster(t *testing.T) {
 	Stop()
 }
 
+// A node that redirects never gets the secret sent elsewhere.
+func TestHTTPTransportRefusesRedirects(t *testing.T) {
+	trap := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("the redirect was followed")
+	}))
+	t.Cleanup(trap.Close)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, trap.URL+r.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(server.Close)
+	startLocalCluster(t, server.URL)
+
+	err := NewHTTPTransport("s3cret").Recover(context.Background(), "node-a", "x")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "307")
+}
+
 // The HTTP transport talks to the internal endpoints of the node it
 // resolves through the cluster; here node-a is this test server.
 func TestHTTPTransport(t *testing.T) {
