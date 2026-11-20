@@ -4,3 +4,14 @@ coverage:
       default:
         target: auto
         threshold: 0.5%
+
+# Markdown, CI config and license are not counted as code.
+ignore:
+  - "*.md"
+  - "**/*.md"
+  - ".github"
+  - "LICENSE"
+
+# Only comment on PRs when coverage actually changes (skips docs/non-code PRs).
+comment:
+  require_changes: true

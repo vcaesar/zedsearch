@@ -71,46 +71,46 @@ go + gin + react
 
 문서 50,000개에 대한 검색 애플리케이션 쿼리 7가지(상위 10개와 정확한 전체 개수)입니다. MacBook Pro M1에서 모든 서버를 Docker로 실행했습니다: 필터가 있는 term 쿼리, 두 필드의 OR, 전체 문서의 가격 정렬, 101번째 페이지, terms 및 histogram 집계, 하이라이트. QPS를 제외하면 낮을수록 좋으며, "—"는 해당 엔진이 쿼리를 표현할 수 없음을 뜻합니다(Meilisearch는 숫자 히스토그램이 없고 OpenObserve는 하이라이트를 지원하지 않음).
 
-| 쿼리 | ZedSearch | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 | OpenObserve 1.1 |
-|---|---:|---:|---:|---:|---:|
-| `filtered` (클라이언트 1개) | **0.89 ms** | 1.38 ms | 1.44 ms | 1.87 ms | 9.44 ms |
-| `filtered` (클라이언트 8개) | **3,216 QPS** | 2,742 QPS | 3,066 QPS | 1,924 QPS | 321 QPS |
-| `sort_price` (문서 5만 개) | **0.74 ms** | 2.52 ms | 1.58 ms | 1.09 ms | 4.40 ms |
-| `multi_field` title + body | **0.63 ms** | 1.44 ms | 1.51 ms | 1.19 ms | 21.0 ms |
-| `deep_page` from 1000 | **1.24 ms** | 1.42 ms | 1.47 ms | 12.7 ms | 18.1 ms |
-| `agg_terms` `category` | **1.48 ms** | 1.66 ms | 2.12 ms | 1.63 ms | 18.6 ms |
-| `agg_histogram` `price` | **1.00 ms** | 1.67 ms | 1.72 ms | — | 18.7 ms |
-| `highlight` `body` | **0.81 ms** | 1.96 ms | 1.97 ms | 1.92 ms | — |
+| 쿼리 | ZedSearch | ZincSearch 0.4.10 | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 | OpenObserve 1.1 |
+|---|---:|---:|---:|---:|---:|---:|
+| `filtered` (클라이언트 1개) | **0.89 ms** | 3.43 ms | 1.38 ms | 1.44 ms | 1.87 ms | 9.44 ms |
+| `filtered` (클라이언트 8개) | **3,216 QPS** | 471 QPS | 2,742 QPS | 3,066 QPS | 1,924 QPS | 321 QPS |
+| `sort_price` (문서 5만 개) | **0.74 ms** | 76.0 ms | 2.52 ms | 1.58 ms | 1.09 ms | 4.40 ms |
+| `multi_field` title + body | **0.63 ms** | 2.04 ms | 1.44 ms | 1.51 ms | 1.19 ms | 21.0 ms |
+| `deep_page` from 1000 | **1.24 ms** | 3.40 ms | 1.42 ms | 1.47 ms | 12.7 ms | 18.1 ms |
+| `agg_terms` `category` | **1.48 ms** | 5.55 ms | 1.66 ms | 2.12 ms | 1.63 ms | 18.6 ms |
+| `agg_histogram` `price` | **1.00 ms** | 20.1 ms | 1.67 ms | 1.72 ms | — | 18.7 ms |
+| `highlight` `body` | **0.81 ms** | 2.27 ms | 1.96 ms | 1.97 ms | 1.92 ms | — |
 
 ### 단일 쿼리 (v2)
 
 같은 세션에서 실행한 v2 쿼리로, 각각 한 가지 쿼리 유형만 측정합니다. Meilisearch는 OR과 정확한 구문을 표현할 수 없습니다.
 
-| 쿼리 | ZedSearch | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 | OpenObserve 1.1 |
-|---|---:|---:|---:|---:|---:|
-| `term` rare | **0.50 ms** | 1.43 ms | 1.16 ms | 1.14 ms | 15.7 ms |
-| `term` mid | **0.58 ms** | 1.28 ms | 1.27 ms | 1.16 ms | 17.6 ms |
-| `term` keyword | **0.57 ms** | 1.75 ms | 2.32 ms | 1.03 ms | 5.59 ms |
-| `bool` should | **0.63 ms** | 1.61 ms | 1.75 ms | — | 26.7 ms |
-| `bool` must | **1.01 ms** | 2.36 ms | 3.30 ms | 1.28 ms | 24.1 ms |
-| `range` | **0.64 ms** | 1.32 ms | 1.28 ms | 1.32 ms | 5.31 ms |
-| `match_all` | **0.66 ms** | 1.48 ms | 1.38 ms | 1.03 ms | 4.68 ms |
-| `prefix` `w1*` | **0.71 ms** | 1.87 ms | 2.66 ms | 1.32 ms | 11.9 ms |
-| `match_phrase` | **10.3 ms** | 12.7 ms | 12.6 ms | — | 16.3 ms |
-| `bool` should (클라이언트 8개) | **5,179 QPS** | 2,707 QPS | 2,616 QPS | — | 131 QPS |
+| 쿼리 | ZedSearch | ZincSearch 0.4.10 | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 | OpenObserve 1.1 |
+|---|---:|---:|---:|---:|---:|---:|
+| `term` rare | **0.50 ms** | 1.03 ms | 1.43 ms | 1.16 ms | 1.14 ms | 15.7 ms |
+| `term` mid | **0.58 ms** | 1.82 ms | 1.28 ms | 1.27 ms | 1.16 ms | 17.6 ms |
+| `term` keyword | **0.57 ms** | 0.82 ms | 1.75 ms | 2.32 ms | 1.03 ms | 5.59 ms |
+| `bool` should | **0.63 ms** | 1.12 ms | 1.61 ms | 1.75 ms | — | 26.7 ms |
+| `bool` must | **1.01 ms** | 1.79 ms | 2.36 ms | 3.30 ms | 1.28 ms | 24.1 ms |
+| `range` | **0.64 ms** | 2.56 ms | 1.32 ms | 1.28 ms | 1.32 ms | 5.31 ms |
+| `match_all` | **0.66 ms** | 4.12 ms | 1.48 ms | 1.38 ms | 1.03 ms | 4.68 ms |
+| `prefix` `w1*` | **0.71 ms** | 214.5 ms | 1.87 ms | 2.66 ms | 1.32 ms | 11.9 ms |
+| `match_phrase` | **10.3 ms** | 55.6 ms | 12.7 ms | 12.6 ms | — | 16.3 ms |
+| `bool` should (클라이언트 8개) | **5,179 QPS** | 1,292 QPS | 2,707 QPS | 2,616 QPS | — | 131 QPS |
 
 ### 리소스 사용량
 
 Docker 이미지(비압축), 동일한 문서 50,000개의 텍스트 인덱스(`_flush` 후 ZedSearch, Elasticsearch, OpenSearch 모두 약 25 MB), 전체 실행 동안의 메모리 / CPU(100% = vCPU 1개). 데이터는 3회 실행의 중앙값입니다.
 
-| 리소스 | ZedSearch | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 | OpenObserve 1.1 |
-|---|---:|---:|---:|---:|---:|
-| Docker 이미지 | **56.4 MB** | 1,195 MB | 1,311 MB | 370 MB | 434 MB |
-| 텍스트 인덱스, 문서 5만 개 | 25.9 MB | 25.8 MB | 25.7 MB | 454 MB | 14.2 MB (인덱싱 안 됨) |
-| 유휴 메모리 | **14 MiB** | 2,674 MiB | 2,699 MiB | 179 MiB | 387 MiB |
-| 최대 메모리 | **388 MiB** | 3,185 MiB | 3,191 MiB | 1,014 MiB | 919 MiB |
-| 평균 CPU | **134%** | 157% | 156% | 230% | 140% |
-| 최대 CPU | 553% | 620% | 529% | 545% | **519%** |
+| 리소스 | ZedSearch | ZincSearch 0.4.10 | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 | OpenObserve 1.1 |
+|---|---:|---:|---:|---:|---:|---:|
+| Docker 이미지 | **56.4 MB** | 72.4 MB | 1,195 MB | 1,311 MB | 370 MB | 434 MB |
+| 텍스트 인덱스, 문서 5만 개 | 25.9 MB | 133.3 MB | 25.8 MB | 25.7 MB | 454 MB | 14.2 MB (인덱싱 안 됨) |
+| 유휴 메모리 | **14 MiB** | 64 MiB | 2,674 MiB | 2,699 MiB | 179 MiB | 387 MiB |
+| 최대 메모리 | **388 MiB** | 858 MiB | 3,185 MiB | 3,191 MiB | 1,014 MiB | 919 MiB |
+| 평균 CPU | **134%** | 366% | 157% | 156% | 230% | 140% |
+| 최대 CPU | 553% | 710% | 620% | 529% | 545% | **519%** |
 
 # 문서
 
