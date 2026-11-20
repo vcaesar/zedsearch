@@ -172,6 +172,32 @@ func TestTopHitsCalculatorMissingSortLast(t *testing.T) {
 	}
 }
 
+// A hit keeps the doc value it was ordered by, the calculator carries
+// whether the response layer renders it.
+func TestTopHitsCalculatorSortKey(t *testing.T) {
+	tests := []struct {
+		name      string
+		sortField string
+		include   bool
+		want      []byte
+	}{
+		{name: "sort field, key asked for", sortField: "age", include: true, want: numTerm(30)},
+		{name: "sort field, key not asked for", sortField: "age", want: numTerm(30)},
+		{name: "score order has no key", include: true},
+		{name: "a field without doc values has none", sortField: "height", include: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			agg := NewTopHitsAggregation(1, 0, tt.sortField, false)
+			agg.SetIncludeSortKey(tt.include)
+			calc := runTopHits(t, agg, []*search.DocumentMatch{topHitsDoc(t, "a", 1, 30)})
+			assert.Equal(t, tt.include, calc.IncludeSortKey())
+			require.Len(t, calc.Hits(), 1)
+			assert.Equal(t, tt.want, calc.Hits()[0].SortKey)
+		})
+	}
+}
+
 func TestTopHitsUnderBucketAggregations(t *testing.T) {
 	doc := func(id, city string, score float64) *search.DocumentMatch {
 		d := &search.DocumentMatch{Number: 1, Score: score}

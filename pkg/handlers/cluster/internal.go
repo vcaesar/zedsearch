@@ -34,9 +34,12 @@ import (
 // InternalSearchRequest is what a coordinating node sends to every owner
 // during a scatter-gather search.
 type InternalSearchRequest struct {
-	Indexes []string       `json:"indexes"`
-	Replica bool           `json:"replica,omitempty"`
-	Query   *meta.ZedQuery `json:"query"`
+	Indexes []string `json:"indexes"`
+	// Replica asks for copies this node replicates: 404 unless it may serve them.
+	Replica bool `json:"replica,omitempty"`
+	// SortKeys adds the `_sort_key` the coordinator merges top_hits by.
+	SortKeys bool           `json:"sort_keys,omitempty"`
+	Query    *meta.ZedQuery `json:"query"`
 }
 
 // IndexOwner is one entry of GET /api/_internal/indexes.
@@ -69,6 +72,7 @@ type InternalIndexesResponse struct {
 // @Param query body InternalSearchRequest true "Query"
 // @Success 200 {object} meta.SearchResponse
 // @Failure 400 {object} meta.HTTPResponseError
+// @Failure 404 {object} meta.HTTPResponseError
 // @Router /api/_internal/search [post]
 func InternalSearch(c zhttp.Context) {
 	req := new(InternalSearchRequest)
@@ -81,20 +85,24 @@ func InternalSearch(c zhttp.Context) {
 	}
 
 	for _, name := range req.Indexes {
-		if !req.Replica && strings.Contains(name, "*") {
+		if req.Replica {
+			if !replication.Readable(name) {
+				zutils.RenderJSON(c, http.StatusNotFound, meta.HTTPResponseError{Error: fmt.Sprintf("index %s is not installed on this replica", name)})
+				return
+			}
+			continue
+		}
+		if strings.Contains(name, "*") {
 			continue // keep supporting patterns on this internal endpoint
 		}
-		index, ok := core.GetIndex(name)
-		if req.Replica && (!ok || !(index.IsCold() || replication.Ready(name))) {
-			zutils.RenderJSON(c, http.StatusNotFound, meta.HTTPResponseError{Error: fmt.Sprintf("index %s is not installed on this replica", name)})
-			return
-		}
-		if !ok {
+		if _, ok := core.GetIndex(name); !ok {
 			zutils.RenderJSON(c, http.StatusBadRequest, meta.HTTPResponseError{Error: fmt.Sprintf("index %s does not exists", name)})
 			return
 		}
 	}
-	includeTopHitsSortKeys(req.Query.Aggregations)
+	if req.SortKeys {
+		includeTopHitsSortKeys(req.Query.Aggregations)
+	}
 
 	resp, err := searchLocal(req.Indexes, req.Query)
 	if err != nil {

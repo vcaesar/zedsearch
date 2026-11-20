@@ -567,3 +567,37 @@ func TestActiveManagerAPI(t *testing.T) {
 	m.wg.Wait()
 	assert.False(t, Ready(replicated), "the copy is replaced")
 }
+
+// A replica serves reads of a cold index, the same data on every node, and
+// of a disk index only once its copy is installed.
+func TestReadable(t *testing.T) {
+	const disk, installed, cold = "TestReadable.index_1", "TestReadable.index_2", "TestReadable.index_3"
+	newDiskIndex(t, disk)
+	newDiskIndex(t, installed)
+	newColdIndex(t, cold)
+
+	tests := []struct {
+		name  string
+		index string
+		want  bool // with replication running
+	}{
+		{name: "disk index without a copy", index: disk},
+		{name: "disk index with an installed copy", index: installed, want: true},
+		{name: "cold index", index: cold, want: true},
+		{name: "unknown index", index: "TestReadable.missing"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name+", replication off", func(t *testing.T) {
+			assert.Equal(t, tt.index == cold, Readable(tt.index))
+		})
+	}
+
+	m := newManager(t, ModeDocument, newFakeTopology("node-b"), newLoopTransport())
+	activate(t, m)
+	m.replicaFor(installed).ready = true
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, Readable(tt.index))
+		})
+	}
+}

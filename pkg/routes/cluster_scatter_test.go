@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"testing/iotest"
 	"time"
@@ -268,6 +269,252 @@ func TestScatterSearchRetriesUnavailableReplica(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Contains(t, w.Body.String(), "from-ready-replica")
 	env.received(t)
+}
+
+// replicaNode joins an httptest node to the cluster of env. It answers an
+// internal search with one hit named after itself and the indexes asked
+// for, or 404 when serves refuses them, and records what it was asked.
+type replicaNode struct {
+	mu     sync.Mutex
+	asked  [][]string
+	serves func(indexes []string) bool
+}
+
+func (n *replicaNode) handler(t *testing.T, id string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Indexes  []string `json:"indexes"`
+			Replica  bool     `json:"replica"`
+			SortKeys bool     `json:"sort_keys"`
+		}
+		data, err := io.ReadAll(r.Body)
+		assert.NoError(t, err)
+		assert.NoError(t, json.Unmarshal(data, &payload))
+		assert.True(t, payload.Replica, "a replica is told it is asked as one")
+		assert.True(t, payload.SortKeys)
+		n.mu.Lock()
+		n.asked = append(n.asked, payload.Indexes)
+		serves := n.serves
+		n.mu.Unlock()
+		if !serves(payload.Indexes) {
+			http.NotFound(w, r)
+			return
+		}
+		_, err = io.WriteString(w, `{"hits":{"total":{"value":1},"hits":[{"_id":"`+id+":"+strings.Join(payload.Indexes, "+")+`"}]}}`)
+		assert.NoError(t, err)
+	}
+}
+
+// reset sets what the node serves and forgets what it was asked.
+func (n *replicaNode) reset(serves func(indexes []string) bool) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.asked, n.serves = nil, serves
+}
+
+func (n *replicaNode) requests() [][]string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.asked
+}
+
+func (env *clusterTestEnv) join(t *testing.T, id, addr string) {
+	t.Helper()
+	peer := cluster.NewMembership(env.store, cluster.KeyPrefix(), cluster.Node{ID: id, Addr: addr}, time.Minute, time.Second)
+	require.NoError(t, peer.Join(context.Background()))
+}
+
+// The indexes of a lost owner are asked from their first replica in one
+// request, what it cannot serve index by index from each replica in turn.
+func TestScatterSearchBatchesReplicas(t *testing.T) {
+	const second = remoteIndex + "-3" // another partition than remoteIndex
+	env := setupClusterEnv(t)
+	withSearchRoutes(t, env)
+	registerIndex(t, second)
+	env.own(t, remoteIndex, "node-gone")
+	env.own(t, second, "node-gone")
+	stubReplicaReadable(t, true)
+
+	nodeB, nodeC := &replicaNode{}, &replicaNode{}
+	env.respond = nodeB.handler(t, "node-b")
+	ready := httptest.NewServer(nodeC.handler(t, "node-c"))
+	defer ready.Close()
+	env.join(t, "node-c", ready.URL)
+
+	ctx := context.Background()
+	nodes := []string{"node-b", "node-c"}
+	_, rev, err := env.assigner.ListReplicas(ctx)
+	require.NoError(t, err)
+	ok, err := env.assigner.SetReplicas(ctx, map[int][]string{
+		cluster.PartitionOfN(remoteIndex, testPartitions): nodes,
+		cluster.PartitionOfN(second, testPartitions):      nodes,
+	}, rev)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Eventually(t, func() bool {
+		return assert.ObjectsAreEqual(nodes, cluster.Replicas(remoteIndex)) && assert.ObjectsAreEqual(nodes, cluster.Replicas(second))
+	}, 10*time.Second, 5*time.Millisecond)
+
+	all := func([]string) bool { return true }
+	none := func([]string) bool { return false }
+	only := func(index string) func([]string) bool {
+		return func(indexes []string) bool { return len(indexes) == 1 && indexes[0] == index }
+	}
+	batch := []string{remoteIndex, second}
+
+	tests := []struct {
+		name         string
+		nodeB, nodeC func([]string) bool
+		wantCode     int
+		wantBody     []string
+		wantB, wantC [][]string
+	}{
+		{
+			name:  "one request for the indexes of a replica",
+			nodeB: all, nodeC: all,
+			wantCode: http.StatusOK,
+			wantBody: []string{"node-b:" + remoteIndex + "+" + second},
+			wantB:    [][]string{batch},
+		},
+		{
+			name:  "what a replica lacks is asked index by index",
+			nodeB: only(remoteIndex), nodeC: all,
+			wantCode: http.StatusOK,
+			wantBody: []string{"node-b:" + remoteIndex + `"`, "node-c:" + second + `"`},
+			wantB:    [][]string{batch, {remoteIndex}, {second}},
+			wantC:    [][]string{{second}},
+		},
+		{
+			name:  "the next replica serves them all",
+			nodeB: none, nodeC: all,
+			wantCode: http.StatusOK,
+			wantBody: []string{"node-c:" + remoteIndex + `"`, "node-c:" + second + `"`},
+			wantB:    [][]string{batch, {remoteIndex}, {second}},
+			wantC:    [][]string{{remoteIndex}, {second}},
+		},
+		{
+			name:  "no replica has one of them",
+			nodeB: none, nodeC: only(remoteIndex),
+			wantCode: http.StatusBadGateway,
+			wantBody: []string{"replica index unavailable"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			nodeB.reset(tt.nodeB)
+			nodeC.reset(tt.nodeC)
+			w := env.do(httptest.NewRequest(http.MethodPost, "/es/"+remoteIndex+"*/_search", nil))
+			for len(env.requests) > 0 {
+				<-env.requests
+			}
+			assert.Equal(t, tt.wantCode, w.Code)
+			for _, want := range tt.wantBody {
+				assert.Contains(t, w.Body.String(), want)
+			}
+			if tt.wantCode == http.StatusOK {
+				assert.ElementsMatch(t, tt.wantB, nodeB.requests())
+				assert.ElementsMatch(t, tt.wantC, nodeC.requests())
+			}
+		})
+	}
+}
+
+// A replica that is down or fails is skipped like one without a copy, a
+// replica that rejects the query is not: every other one would too.
+func TestScatterSearchReplicaErrors(t *testing.T) {
+	env := setupClusterEnv(t)
+	withSearchRoutes(t, env)
+	env.own(t, remoteIndex, "node-gone")
+	stubReplicaReadable(t, true)
+
+	nodeC := &replicaNode{}
+	ready := httptest.NewServer(nodeC.handler(t, "node-c"))
+	defer ready.Close()
+	env.join(t, "node-c", ready.URL)
+	down := httptest.NewServer(http.NotFoundHandler())
+	env.join(t, "node-down", down.URL)
+	down.Close()
+
+	status := func(code int, body string) http.HandlerFunc {
+		return func(w http.ResponseWriter, _ *http.Request) { http.Error(w, body, code) }
+	}
+	tests := []struct {
+		name     string
+		replicas []string
+		nodeB    http.HandlerFunc
+		wantCode int
+		wantBody string
+		wantC    int // requests node-c gets
+	}{
+		{
+			name:     "a replica that fails is skipped",
+			replicas: []string{"node-b", "node-c"},
+			nodeB:    status(http.StatusInternalServerError, "disk full"),
+			wantCode: http.StatusOK, wantBody: "node-c:" + remoteIndex, wantC: 1,
+		},
+		{
+			name:     "a replica that cannot be reached is skipped",
+			replicas: []string{"node-down", "node-c"},
+			wantCode: http.StatusOK, wantBody: "node-c:" + remoteIndex, wantC: 1,
+		},
+		{
+			name:     "a replica that rejects the query ends the search",
+			replicas: []string{"node-b", "node-c"},
+			nodeB:    status(http.StatusBadRequest, `{"error":"bad query"}`),
+			wantCode: http.StatusBadGateway, wantBody: "bad query",
+		},
+		{
+			name:     "the last replica fails",
+			replicas: []string{"node-c", "node-b"},
+			nodeB:    status(http.StatusServiceUnavailable, "starting"),
+			wantCode: http.StatusBadGateway, wantBody: "replica index unavailable: 503 Service Unavailable: starting", wantC: 1,
+		},
+		{
+			name:     "the only replica cannot be reached",
+			replicas: []string{"node-down"},
+			wantCode: http.StatusBadGateway, wantBody: "node node-down: replica index unavailable",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env.setReplicas(t, remoteIndex, tt.replicas...)
+			env.respond = tt.nodeB
+			// node-c has no copy when it is asked before node-b
+			nodeC.reset(func([]string) bool { return tt.replicas[0] != "node-c" })
+			w := env.do(httptest.NewRequest(http.MethodPost, "/es/"+remoteIndex+"*/_search", nil))
+			for len(env.requests) > 0 {
+				<-env.requests
+			}
+			assert.Equal(t, tt.wantCode, w.Code)
+			assert.Contains(t, w.Body.String(), tt.wantBody)
+			assert.Len(t, nodeC.requests(), tt.wantC)
+		})
+	}
+}
+
+func TestReplicaIndexMissing(t *testing.T) {
+	const missing = `{"error":"index a does not exists"}`
+	tests := []struct {
+		name    string
+		status  int
+		body    string
+		indexes []string
+		want    bool
+	}{
+		{name: "not found", status: http.StatusNotFound, body: "404 page not found", indexes: []string{"a", "b"}, want: true},
+		{name: "older peer, missing index", status: http.StatusBadRequest, body: missing, indexes: []string{"a"}, want: true},
+		{name: "older peer, a batch names no index", status: http.StatusBadRequest, body: missing, indexes: []string{"a", "b"}},
+		{name: "older peer, another index", status: http.StatusBadRequest, body: missing, indexes: []string{"b"}},
+		{name: "rejected query", status: http.StatusBadRequest, body: `{"error":"bad query"}`, indexes: []string{"a"}},
+		{name: "not json", status: http.StatusBadRequest, body: "index a does not exists", indexes: []string{"a"}},
+		{name: "server error", status: http.StatusInternalServerError, body: missing, indexes: []string{"a"}},
+		{name: "answered", status: http.StatusOK, body: missing, indexes: []string{"a"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, replicaIndexMissing(tt.status, []byte(tt.body), tt.indexes))
+		})
+	}
 }
 
 func TestClusterRouteUnassignedIndex(t *testing.T) {

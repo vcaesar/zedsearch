@@ -986,6 +986,103 @@ func TestMergeSearchTopHitsSortOutsideSource(t *testing.T) {
 	})
 }
 
+// The owners send the doc value they ordered by as `_sort_key`: the merge
+// orders by it instead of _source, and never hands it to the client.
+func TestMergeSearchTopHitsSortKeys(t *testing.T) {
+	keyed := func(id, key string, n float64) meta.AggregationHit {
+		return meta.AggregationHit{ID: id, Source: map[string]interface{}{"n": n}, SortKey: &key}
+	}
+	node := func(hits ...meta.AggregationHit) meta.AggregationResponse { return topHitsAgg(len(hits), hits...) }
+	asc := []interface{}{map[string]interface{}{"n": "asc"}}
+	desc := []interface{}{map[string]interface{}{"n": "desc"}}
+	// the keys order a before b, their _source the other way round
+	a, b := keyed("a", "01", 9), keyed("b", "02", 1)
+	missing := keyed("missing", "", 5)
+
+	tests := []struct {
+		name  string
+		sort  interface{}
+		nodes []meta.AggregationResponse
+		want  []string
+	}{
+		{name: "ascending by key, not by _source", sort: asc, nodes: []meta.AggregationResponse{node(b), node(a)}, want: []string{"a", "b"}},
+		{name: "descending by key, not by _source", sort: desc, nodes: []meta.AggregationResponse{node(a), node(b)}, want: []string{"b", "a"}},
+		{name: "an empty key goes last ascending", sort: asc, nodes: []meta.AggregationResponse{node(missing, b), node(a)}, want: []string{"a", "b", "missing"}},
+		{name: "an empty key goes last descending", sort: desc, nodes: []meta.AggregationResponse{node(missing, a), node(b)}, want: []string{"b", "a", "missing"}},
+		{
+			name:  "empty keys keep the order of the nodes",
+			sort:  asc,
+			nodes: []meta.AggregationResponse{node(keyed("z", "", 1)), node(keyed("y", "", 2))},
+			want:  []string{"z", "y"},
+		},
+		{
+			name:  "equal keys keep the order of the nodes",
+			sort:  asc,
+			nodes: []meta.AggregationResponse{node(keyed("z", "01", 2)), node(keyed("y", "01", 1))},
+			want:  []string{"z", "y"},
+		},
+		{
+			name:  "equal keys keep the order of the nodes descending",
+			sort:  desc,
+			nodes: []meta.AggregationResponse{node(keyed("z", "01", 1)), node(keyed("y", "01", 2))},
+			want:  []string{"z", "y"},
+		},
+		{
+			name:  "a node without keys: every hit orders by _source",
+			sort:  asc,
+			nodes: []meta.AggregationResponse{node(a), node(topHit("old", 0, map[string]interface{}{"n": 5.0})), node(b)},
+			want:  []string{"b", "old", "a"},
+		},
+		{name: "score order ignores the keys", sort: "_score", nodes: []meta.AggregationResponse{node(b), node(a)}, want: []string{"a", "b"}},
+		{name: "a single answer", sort: desc, nodes: []meta.AggregationResponse{node(a, b)}, want: []string{"b", "a"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			query := &meta.ZedQuery{Size: 10, Aggregations: map[string]meta.Aggregations{
+				"top": {TopHits: &meta.AggregationTopHits{Size: 5, Sort: tt.sort}},
+			}}
+			responses := make([]*meta.SearchResponse, 0, len(tt.nodes))
+			for _, agg := range tt.nodes {
+				resp := response(1, 0, 1)
+				resp.Aggregations = map[string]meta.AggregationResponse{"top": agg}
+				responses = append(responses, resp)
+			}
+			got := MergeSearch(responses, query).Aggregations["top"]
+			assert.Equal(t, tt.want, topHitIDs(got))
+			for _, hit := range got.Hits.Hits {
+				assert.Nil(t, hit.SortKey, hit.ID)
+			}
+		})
+	}
+
+	t.Run("the window is cut by key, the keys are dropped in buckets too", func(t *testing.T) {
+		query := &meta.ZedQuery{Size: 10, Aggregations: map[string]meta.Aggregations{
+			"by": {
+				Terms: &meta.AggregationsTerms{Field: "f"},
+				Aggregations: map[string]meta.Aggregations{
+					"top": {TopHits: &meta.AggregationTopHits{From: 1, Size: 1, Sort: desc, Source: false}},
+				},
+			},
+		}}
+		owner := func(id, key string) *meta.SearchResponse {
+			resp := response(1, 0, 1)
+			red := bucket("red", 1)
+			red["top"] = map[string]interface{}{"hits": map[string]interface{}{
+				"total": map[string]interface{}{"value": float64(1)},
+				"hits":  []interface{}{map[string]interface{}{"_id": id, "_sort_key": key, "_source": map[string]interface{}{"n": 1.0}}},
+			}}
+			resp.Aggregations = map[string]meta.AggregationResponse{"by": bucketAgg(red)}
+			return resp
+		}
+		got := MergeSearch([]*meta.SearchResponse{owner("low", "01"), owner("high", "03"), owner("mid", "02")}, query)
+		data, err := json.Marshal(got.Aggregations["by"])
+		require.NoError(t, err)
+		assert.JSONEq(t, `{"buckets":[{"key":"red","doc_count":3,"top":{"hits":{
+			"total":{"value":3},"max_score":0,"hits":[{"_id":"mid","_source":{}}]
+		}}}]}`, string(data))
+	})
+}
+
 func TestFilterSource(t *testing.T) {
 	hits := func() []interface{} {
 		return []interface{}{

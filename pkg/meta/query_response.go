@@ -151,7 +151,7 @@ type AggregationHit struct {
 	Score  float64     `json:"_score"`
 	Source interface{} `json:"_source,omitempty"`
 
-	SortKey *string `json:"_sort_key,omitempty"` // internal top_hits merge key
+	SortKey *string `json:"_sort_key,omitempty" swaggerignore:"true"` // internal top_hits merge key
 }
 
 type AggregationStdDeviationBounds struct {

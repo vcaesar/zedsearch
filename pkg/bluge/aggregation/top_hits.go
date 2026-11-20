@@ -58,7 +58,7 @@ type TopHitsAggregation struct {
 	sourceFields []string
 	storedFields map[string]struct{}
 
-	IncludeSortKey bool // emit the doc value in internal search results
+	includeSortKey bool
 }
 
 // NewTopHitsAggregation returns the aggregation backing [top_hits].
@@ -81,6 +81,12 @@ func (a *TopHitsAggregation) SetStoredFields(fields []string) {
 	}
 }
 
+// SetIncludeSortKey asks the response layer to render the sort key of each
+// hit, for the node that merges the hits of several nodes.
+func (a *TopHitsAggregation) SetIncludeSortKey(include bool) {
+	a.includeSortKey = include
+}
+
 func (a *TopHitsAggregation) Fields() []string {
 	if a.sortField == "" {
 		return nil
@@ -98,7 +104,7 @@ func (a *TopHitsAggregation) Calculator() search.Calculator {
 		sourceFields: a.sourceFields,
 		storedFields: a.storedFields,
 
-		IncludeSortKey: a.IncludeSortKey,
+		includeSortKey: a.includeSortKey,
 	}
 }
 
@@ -115,7 +121,7 @@ type TopHitsCalculator struct {
 	sourceFields []string
 	storedFields map[string]struct{}
 
-	IncludeSortKey bool // emit the doc value in internal search results
+	includeSortKey bool
 
 	hits  []TopHit
 	total uint64
@@ -126,6 +132,9 @@ type TopHitsCalculator struct {
 func (c *TopHitsCalculator) Source() (enable bool, fields []string) {
 	return c.sourceEnable, c.sourceFields
 }
+
+// IncludeSortKey reports whether the hits are rendered with their sort key.
+func (c *TopHitsCalculator) IncludeSortKey() bool { return c.includeSortKey }
 
 func (c *TopHitsCalculator) Consume(d *search.DocumentMatch) {
 	c.total++
