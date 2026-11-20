@@ -23,6 +23,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vcaesar/riot"
+
+	"github.com/vcaesar/zedsearch/pkg/meta"
 )
 
 // functionScoreDoc is document of in-memory index used by function score tests.
@@ -538,6 +540,119 @@ func TestFunctionScoreQuery_Parse(t *testing.T) {
 			name:    "bad inner query",
 			query:   map[string]interface{}{"query": map[string]interface{}{"nope": map[string]interface{}{}}, "weight": 1.0},
 			wantErr: "[function_score] failed to parse field",
+		},
+		{
+			name:    "bad query type",
+			query:   map[string]interface{}{"query": "all", "weight": 1.0},
+			wantErr: "[function_score] query doesn't support values of type: string",
+		},
+		{
+			name:    "bad functions item",
+			query:   map[string]interface{}{"functions": []interface{}{"weight"}},
+			wantErr: "[function_score] functions doesn't support values of type: string",
+		},
+		{
+			name:    "bad functions entry",
+			query:   map[string]interface{}{"functions": []interface{}{map[string]interface{}{"nope": 1.0}}},
+			wantErr: "[function_score] unknown function [nope]",
+		},
+		{
+			name:    "bad max_boost",
+			query:   map[string]interface{}{"weight": 1.0, "max_boost": "high"},
+			wantErr: "[function_score] max_boost doesn't support values of type: string",
+		},
+		{
+			name:    "bad min_score",
+			query:   map[string]interface{}{"weight": 1.0, "min_score": "low"},
+			wantErr: "[function_score] min_score doesn't support values of type: string",
+		},
+		{
+			name:    "bad boost",
+			query:   map[string]interface{}{"weight": 1.0, "boost": "big"},
+			wantErr: "[function_score] boost doesn't support values of type: string",
+		},
+		{
+			name:    "bad weight",
+			query:   map[string]interface{}{"weight": "heavy"},
+			wantErr: "[function_score] weight doesn't support values of type: string",
+		},
+		{
+			name:    "bad filter type",
+			query:   map[string]interface{}{"functions": []interface{}{map[string]interface{}{"filter": "tag", "weight": 1.0}}},
+			wantErr: "[function_score] filter doesn't support values of type: string",
+		},
+		{
+			name:    "bad filter query",
+			query:   map[string]interface{}{"functions": []interface{}{map[string]interface{}{"filter": map[string]interface{}{"nope": map[string]interface{}{}}, "weight": 1.0}}},
+			wantErr: "[function_score] failed to parse filter",
+		},
+		{
+			name:    "bad function body",
+			query:   map[string]interface{}{"gauss": "age"},
+			wantErr: "[function_score] gauss doesn't support values of type: string",
+		},
+		{
+			name:    "field_value_factor unknown field",
+			query:   map[string]interface{}{"field_value_factor": map[string]interface{}{"field": "age", "nope": 1.0}},
+			wantErr: "field_value_factor unknown field [nope]",
+		},
+		{
+			name:    "field_value_factor bad factor",
+			query:   map[string]interface{}{"field_value_factor": map[string]interface{}{"field": "age", "factor": "big"}},
+			wantErr: "field_value_factor factor doesn't support values of type: string",
+		},
+		{
+			name:    "random_score unknown field",
+			query:   map[string]interface{}{"random_score": map[string]interface{}{"nope": 1.0}},
+			wantErr: "random_score unknown field [nope]",
+		},
+		{
+			name: "decay with two fields",
+			query: map[string]interface{}{"gauss": map[string]interface{}{
+				"age":  map[string]interface{}{"origin": 1.0, "scale": 1.0},
+				"name": map[string]interface{}{"origin": 1.0, "scale": 1.0},
+			}},
+			wantErr: "[function_score] gauss supports single field",
+		},
+		{
+			name:    "decay field not an object",
+			query:   map[string]interface{}{"exp": map[string]interface{}{"age": 1.0}},
+			wantErr: "[function_score] exp doesn't support values of type: float64",
+		},
+		{
+			name:    "decay without field",
+			query:   map[string]interface{}{"linear": map[string]interface{}{"multi_value_mode": "min"}},
+			wantErr: "[function_score] linear requires field",
+		},
+		{
+			name:    "decay unknown parameter",
+			query:   map[string]interface{}{"gauss": map[string]interface{}{"age": map[string]interface{}{"origin": 1.0, "scale": 1.0, "nope": 1.0}}},
+			wantErr: "[function_score] gauss unknown field [nope]",
+		},
+		{
+			name:    "decay bad decay value",
+			query:   map[string]interface{}{"exp": map[string]interface{}{"age": map[string]interface{}{"origin": 1.0, "scale": 1.0, "decay": "half"}}},
+			wantErr: "[function_score] exp decay doesn't support value: half",
+		},
+		{
+			name:    "decay non positive scale",
+			query:   map[string]interface{}{"linear": map[string]interface{}{"age": map[string]interface{}{"origin": 1.0, "scale": 0.0}}},
+			wantErr: "[function_score] linear [scale] must be positive",
+		},
+		{
+			name:    "date decay bad origin",
+			query:   map[string]interface{}{"gauss": map[string]interface{}{meta.TimeFieldName: map[string]interface{}{"origin": "yesterday", "scale": "1d"}}},
+			wantErr: "[function_score] gauss origin doesn't support value: yesterday",
+		},
+		{
+			name:    "date decay bad days",
+			query:   map[string]interface{}{"gauss": map[string]interface{}{meta.TimeFieldName: map[string]interface{}{"origin": "2026-01-01T00:00:00Z", "scale": "xd"}}},
+			wantErr: "[function_score] gauss scale doesn't support value: xd",
+		},
+		{
+			name:    "date decay bad duration",
+			query:   map[string]interface{}{"gauss": map[string]interface{}{meta.TimeFieldName: map[string]interface{}{"origin": "2026-01-01T00:00:00Z", "scale": "1x"}}},
+			wantErr: "[function_score] gauss scale doesn't support value: 1x",
 		},
 	}
 

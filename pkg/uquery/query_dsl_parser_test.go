@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/vcaesar/riot"
 	"github.com/vcaesar/riot/search"
 
@@ -127,6 +128,68 @@ func TestParseQueryDSL(t *testing.T) {
 			{"bad source", &meta.ZedQuery{Query: matchAll, Source: 1}, "[_source]"},
 			{"bad sort", &meta.ZedQuery{Query: matchAll, Sort: 1}, "[sort]"},
 			{"bad sort object", &meta.ZedQuery{Query: matchAll, Sort: []interface{}{map[string]interface{}{"a": "asc", "b": "asc"}}}, "[sort]"},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				req, err := ParseQueryDSL(tt.query, mappings, nil)
+				assert.Nil(t, req)
+				assert.ErrorContains(t, err, tt.want)
+			})
+		}
+	})
+}
+
+func TestParseQueryDSL_Knn(t *testing.T) {
+	mappings := dslMappings()
+	vec := meta.NewProperty("vector")
+	vec.Dims = 3
+	mappings.SetProperty("embedding", vec)
+	knn := map[string]interface{}{"field": "embedding", "query_vector": []interface{}{1.0, 2.0, 3.0}, "k": 2.0}
+	matchAll := map[string]interface{}{"match_all": map[string]interface{}{}}
+
+	t.Run("valid", func(t *testing.T) {
+		tests := []struct {
+			name    string
+			query   *meta.ZedQuery
+			shoulds int
+		}{
+			{"single knn without query", &meta.ZedQuery{Size: 5, Knn: knn}, 1},
+			{"knn array with query", &meta.ZedQuery{Size: 5, Query: matchAll, Knn: []interface{}{knn, knn}}, 3},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				q, err := parseQuery(tt.query, mappings, nil)
+				require.NoError(t, err)
+				bq, ok := q.(*riot.BooleanQuery)
+				require.True(t, ok)
+				assert.Empty(t, bq.Musts())
+				assert.Empty(t, bq.MustNots())
+				shoulds := bq.Shoulds()
+				require.Len(t, shoulds, tt.shoulds)
+				knns := shoulds
+				if tt.query.Query != nil {
+					assert.IsType(t, &riot.MatchAllQuery{}, shoulds[0], "the query is kept")
+					knns = shoulds[1:]
+				}
+				for _, k := range knns {
+					assert.IsType(t, &riot.KNNQuery{}, k)
+				}
+				_, err = ParseQueryDSL(tt.query, mappings, nil)
+				assert.NoError(t, err)
+			})
+		}
+	})
+
+	t.Run("errors", func(t *testing.T) {
+		tests := []struct {
+			name  string
+			query *meta.ZedQuery
+			want  string
+		}{
+			{"empty query object", &meta.ZedQuery{Query: map[string]interface{}{}}, "query doesn't support"},
+			{"bad query with knn", &meta.ZedQuery{Query: "x", Knn: knn}, "must be a map"},
+			{"knn not object", &meta.ZedQuery{Knn: []interface{}{"x"}}, "[knn] must be an object or an array of objects, got string"},
+			{"bad knn", &meta.ZedQuery{Knn: map[string]interface{}{"field": "embedding", "k": -1.0}}, "[knn] failed to parse field"},
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {

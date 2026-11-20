@@ -17,11 +17,14 @@ package query
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/vcaesar/riot"
+	"github.com/vcaesar/riot/search"
 )
 
 func knnReader(t *testing.T, n int) *riot.Reader {
@@ -112,5 +115,86 @@ func TestKnnSearcher(t *testing.T) {
 		ids, _ := knnSearch(t, r, q, false)
 		// a bool filter applies after ranking: top 3 is 9, 10, 11, of which only 10 is even
 		assert.Equal(t, []string{"10"}, ids)
+	})
+}
+
+func TestKnnSearcher_Lifecycle(t *testing.T) {
+	r := knnReader(t, 10)
+	even := riot.NewTermQuery("true").SetField("even")
+	errClose := errors.New("close error")
+	newKNN := func(k int) *riot.KNNQuery {
+		return riot.NewKNNQuery("v", []float32{5, 1}, k).SetMetric(riot.L2)
+	}
+
+	errTests := []struct {
+		name    string
+		query   *knnQuery
+		wantErr string
+	}{
+		{name: "filter searcher error", query: &knnQuery{knn: newKNN(3), filter: &fakeQuery{searcherErr: errFake}}, wantErr: errFake.Error()},
+		// the knn error wins over the close error of the filter
+		{name: "invalid knn closes filter", query: &knnQuery{knn: newKNN(0), filter: &fakeQuery{inner: even, closeErr: errClose}}, wantErr: "positive k"},
+		{name: "invalid ann params", query: &knnQuery{knn: newKNN(3).SetANN(riot.ANNParams{M: 1})}, wantErr: "hnsw M"},
+	}
+	for _, tt := range errTests {
+		t.Run(tt.name, func(t *testing.T) {
+			withSearchReader(t, r, func(sr search.Reader, options search.SearcherOptions) {
+				s, err := tt.query.Searcher(sr, options)
+				assert.Nil(t, s)
+				assert.ErrorContains(t, err, tt.wantErr)
+			})
+		})
+	}
+
+	t.Run("close before use closes filter", func(t *testing.T) {
+		withSearchReader(t, r, func(sr search.Reader, options search.SearcherOptions) {
+			q := &knnQuery{knn: newKNN(3), filter: &fakeQuery{inner: even, closeErr: errClose}}
+			s, err := q.Searcher(sr, options)
+			require.NoError(t, err)
+			assert.Equal(t, 0, s.Min())
+			assert.Positive(t, s.Size())
+			assert.Equal(t, 1, s.DocumentMatchPoolSize())
+			assert.Equal(t, uint64(3), s.Count(), "k until the scan has run")
+			assert.ErrorIs(t, s.Close(), errClose)
+			assert.NoError(t, s.Close(), "filter is closed once")
+		})
+	})
+
+	t.Run("canceled context", func(t *testing.T) {
+		withSearchReader(t, r, func(sr search.Reader, options search.SearcherOptions) {
+			s, err := (&knnQuery{knn: newKNN(3), filter: even}).Searcher(sr, options)
+			require.NoError(t, err)
+			defer func() { assert.NoError(t, s.Close()) }()
+
+			cctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			ctx := search.NewSearchContext(s.DocumentMatchPoolSize(), 0)
+			ctx.Ctx = cctx
+			dm, err := s.Next(ctx)
+			assert.Nil(t, dm)
+			assert.ErrorIs(t, err, context.Canceled)
+			dm, err = s.Advance(ctx, 0)
+			assert.Nil(t, dm)
+			assert.ErrorIs(t, err, context.Canceled, "init error is kept")
+		})
+	})
+
+	t.Run("advance skips dissimilar matches", func(t *testing.T) {
+		withSearchReader(t, r, func(sr search.Reader, options search.SearcherOptions) {
+			min := 0.5
+			s, err := (&knnQuery{knn: newKNN(3), similarity: &min}).Searcher(sr, options)
+			require.NoError(t, err)
+			defer func() { assert.NoError(t, s.Close()) }()
+
+			ctx := search.NewSearchContext(s.DocumentMatchPoolSize(), 0)
+			dm, err := s.Advance(ctx, 0)
+			require.NoError(t, err)
+			require.NotNil(t, dm)
+			assert.InDelta(t, 0, dm.Score, 1e-9, "only the exact match is within the distance")
+			assert.Equal(t, uint64(3), s.Count())
+			dm, err = s.Next(ctx)
+			assert.NoError(t, err)
+			assert.Nil(t, dm)
+		})
 	})
 }

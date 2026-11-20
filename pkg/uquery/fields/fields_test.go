@@ -83,6 +83,8 @@ func TestResponse(t *testing.T) {
 			[]byte(`{"created":"not-a-date"}`), map[string]interface{}{"created": []interface{}{"not-a-date"}}},
 		{"wildcard with format", []*meta.Field{{Field: "meta.*", Format: "2006"}}, data,
 			map[string]interface{}{"meta.updated": []interface{}{"2022"}, "meta.tag": []interface{}{"x"}}},
+		{"wildcard with unparsable date falls back to raw", []*meta.Field{{Field: "meta.*", Format: "2006"}},
+			[]byte(`{"meta.updated":"not-a-date"}`), map[string]interface{}{"meta.updated": []interface{}{"not-a-date"}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

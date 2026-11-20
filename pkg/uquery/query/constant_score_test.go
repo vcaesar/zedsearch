@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vcaesar/riot"
+	"github.com/vcaesar/riot/search"
 )
 
 func TestConstantScoreQuery(t *testing.T) {
@@ -133,4 +134,44 @@ func TestConstantScoreQuery_Search(t *testing.T) {
 	}
 	require.NoError(t, err)
 	assert.Equal(t, 2, hits)
+}
+
+func TestConstantScoreQuery_Advance(t *testing.T) {
+	writer := newFunctionScoreIndex(t)
+	defer func() { assert.NoError(t, writer.Close()) }()
+	reader, err := writer.Reader()
+	require.NoError(t, err)
+	defer func() { assert.NoError(t, reader.Close()) }()
+
+	q, err := ConstantScoreQuery(map[string]interface{}{
+		"filter": map[string]interface{}{"match": map[string]interface{}{"name": "apple"}},
+		"boost":  4.0,
+	}, testMappings(), nil)
+	require.NoError(t, err)
+
+	dmi, err := reader.Search(context.Background(), riot.NewTopNSearch(10, &advanceQuery{inner: q}))
+	require.NoError(t, err)
+	hits := 0
+	match, err := dmi.Next()
+	for err == nil && match != nil {
+		hits++
+		assert.Equal(t, 4.0, match.Score)
+		match, err = dmi.Next()
+	}
+	require.NoError(t, err)
+	assert.Equal(t, 2, hits)
+}
+
+func TestConstantScoreQuery_SearcherAndValidate(t *testing.T) {
+	t.Run("inner searcher error", func(t *testing.T) {
+		q := &constantScoreQuery{inner: &fakeQuery{searcherErr: errFake}, boost: 1}
+		s, err := q.Searcher(nil, search.SearcherOptions{})
+		assert.Nil(t, s)
+		assert.ErrorIs(t, err, errFake)
+	})
+
+	t.Run("validate delegates to inner query", func(t *testing.T) {
+		q := &constantScoreQuery{inner: &fakeQuery{validateErr: errFake}, boost: 1}
+		assert.ErrorIs(t, q.Validate(), errFake)
+	})
 }
