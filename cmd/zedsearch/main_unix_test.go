@@ -21,6 +21,8 @@ import (
 	"bytes"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"syscall"
@@ -88,19 +90,34 @@ func freePort(t *testing.T) string {
 }
 
 func TestMainServe(t *testing.T) {
+	closed := []string{"Index closed", "Metadata closed", "Server shutdown ok"}
 	tests := []struct {
-		name string
-		sig  syscall.Signal
+		name    string
+		sig     syscall.Signal
+		env     []string
+		wantErr bool
+		want    []string
 	}{
-		{"graceful SIGTERM", syscall.SIGTERM},
-		{"graceful SIGINT", syscall.SIGINT},
-		{"immediate SIGQUIT", syscall.SIGQUIT},
+		{"graceful SIGTERM", syscall.SIGTERM, nil, false, closed},
+		{"graceful SIGINT", syscall.SIGINT, nil, false, closed},
+		{"immediate SIGQUIT", syscall.SIGQUIT, nil, false, closed},
+		{
+			"tracing and profiling to unreachable servers", syscall.SIGTERM,
+			[]string{
+				"ZED_TRACING_ENABLE=true", "ZED_TRACING_ENDPOINT=http://127.0.0.1:1/v1/traces",
+				"ZED_PROFILER=true", "ZED_PROFILER_SERVER=http://127.0.0.1:1",
+			},
+			false, append([]string{"traces export"}, closed...),
+		},
+		{"graceful shutdown error", syscall.SIGTERM, []string{setupEnv + "=close"}, true, []string{"Server Shutdown", "close failed"}},
+		{"immediate close error", syscall.SIGQUIT, []string{setupEnv + "=close"}, false, append([]string{"Server Close", "close failed"}, closed...)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			port := freePort(t)
 			out := new(syncBuffer)
-			cmd := mainCommand(t, "", "ZED_SERVER_ADDRESS=127.0.0.1", "ZED_SERVER_PORT="+port)
+			env := append([]string{"ZED_SERVER_ADDRESS=127.0.0.1", "ZED_SERVER_PORT=" + port}, tt.env...)
+			cmd := mainCommand(t, "", env...)
 			cmd.Stdout = out
 			cmd.Stderr = out
 			require.NoError(t, cmd.Start())
@@ -135,17 +152,71 @@ func TestMainServe(t *testing.T) {
 			require.NoError(t, cmd.Process.Signal(tt.sig))
 			select {
 			case <-exited:
-				require.NoError(t, waitErr, out.String())
 			case <-time.After(60 * time.Second):
 				t.Fatalf("server did not exit:\n%s", out.String())
 			}
 			logs := out.String()
+			if tt.wantErr {
+				require.Error(t, waitErr, logs)
+			} else {
+				require.NoError(t, waitErr, logs)
+			}
 			assert.Contains(t, logs, "Listen on 127.0.0.1:"+port)
-			assert.Contains(t, logs, "Index closed")
-			assert.Contains(t, logs, "Metadata closed")
-			assert.Contains(t, logs, "Server shutdown ok")
+			for _, want := range tt.want {
+				assert.Contains(t, logs, want)
+			}
 		})
 	}
+}
+
+// fakeToolchain puts npm and go stand-ins first on PATH and a module root
+// in dir, so the web command builds without a real toolchain. The fake go
+// build copies binary (empty when "") to its -o path.
+func fakeToolchain(t *testing.T, dir, binary string) []string {
+	t.Helper()
+	bin := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "npm"), []byte("#!/bin/sh\necho \"fake npm $*\"\n"), 0o755))
+	goScript := `#!/bin/sh
+while [ $# -gt 0 ]; do
+	if [ "$1" = "-o" ]; then out="$2"; fi
+	shift
+done
+if [ -n "$FAKE_WEB_BINARY" ]; then cp "$FAKE_WEB_BINARY" "$out"; else : > "$out"; fi
+`
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "go"), []byte(goScript), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module github.com/vcaesar/zedsearch\n"), 0o600))
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "frontend"), 0o755))
+	return []string{"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"), "FAKE_WEB_BINARY=" + binary}
+}
+
+func TestMainWeb(t *testing.T) {
+	t.Run("requires a source checkout", func(t *testing.T) {
+		out, err := mainCommand(t, "web").CombinedOutput()
+		assert.Error(t, err)
+		assert.Contains(t, string(out), "build web binary")
+		assert.Contains(t, string(out), "source checkout")
+	})
+
+	t.Run("built binary fails to start", func(t *testing.T) {
+		cmd := mainCommand(t, "web")
+		cmd.Env = append(cmd.Env, fakeToolchain(t, cmd.Dir, "")...)
+		out, err := cmd.CombinedOutput()
+		assert.Error(t, err)
+		assert.Contains(t, string(out), "fake npm ci")
+		assert.Contains(t, string(out), "fake npm run build")
+		assert.Contains(t, string(out), "run web binary")
+		assert.FileExists(t, filepath.Join(cmd.Dir, "test", "zedsearch-web"))
+	})
+
+	t.Run("replaced by the built binary", func(t *testing.T) {
+		binary := filepath.Join(t.TempDir(), "zedsearch-web")
+		require.NoError(t, os.WriteFile(binary, []byte("#!/bin/sh\necho \"web binary started: $*\"\n"), 0o755))
+		cmd := mainCommand(t, "web --flag value")
+		cmd.Env = append(cmd.Env, fakeToolchain(t, cmd.Dir, binary)...)
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, string(out))
+		assert.Contains(t, string(out), "web binary started: --flag value")
+	})
 }
 
 func TestMainListenError(t *testing.T) {
