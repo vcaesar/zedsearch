@@ -699,6 +699,12 @@ const docTemplate = `{
                         "schema": {
                             "$ref": "#/definitions/meta.HTTPResponseError"
                         }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
                     }
                 }
             }
@@ -1384,6 +1390,116 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/{index}/_hec": {
+            "post": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "text/plain"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Document"
+                ],
+                "summary": "Ingest Splunk HEC events",
+                "operationId": "LogsHEC",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Index",
+                        "name": "index",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Concatenated HEC event objects",
+                        "name": "events",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/{index}/_json": {
+            "post": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Document"
+                ],
+                "summary": "Ingest log records (OpenObserve _json)",
+                "operationId": "LogsJSON",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Index",
+                        "name": "index",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Log records",
+                        "name": "logs",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": true
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/logs.IngestResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
         "/api/{index}/_mapping": {
             "get": {
                 "security": [
@@ -1747,6 +1863,110 @@ const docTemplate = `{
                     },
                     "500": {
                         "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/{index}/loki/api/v1/push": {
+            "post": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Document"
+                ],
+                "summary": "Ingest Loki push request (JSON)",
+                "operationId": "LokiPush",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Index",
+                        "name": "index",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Loki push request",
+                        "name": "push",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/logs.IngestResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/{index}/v1/logs": {
+            "post": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Document"
+                ],
+                "summary": "Ingest OTLP logs (HTTP/JSON)",
+                "operationId": "OTLPLogs",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Index",
+                        "name": "index",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "OTLP logs export request",
+                        "name": "logs",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
                         "schema": {
                             "$ref": "#/definitions/meta.HTTPResponseError"
                         }
@@ -2754,6 +2974,52 @@ const docTemplate = `{
                 }
             }
         },
+        "/es/{index}/_flush": {
+            "post": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Index"
+                ],
+                "summary": "Flush index",
+                "operationId": "Flush",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Index",
+                        "name": "index",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
         "/es/{index}/_ilm/explain": {
             "get": {
                 "security": [
@@ -3491,6 +3757,37 @@ const docTemplate = `{
             "properties": {
                 "tier": {
                     "type": "string"
+                }
+            }
+        },
+        "logs.IngestResponse": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "integer"
+                },
+                "status": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/logs.StreamStatus"
+                    }
+                }
+            }
+        },
+        "logs.StreamStatus": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "type": "string"
+                },
+                "failed": {
+                    "type": "integer"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "successful": {
+                    "type": "integer"
                 }
             }
         },
@@ -4541,6 +4838,10 @@ const docTemplate = `{
                 "analysis": {
                     "$ref": "#/definitions/meta.IndexAnalysis"
                 },
+                "exclude_source_vectors": {
+                    "description": "ExcludeSourceVectors keeps vector fields out of the stored _source and\nrestores them from the stored vectors on read; nil takes\nzed_exclude_source_vectors. Set at creation only.",
+                    "type": "boolean"
+                },
                 "index_type": {
                     "description": "IndexType selects the document profile; empty preserves standard indexes.",
                     "type": "string"
@@ -4628,6 +4929,22 @@ const docTemplate = `{
         "meta.Mappings": {
             "type": "object",
             "properties": {
+                "_all": {
+                    "description": "All is the ` + "`" + `_all` + "`" + ` mapping; nil follows zed_all_field.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/meta.SourceMapping"
+                        }
+                    ]
+                },
+                "_source": {
+                    "description": "Source is the Elasticsearch ` + "`" + `_source` + "`" + ` mapping; nil stores _source.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/meta.SourceMapping"
+                        }
+                    ]
+                },
                 "properties": {
                     "type": "object",
                     "additionalProperties": {
@@ -4793,6 +5110,14 @@ const docTemplate = `{
                 "index": {
                     "type": "boolean"
                 },
+                "index_options": {
+                    "description": "IndexOptions enables HNSW approximate search on a vector field by default.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/meta.VectorIndexOptions"
+                        }
+                    ]
+                },
                 "properties": {
                     "description": "Properties holds the sub-fields of a \"nested\" property. Each element of\nthe nested array is indexed as its own hidden document tagged with\nNestedPathField / NestedParentField so nested queries and aggregations\nkeep per-object semantics.",
                     "type": "object",
@@ -4811,6 +5136,10 @@ const docTemplate = `{
                     }
                 },
                 "search_analyzer": {
+                    "type": "string"
+                },
+                "similarity": {
+                    "description": "Similarity is the default knn metric of a vector field, cosine when empty.",
                     "type": "string"
                 },
                 "sortable": {
@@ -5156,6 +5485,14 @@ const docTemplate = `{
                 }
             }
         },
+        "meta.SourceMapping": {
+            "type": "object",
+            "properties": {
+                "enabled": {
+                    "type": "boolean"
+                }
+            }
+        },
         "meta.Template": {
             "type": "object",
             "properties": {
@@ -5231,6 +5568,21 @@ const docTemplate = `{
                 }
             }
         },
+        "meta.VectorIndexOptions": {
+            "type": "object",
+            "properties": {
+                "ef_construction": {
+                    "type": "integer"
+                },
+                "m": {
+                    "type": "integer"
+                },
+                "type": {
+                    "description": "Type is VectorIndexHNSW or VectorIndexInt8HNSW; empty, as persisted\nbefore types, builds int8 graphs.",
+                    "type": "string"
+                }
+            }
+        },
         "meta.VersionResponse": {
             "type": "object",
             "properties": {
@@ -5285,6 +5637,9 @@ const docTemplate = `{
                 },
                 "highlight": {
                     "$ref": "#/definitions/meta.Highlight"
+                },
+                "knn": {
+                    "description": "top-level knn: one object or an array, ORed with query"
                 },
                 "query": {},
                 "size": {

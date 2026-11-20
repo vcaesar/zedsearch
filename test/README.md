@@ -6,12 +6,12 @@
 
 ## For boltdb, badger metadata storage 
 
-You just need to specify ZINC_METADATA_STORAGE environment variable to "bolt" or "badger" . Default value of ZINC_METADATA_STORAGE is "bolt"
+You just need to specify ZED_METADATA_STORAGE environment variable to "bolt" or "badger" . Default value of ZED_METADATA_STORAGE is "bolt"
 
 ## Steps to run tests
 1. A bash script at project root named `test.sh` can be used to run these unit tests.
 ```sh
-cd zinc
+cd zedsearch
 ./test.sh
 ``` 
 2. If you pass an argument `bench` then it will run the benchmark test.

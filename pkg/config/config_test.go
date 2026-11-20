@@ -314,7 +314,8 @@ func TestLoadIgnoresOtherSources(t *testing.T) {
 func TestLoadInvalidTOML(t *testing.T) {
 	isolate(t)
 	// Go field names and legacy zinc_* keys are not accepted; only zed_* names are (matched case-insensitively by go-toml).
-	for _, content := range []string{`zed_server_port = [`, `UnknownSetting = true`, `ServerPort = "1"`, `zed_first_admin_password = 123`, `zinc_server_port = "1"`} {
+	for _, content := range []string{`zed_server_port = [`, `UnknownSetting = true`,
+		`ServerPort = "1"`, `zed_first_admin_password = 123`, `zinc_server_port = "1"`} {
 		assert.NoError(t, os.WriteFile(configFile, []byte(content), 0o600))
 		err := load(new(config))
 		assert.ErrorContains(t, err, "invalid TOML configuration")

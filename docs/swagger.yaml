@@ -344,6 +344,26 @@ definitions:
       tier:
         type: string
     type: object
+  logs.IngestResponse:
+    properties:
+      code:
+        type: integer
+      status:
+        items:
+          $ref: '#/definitions/logs.StreamStatus'
+        type: array
+    type: object
+  logs.StreamStatus:
+    properties:
+      error:
+        type: string
+      failed:
+        type: integer
+      name:
+        type: string
+      successful:
+        type: integer
+    type: object
   meta.AggregationAutoDateHistogram:
     properties:
       buckets:
@@ -1045,6 +1065,12 @@ definitions:
     properties:
       analysis:
         $ref: '#/definitions/meta.IndexAnalysis'
+      exclude_source_vectors:
+        description: |-
+          ExcludeSourceVectors keeps vector fields out of the stored _source and
+          restores them from the stored vectors on read; nil takes
+          zed_exclude_source_vectors. Set at creation only.
+        type: boolean
       index_type:
         description: IndexType selects the document profile; empty preserves standard
           indexes.
@@ -1106,6 +1132,14 @@ definitions:
     type: object
   meta.Mappings:
     properties:
+      _all:
+        allOf:
+        - $ref: '#/definitions/meta.SourceMapping'
+        description: All is the `_all` mapping; nil follows zed_all_field.
+      _source:
+        allOf:
+        - $ref: '#/definitions/meta.SourceMapping'
+        description: Source is the Elasticsearch `_source` mapping; nil stores _source.
       properties:
         additionalProperties:
           $ref: '#/definitions/meta.Property'
@@ -1224,6 +1258,11 @@ definitions:
         type: boolean
       index:
         type: boolean
+      index_options:
+        allOf:
+        - $ref: '#/definitions/meta.VectorIndexOptions'
+        description: IndexOptions enables HNSW approximate search on a vector field
+          by default.
       properties:
         additionalProperties:
           $ref: '#/definitions/meta.Property'
@@ -1244,6 +1283,10 @@ definitions:
           {"name": "answer", "parent": "<parent _id>"} or just "question".
         type: object
       search_analyzer:
+        type: string
+      similarity:
+        description: Similarity is the default knn metric of a vector field, cosine
+          when empty.
         type: string
       sortable:
         type: boolean
@@ -1468,6 +1511,11 @@ definitions:
       query:
         type: string
     type: object
+  meta.SourceMapping:
+    properties:
+      enabled:
+        type: boolean
+    type: object
   meta.Template:
     properties:
       index_template:
@@ -1517,6 +1565,18 @@ definitions:
       updated_at:
         type: string
     type: object
+  meta.VectorIndexOptions:
+    properties:
+      ef_construction:
+        type: integer
+      m:
+        type: integer
+      type:
+        description: |-
+          Type is VectorIndexHNSW or VectorIndexInt8HNSW; empty, as persisted
+          before types, builds int8 graphs.
+        type: string
+    type: object
   meta.VersionResponse:
     properties:
       branch:
@@ -1553,6 +1613,8 @@ definitions:
         type: integer
       highlight:
         $ref: '#/definitions/meta.Highlight'
+      knn:
+        description: 'top-level knn: one object or an array, ORed with query'
       query: {}
       size:
         type: integer
@@ -2057,6 +2119,77 @@ paths:
       summary: Create or update document with id
       tags:
       - Document
+  /api/{index}/_hec:
+    post:
+      consumes:
+      - text/plain
+      operationId: LogsHEC
+      parameters:
+      - description: Index
+        in: path
+        name: index
+        required: true
+        type: string
+      - description: Concatenated HEC event objects
+        in: body
+        name: events
+        required: true
+        schema:
+          type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BasicAuth: []
+      summary: Ingest Splunk HEC events
+      tags:
+      - Document
+  /api/{index}/_json:
+    post:
+      consumes:
+      - application/json
+      operationId: LogsJSON
+      parameters:
+      - description: Index
+        in: path
+        name: index
+        required: true
+        type: string
+      - description: Log records
+        in: body
+        name: logs
+        required: true
+        schema:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/logs.IngestResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+      security:
+      - BasicAuth: []
+      summary: Ingest log records (OpenObserve _json)
+      tags:
+      - Document
   /api/{index}/_mapping:
     get:
       operationId: GetMapping
@@ -2292,6 +2425,73 @@ paths:
       security:
       - BasicAuth: []
       summary: Update document with id
+      tags:
+      - Document
+  /api/{index}/loki/api/v1/push:
+    post:
+      consumes:
+      - application/json
+      operationId: LokiPush
+      parameters:
+      - description: Index
+        in: path
+        name: index
+        required: true
+        type: string
+      - description: Loki push request
+        in: body
+        name: push
+        required: true
+        schema:
+          additionalProperties: true
+          type: object
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/logs.IngestResponse'
+      security:
+      - BasicAuth: []
+      summary: Ingest Loki push request (JSON)
+      tags:
+      - Document
+  /api/{index}/v1/logs:
+    post:
+      consumes:
+      - application/json
+      operationId: OTLPLogs
+      parameters:
+      - description: Index
+        in: path
+        name: index
+        required: true
+        type: string
+      - description: OTLP logs export request
+        in: body
+        name: logs
+        required: true
+        schema:
+          additionalProperties: true
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+      security:
+      - BasicAuth: []
+      summary: Ingest OTLP logs (HTTP/JSON)
       tags:
       - Document
   /api/account:
@@ -2583,6 +2783,10 @@ paths:
             $ref: '#/definitions/meta.HTTPResponse'
         "400":
           description: Bad Request
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+        "500":
+          description: Internal Server Error
           schema:
             $ref: '#/definitions/meta.HTTPResponseError'
       security:
@@ -3467,6 +3671,35 @@ paths:
       security:
       - BasicAuth: []
       summary: Get field capabilities for compatible ES
+      tags:
+      - Index
+  /es/{index}/_flush:
+    post:
+      operationId: Flush
+      parameters:
+      - description: Index
+        in: path
+        name: index
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/meta.HTTPResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+      security:
+      - BasicAuth: []
+      summary: Flush index
       tags:
       - Index
   /es/{index}/_ilm/explain:
