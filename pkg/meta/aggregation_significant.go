@@ -49,9 +49,10 @@ type AggregationSignificantTerms struct {
 	GND               *SignificanceHeuristic `json:"gnd"`
 	Percentage        *struct{}              `json:"percentage"`
 
-	// significant_text options, not supported: rejected when set
-	FilterDuplicateText bool     `json:"filter_duplicate_text"`
-	SourceFields        []string `json:"source_fields"`
+	// significant_text options, not supported: decoded only to reject
+	// filter_duplicate_text: true and a non-empty source_fields; hidden from swagger
+	FilterDuplicateText bool     `json:"filter_duplicate_text" swaggerignore:"true"`
+	SourceFields        []string `json:"source_fields" swaggerignore:"true"`
 }
 
 // SignificanceHeuristic holds the options of the mutual_information,

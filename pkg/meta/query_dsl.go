@@ -47,6 +47,7 @@ type ZedQuery struct {
 
 type ZedQueryForSDK struct {
 	Query          QueryForSDK             `json:"query"`
+	Knn            interface{}             `json:"knn,omitempty"` // top-level knn: one object or an array, ORed with query
 	Aggregations   map[string]Aggregations `json:"aggs"`
 	Highlight      *Highlight              `json:"highlight"`
 	Fields         []string                `json:"fields"`  // ["field1", "field2.*", {"field": "fieldName", "format": "epoch_millis"}]

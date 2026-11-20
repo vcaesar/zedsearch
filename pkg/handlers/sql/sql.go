@@ -42,10 +42,11 @@ type Request struct {
 // @security BasicAuth
 // @Tags    Search
 // @Accept  json
-// @Produce json
+// @Description The response format is the body format, else the format query parameter, else the Accept header (text/plain, text/csv, text/tab-separated-values), else JSON.
+// @Produce json,text/plain,text/csv,text/tab-separated-values
 // @Param   query  body  sql.Request  true  "Query"
 // @Param   format query string false "Response format: json, txt, csv, tsv"
-// @Success 200 {object} sql.Response
+// @Success 200 {object} zedsql.Response "JSON format; txt, csv and tsv return plain text rows"
 // @Failure 400 {object} meta.HTTPResponseError
 // @Router /es/_sql [post]
 func Search(c zhttp.Context) {

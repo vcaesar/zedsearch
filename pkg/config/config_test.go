@@ -314,16 +314,31 @@ func TestLoadIgnoresOtherSources(t *testing.T) {
 func TestLoadInvalidTOML(t *testing.T) {
 	isolate(t)
 	// Go field names and legacy zinc_* keys are not accepted; only zed_* names are (matched case-insensitively by go-toml).
-	for _, content := range []string{`zed_server_port = [`, `UnknownSetting = true`, `ServerPort = "1"`, `zed_first_admin_password = 123`, `zinc_server_port = "1"`} {
-		assert.NoError(t, os.WriteFile(configFile, []byte(content), 0o600))
-		err := load(new(config))
-		assert.ErrorContains(t, err, "invalid TOML configuration")
-		assert.NotContains(t, err.Error(), content)
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{"syntax error", `zed_server_port = [`},
+		{"unknown key", `UnknownSetting = true`},
+		{"go field name", `ServerPort = "1"`},
+		{"wrong type", `zed_first_admin_password = 123`},
+		{"legacy zinc key", `zinc_server_port = "1"`},
 	}
-	assert.NoError(t, os.Mkdir("dir", 0o755))
-	t.Chdir("dir")
-	assert.NoError(t, os.MkdirAll(configFile, 0o755))
-	assert.ErrorContains(t, load(new(config)), "read config")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.NoError(t, os.WriteFile(configFile, []byte(tt.content), 0o600))
+			err := load(new(config))
+			if assert.ErrorContains(t, err, "invalid TOML configuration") {
+				assert.NotContains(t, err.Error(), tt.content)
+			}
+		})
+	}
+	t.Run("config path is a directory", func(t *testing.T) {
+		assert.NoError(t, os.Mkdir("dir", 0o755))
+		t.Chdir("dir")
+		assert.NoError(t, os.MkdirAll(configFile, 0o755))
+		assert.ErrorContains(t, load(new(config)), "read config")
+	})
 }
 
 // expectFatal runs fn with zerolog's fatal exit turned into a panic and
