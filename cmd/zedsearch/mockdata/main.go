@@ -376,6 +376,11 @@ func parseEnd(s string, now time.Time) (time.Time, error) {
 // existing indexes first so mapping changes take effect.
 func run(prefix string, counts map[string]int, end time.Time, reset bool) error {
 	for _, d := range datasets {
+		if counts[d.name] < 0 {
+			return fmt.Errorf("-%s: negative count %d", d.name, counts[d.name])
+		}
+	}
+	for _, d := range datasets {
 		name := prefix + d.name
 		if _, ok := core.GetIndex(name); ok && reset {
 			if err := core.DeleteIndex(name); err != nil {

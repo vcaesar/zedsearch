@@ -31,6 +31,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/vcaesar/zedsearch"
+	"github.com/vcaesar/zedsearch/pkg/zhttp"
 )
 
 // shutdownSignaled guards TestShutdown under -count>1: shutdown keeps its
@@ -91,6 +94,11 @@ func freePort(t *testing.T) string {
 
 func TestMainServe(t *testing.T) {
 	closed := []string{"Index closed", "Metadata closed", "Server shutdown ok"}
+	// fiber's immediate close drops the listener error while a connection is open
+	closeErr := closed
+	if zhttp.Backend == "gin" {
+		closeErr = append([]string{"Server Close", "close failed"}, closed...)
+	}
 	tests := []struct {
 		name    string
 		sig     syscall.Signal
@@ -110,7 +118,7 @@ func TestMainServe(t *testing.T) {
 			false, append([]string{"traces export"}, closed...),
 		},
 		{"graceful shutdown error", syscall.SIGTERM, []string{setupEnv + "=close"}, true, []string{"Server Shutdown", "close failed"}},
-		{"immediate close error", syscall.SIGQUIT, []string{setupEnv + "=close"}, false, append([]string{"Server Close", "close failed"}, closed...)},
+		{"immediate close error", syscall.SIGQUIT, []string{setupEnv + "=close"}, false, closeErr},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -190,6 +198,12 @@ if [ -n "$FAKE_WEB_BINARY" ]; then cp "$FAKE_WEB_BINARY" "$out"; else : > "$out"
 }
 
 func TestMainWeb(t *testing.T) {
+	front, err := zedsearch.GetFrontendAssets()
+	require.NoError(t, err)
+	if front != nil {
+		t.Skip("assets are embedded: the web command serves in place instead of building")
+	}
+
 	t.Run("requires a source checkout", func(t *testing.T) {
 		out, err := mainCommand(t, "web").CombinedOutput()
 		assert.Error(t, err)

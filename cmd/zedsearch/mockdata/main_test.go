@@ -51,6 +51,7 @@ func TestMainCommand(t *testing.T) {
 	}{
 		{"seeds every dataset", "-prefix m_ -reset -products 2 -logs 2 -stores 2 -forum 5 -events 3 -end 2026-10-30T19:39:00Z", false, `mock data written with prefix \"m_\"`},
 		{"invalid end", "-end 2026-10-30", true, "-end: parsing time"},
+		{"negative count", "-events -1", true, "-events: negative count -1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -224,6 +225,14 @@ func TestRunErrors(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRunNegativeCount(t *testing.T) {
+	prefix := "TestRunNegativeCount."
+	counts := map[string]int{"products": 1, "events": -1}
+	assert.EqualError(t, run(prefix, counts, time.Now(), true), "-events: negative count -1")
+	_, ok := core.GetIndex(prefix + "products")
+	assert.False(t, ok, "counts are checked before any index is created")
 }
 
 func TestRun(t *testing.T) {
