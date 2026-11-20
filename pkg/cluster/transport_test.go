@@ -20,6 +20,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -37,15 +38,8 @@ func TestTransportReusesConnections(t *testing.T) {
 	assert.Same(t, Transport(), Transport())
 
 	var dialed atomic.Int64
-	arrived := make(chan struct{}, burst)
-	release := make(chan struct{}, burst)
-	server := httptest.NewUnstartedServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		arrived <- struct{}{}
-		select {
-		case <-release: // hold the request so the burst needs one connection each
-		case <-r.Context().Done(): // the client gave up, server.Close must not wait for it
-		}
-	}))
+	mux := http.NewServeMux()
+	server := httptest.NewUnstartedServer(mux)
 	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
 		if state == http.StateNew {
 			dialed.Add(1)
@@ -55,14 +49,28 @@ func TestTransportReusesConnections(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	client := &http.Client{Transport: Transport(), Timeout: 10 * time.Second}
+	var waveID int
 	wave := func() {
+		waveID++
+		path := "/" + strconv.Itoa(waveID)
+		arrived := make(chan struct{}, burst)
+		release := make(chan struct{})
+		// A late request still uses the channels for its own wave.
+		mux.HandleFunc(path, func(_ http.ResponseWriter, r *http.Request) {
+			arrived <- struct{}{}
+			select {
+			case <-release: // hold the request so the burst needs one connection each
+			case <-r.Context().Done(): // the client gave up, server.Close must not wait for it
+			}
+		})
+
 		failed := make(chan struct{}, burst)
 		var wg sync.WaitGroup
 		for range burst {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				resp, err := client.Get(server.URL)
+				resp, err := client.Get(server.URL + path)
 				if !assert.NoError(t, err) {
 					failed <- struct{}{}
 					return
@@ -79,9 +87,7 @@ func TestTransportReusesConnections(t *testing.T) {
 			case <-failed:
 			}
 		}
-		for range burst {
-			release <- struct{}{}
-		}
+		close(release)
 		wg.Wait()
 	}
 
