@@ -4,3 +4,15 @@ coverage:
       default:
         target: auto
         threshold: 0.5%
+
+# Markdown, generated swagger and non-Go sources are not counted as code.
+ignore:
+  - "*.md"
+  - "**/*.md"
+  - "docs/"
+  - "frontend/"
+  - "web/"
+
+# Only comment on PRs when coverage actually changes (skips docs/non-code PRs).
+comment:
+  require_changes: true
