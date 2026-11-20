@@ -243,17 +243,19 @@ func TestIndexList_GetOrCreateConcurrently(t *testing.T) {
 	results := make(chan result, 2)
 	var wg sync.WaitGroup
 	// both look the index up before either creates it
-	ZED_INDEX_LIST.lock.Lock()
-	for i := 0; i < 2; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			index, exists, err := GetOrCreateIndex(name, StorageTypeDisk, 1)
-			results <- result{index, exists, err}
-		}()
-	}
-	waitBlocked(t, "core.(*IndexList).GetOrCreate(", "sync.RWMutex.RLock", 2)
-	ZED_INDEX_LIST.lock.Unlock()
+	func() {
+		ZED_INDEX_LIST.lock.Lock()
+		defer ZED_INDEX_LIST.lock.Unlock()
+		for i := 0; i < 2; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				index, exists, err := GetOrCreateIndex(name, StorageTypeDisk, 1)
+				results <- result{index, exists, err}
+			}()
+		}
+		waitBlocked(t, "core.(*IndexList).GetOrCreate(", "sync.RWMutex.RLock", 2)
+	}()
 	wg.Wait()
 	close(results)
 
@@ -274,22 +276,23 @@ func TestLoadIndex_Concurrently(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, StoreIndex(index))
 	t.Cleanup(func() { assert.NoError(t, DeleteIndex(name)) })
-	ZED_INDEX_LIST.lock.Lock()
-	delete(ZED_INDEX_LIST.Indexes, name) // stored, not loaded on this node
-
 	loaded := make(chan *Index, 2)
 	var wg sync.WaitGroup
-	for i := 0; i < 2; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			index, err := LoadIndex(name)
-			assert.NoError(t, err)
-			loaded <- index
-		}()
-	}
-	waitBlocked(t, "core.LoadIndex(", "sync.RWMutex.RLock", 2)
-	ZED_INDEX_LIST.lock.Unlock()
+	func() {
+		ZED_INDEX_LIST.lock.Lock()
+		defer ZED_INDEX_LIST.lock.Unlock()
+		delete(ZED_INDEX_LIST.Indexes, name) // stored, not loaded on this node
+		for i := 0; i < 2; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				index, err := LoadIndex(name)
+				assert.NoError(t, err)
+				loaded <- index
+			}()
+		}
+		waitBlocked(t, "core.LoadIndex(", "sync.RWMutex.RLock", 2)
+	}()
 	wg.Wait()
 	close(loaded)
 

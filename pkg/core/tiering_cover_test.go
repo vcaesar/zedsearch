@@ -17,6 +17,9 @@ package core
 
 import (
 	"context"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -26,12 +29,29 @@ import (
 
 	"github.com/vcaesar/zedsearch/pkg/config"
 	"github.com/vcaesar/zedsearch/pkg/meta"
+	"github.com/vcaesar/zedsearch/pkg/metadata"
 )
 
 func setLifecycle(index *Index, lifecycle *meta.IndexLifecycle) {
 	index.lock.Lock()
 	index.ref.Settings.Lifecycle = lifecycle
 	index.lock.Unlock()
+}
+
+// stopTiering cancels the mover and waits until its goroutine returned, so no
+// lifecycle pass outlives the test.
+func stopTiering(t *testing.T, cancel context.CancelFunc) {
+	t.Helper()
+	cancel()
+	require.Eventually(t, func() bool {
+		buf := make([]byte, 1<<20)
+		for {
+			if size := runtime.Stack(buf, true); size < len(buf) {
+				return !strings.Contains(string(buf[:size]), "core.StartTiering.func1(")
+			}
+			buf = make([]byte, 2*len(buf))
+		}
+	}, 10*time.Second, time.Millisecond, "the lifecycle mover did not stop")
 }
 
 func TestStartTiering(t *testing.T) {
@@ -46,7 +66,7 @@ func TestStartTiering(t *testing.T) {
 		config.Global.Tier.CheckInterval = 0
 		ctx, cancel := context.WithCancel(context.Background())
 		StartTiering(ctx)
-		cancel()
+		stopTiering(t, cancel)
 	})
 
 	t.Run("expired index is deleted", func(t *testing.T) {
@@ -55,12 +75,16 @@ func TestStartTiering(t *testing.T) {
 		setLifecycle(index, &meta.IndexLifecycle{DeleteAfter: "1ns"})
 		config.Global.Tier.CheckInterval = 10 * time.Millisecond
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
 		StartTiering(ctx)
+		defer stopTiering(t, cancel)
+		// the metadata is removed last by DeleteIndex
 		require.Eventually(t, func() bool {
-			_, exists := GetIndex(name)
-			return !exists
+			_, err := metadata.Index.Get(name)
+			return err != nil
 		}, 30*time.Second, 10*time.Millisecond)
+		_, exists := GetIndex(name)
+		assert.False(t, exists)
+		assert.NoDirExists(t, filepath.Join(config.Global.DataPath, name))
 	})
 }
 

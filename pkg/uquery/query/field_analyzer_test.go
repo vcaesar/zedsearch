@@ -22,8 +22,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vcaesar/riot"
+	"github.com/vcaesar/riot/analysis"
 
 	"github.com/vcaesar/zedsearch/pkg/meta"
+	zedanalysis "github.com/vcaesar/zedsearch/pkg/uquery/analysis"
 )
 
 // analyzerMappings maps "title" with an index analyzer and "body" with a
@@ -36,14 +38,58 @@ func analyzerMappings() *meta.Mappings {
 	body := meta.NewProperty("text")
 	body.SearchAnalyzer = "simple"
 	m.SetProperty("body", body)
+	both := meta.NewProperty("text")
+	both.Analyzer = "standard"
+	both.SearchAnalyzer = "simple"
+	m.SetProperty("both", both)
 	return m
+}
+
+// terms analyzes a text that the standard and simple analyzers split apart.
+func terms(a *analysis.Analyzer) []string {
+	var out []string
+	for _, token := range a.Analyze([]byte("Fox's 42")) {
+		out = append(out, string(token.Term))
+	}
+	return out
+}
+
+// The match query uses the search analyzer of the field, then its index
+// analyzer, then an analyzer named in the query.
+func TestMatchQuery_AnalyzerPrecedence(t *testing.T) {
+	standard, err := zedanalysis.QueryAnalyzer(nil, "standard")
+	require.NoError(t, err)
+	simple, err := zedanalysis.QueryAnalyzer(nil, "simple")
+	require.NoError(t, err)
+	require.NotEqual(t, terms(standard), terms(simple))
+
+	tests := []struct {
+		name  string
+		query map[string]interface{}
+		want  *analysis.Analyzer
+	}{
+		{name: "index analyzer", query: map[string]interface{}{"title": "fox"}, want: standard},
+		{name: "search analyzer", query: map[string]interface{}{"body": "fox"}, want: simple},
+		{name: "search analyzer wins", query: map[string]interface{}{"both": "fox"}, want: simple},
+		{name: "query analyzer wins", query: map[string]interface{}{"both": map[string]interface{}{"query": "fox", "analyzer": "standard"}}, want: standard},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			q, err := MatchQuery(tt.query, analyzerMappings(), nil)
+			require.NoError(t, err)
+			mq, ok := q.(*riot.MatchQuery)
+			require.True(t, ok)
+			require.NotNil(t, mq.Analyzer())
+			assert.Equal(t, terms(tt.want), terms(mq.Analyzer()))
+		})
+	}
 }
 
 // TestQuery_FieldAnalyzer checks every query picks the search analyzer of the
 // field, or its index analyzer when there is no search analyzer.
 func TestQuery_FieldAnalyzer(t *testing.T) {
 	mappings := analyzerMappings()
-	for _, field := range []string{"title", "body"} {
+	for _, field := range []string{"title", "body", "both"} {
 		tests := []struct {
 			name  string
 			parse func() (riot.Query, error)

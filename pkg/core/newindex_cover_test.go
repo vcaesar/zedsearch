@@ -69,6 +69,7 @@ func TestStoreIndex_MetadataRejected(t *testing.T) {
 
 	t.Run("tier move", func(t *testing.T) {
 		useObjectStore(t)
+		checkIndex(index) // Settings is set by StoreIndex in the "store" subtest
 		index.lock.Lock()
 		index.ref.StorageType = StorageTypeS3
 		index.ref.Settings.Tier = TierCold

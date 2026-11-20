@@ -27,12 +27,29 @@ import (
 )
 
 func TestExcludeNestedDocuments(t *testing.T) {
-	query := map[string]interface{}{"term": map[string]interface{}{"a": "b"}}
-	assert.Equal(t, query, excludeNestedDocuments(query, nil))
-
-	got := excludeNestedDocuments(nil, []string{"comments"})
-	must := got.(map[string]interface{})["bool"].(map[string]interface{})["must"]
-	assert.Equal(t, map[string]interface{}{"match_all": map[string]interface{}{}}, must)
+	term := map[string]interface{}{"term": map[string]interface{}{"a": "b"}}
+	paths := []string{"comments"}
+	excluded := func(must interface{}) interface{} {
+		return map[string]interface{}{"bool": map[string]interface{}{
+			"must":     must,
+			"must_not": map[string]interface{}{"terms": map[string]interface{}{meta.NestedPathField: paths}},
+		}}
+	}
+	tests := []struct {
+		name  string
+		query interface{}
+		paths []string
+		want  interface{}
+	}{
+		{name: "no nested paths", query: term, want: term},
+		{name: "nil query", paths: paths, want: excluded(map[string]interface{}{"match_all": map[string]interface{}{}})},
+		{name: "query", query: term, paths: paths, want: excluded(term)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, excludeNestedDocuments(tt.query, tt.paths))
+		})
+	}
 }
 
 func TestSearchHelpersInvalidInput(t *testing.T) {
@@ -192,10 +209,14 @@ func TestSearch_PipelineError(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, StoreIndex(index))
 	t.Cleanup(func() { assert.NoError(t, DeleteIndex(name)) })
+	require.NoError(t, index.CreateDocument("1", map[string]interface{}{"name": "one"}, false))
+	waitForDocs(t, index, 1)
 
 	resp, err := index.Search(&meta.ZedQuery{Query: matchAll, Size: 10, Aggregations: map[string]meta.Aggregations{
 		"avg": {AvgBucket: &meta.AggregationPipeline{BucketsPath: "missing>_count"}},
 	}})
 	require.NoError(t, err)
 	assert.NotContains(t, resp.Aggregations, "avg")
+	require.Len(t, resp.Hits.Hits, 1)
+	assert.Equal(t, "1", resp.Hits.Hits[0].ID)
 }

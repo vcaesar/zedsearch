@@ -510,16 +510,18 @@ func TestTierStorageTypeDefault(t *testing.T) {
 func TestIndexShard_GetWriterClosedMeanwhile(t *testing.T) {
 	_, shard := openTestShard(t, "TestIndexShard_GetWriterClosedMeanwhile.index_1")
 
-	shard.lock.Lock()
 	done := make(chan error, 1)
-	go func() {
-		_, err := shard.GetWriter()
-		done <- err
+	err := func() error {
+		shard.lock.Lock()
+		defer shard.lock.Unlock()
+		go func() {
+			_, err := shard.GetWriter()
+			done <- err
+		}()
+		waitBlocked(t, "core.(*IndexShard).getWriter(", "sync.RWMutex.RLock", 1)
+		atomic.StoreUint64(&shard.open, 0)
+		return shard.closeWALLocked()
 	}()
-	waitBlocked(t, "core.(*IndexShard).getWriter(", "sync.RWMutex.RLock", 1)
-	atomic.StoreUint64(&shard.open, 0)
-	err := shard.closeWALLocked()
-	shard.lock.Unlock()
 	require.NoError(t, err)
 	assert.ErrorIs(t, <-done, ErrIndexReadOnly)
 }
@@ -556,16 +558,18 @@ func TestMoveIndexTier_CloseOldLocationFails(t *testing.T) {
 	shard := anyShard(index)
 
 	// the move stops when it stores the new location
-	index.lock.RLock()
 	done := make(chan error, 1)
-	go func() { done <- MoveIndexTier(name, TierWarm) }()
-	waitBlocked(t, "core.(*Index).setLocation(", "sync.RWMutex.Lock", 1)
-	err = shard.OpenWAL()
-	if err == nil {
+	err = func() error {
+		index.lock.RLock()
+		defer index.lock.RUnlock()
+		go func() { done <- MoveIndexTier(name, TierWarm) }()
+		waitBlocked(t, "core.(*Index).setLocation(", "sync.RWMutex.Lock", 1)
+		if err := shard.OpenWAL(); err != nil {
+			return err
+		}
 		ZED_INDEX_SHARD_WAL_LIST.Remove(shard.GetShardName())
-		err = shard.wal.Close()
-	}
-	index.lock.RUnlock()
+		return shard.wal.Close()
+	}()
 	require.NoError(t, err)
 
 	assert.Error(t, <-done)

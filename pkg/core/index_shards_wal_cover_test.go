@@ -16,15 +16,18 @@
 package core
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vcaesar/riot"
 	blugeindex "github.com/vcaesar/riot/index"
 
 	"github.com/vcaesar/zedsearch/pkg/config"
@@ -293,26 +296,65 @@ func TestIndexShard_ConsumeWALCases(t *testing.T) {
 	})
 }
 
+// hasDoc reports whether the second layer shard id of shard holds docID.
+func hasDoc(t *testing.T, shard *IndexShard, id int64, docID string) bool {
+	t.Helper()
+	w, err := shard.GetWriter(id)
+	require.NoError(t, err)
+	r, err := w.Reader()
+	require.NoError(t, err)
+	defer func() { assert.NoError(t, r.Close()) }()
+	req := riot.NewTopNSearch(1, riot.NewTermQuery(docID).SetField("_id")).WithStandardAggregations()
+	dmi, err := r.Search(context.Background(), req)
+	require.NoError(t, err)
+	return dmi.Aggregations().Count() > 0
+}
+
+// The merged actions of a document decide whether it ends up on the target
+// second layer shard, and an update or delete also removes it from the older
+// ones when all of them are written.
 func TestWalMergeDocs_WriteToShardActions(t *testing.T) {
 	_, shard := openTestShard(t, "TestWalMergeDocs_WriteToShardActions.index_1")
 	addSecondShard(t, shard)
 	require.Equal(t, int64(2), shard.GetShardNum())
+	latest := shard.GetLatestShardID()
+	fields := map[string]interface{}{"name": "one"}
 
 	const ins, upd, del = meta.ActionTypeInsert, meta.ActionTypeUpdate, meta.ActionTypeDelete
 	for _, shardID := range []int64{0, ShardIDNeedLatest, ShardIDNeedUpdate} {
+		target := shardID
+		if shardID < 0 {
+			target = latest
+		}
 		for _, actions := range [][]string{
 			{ins}, {upd}, {del},
 			{ins, ins}, {ins, upd}, {ins, del},
 			{upd, ins}, {upd, upd}, {upd, del},
 			{del, ins}, {del, upd}, {del, del},
 		} {
-			t.Run(strconv.FormatInt(shardID, 10)+"/"+actions[0]+"-"+actions[len(actions)-1], func(t *testing.T) {
-				docs := walMergeDocs{shardID: {"1": {
-					docID:   "1",
+			docID := strconv.FormatInt(shardID, 10) + "_" + strings.Join(actions, "-")
+			t.Run(docID, func(t *testing.T) {
+				if shardID == ShardIDNeedUpdate {
+					// seeded on the older shard, as written before the new one was added
+					seed := walMergeDocs{0: {docID: {docID: docID, actions: []string{ins}, data: walEntry(docID, ins, 0, fields)}}}
+					require.NoError(t, seed.WriteToShard(shard, 0, blugeindex.NewBatch()))
+					require.True(t, hasDoc(t, shard, 0, docID))
+				}
+
+				docs := walMergeDocs{shardID: {docID: {
+					docID:   docID,
 					actions: actions,
-					data:    walEntry("1", actions[0], shardID, map[string]interface{}{"name": "one"}),
+					data:    walEntry(docID, actions[0], shardID, fields),
 				}}}
-				assert.NoError(t, docs.WriteToShard(shard, shardID, blugeindex.NewBatch()))
+				require.NoError(t, docs.WriteToShard(shard, shardID, blugeindex.NewBatch()))
+
+				last := actions[len(actions)-1]
+				assert.Equal(t, last != del, hasDoc(t, shard, target, docID), "on the target shard")
+				if shardID == ShardIDNeedUpdate {
+					assert.Equal(t, actions[0] == ins, hasDoc(t, shard, 0, docID), "on the older shard")
+				} else if target != 0 {
+					assert.False(t, hasDoc(t, shard, 0, docID), "only the target shard is written")
+				}
 			})
 		}
 	}
