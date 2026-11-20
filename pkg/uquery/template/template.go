@@ -69,8 +69,10 @@ func Request(data map[string]interface{}) (*meta.IndexTemplate, error) {
 				if err != nil {
 					return nil, err
 				}
-				template.Template.Settings = tmpIndex.Settings
-				template.Template.Mappings = tmpIndex.Mappings
+				if tmpIndex != nil {
+					template.Template.Settings = tmpIndex.Settings
+					template.Template.Mappings = tmpIndex.Mappings
+				}
 			default:
 				return nil, errors.New(errors.ErrorTypeXContentParseException, "[template] template value should be an object")
 			}

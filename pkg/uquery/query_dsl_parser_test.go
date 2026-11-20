@@ -137,3 +137,51 @@ func TestParseQueryDSL(t *testing.T) {
 		}
 	})
 }
+
+func TestParseQueryDSL_Knn(t *testing.T) {
+	mappings := dslMappings()
+	vec := meta.NewProperty("vector")
+	vec.Dims = 3
+	mappings.SetProperty("embedding", vec)
+	knn := map[string]interface{}{"field": "embedding", "query_vector": []interface{}{1.0, 2.0, 3.0}, "k": 2.0}
+	matchAll := map[string]interface{}{"match_all": map[string]interface{}{}}
+
+	t.Run("valid", func(t *testing.T) {
+		tests := []struct {
+			name  string
+			query *meta.ZedQuery
+		}{
+			{"single knn without query", &meta.ZedQuery{Size: 5, Knn: knn}},
+			{"knn array with query", &meta.ZedQuery{Size: 5, Query: matchAll, Knn: []interface{}{knn, knn}}},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				q, err := parseQuery(tt.query, mappings, nil)
+				assert.NoError(t, err)
+				assert.IsType(t, &riot.BooleanQuery{}, q)
+				_, err = ParseQueryDSL(tt.query, mappings, nil)
+				assert.NoError(t, err)
+			})
+		}
+	})
+
+	t.Run("errors", func(t *testing.T) {
+		tests := []struct {
+			name  string
+			query *meta.ZedQuery
+			want  string
+		}{
+			{"empty query object", &meta.ZedQuery{Query: map[string]interface{}{}}, "query doesn't support"},
+			{"bad query with knn", &meta.ZedQuery{Query: "x", Knn: knn}, "must be a map"},
+			{"knn not object", &meta.ZedQuery{Knn: []interface{}{"x"}}, "[knn] must be an object or an array of objects, got string"},
+			{"bad knn", &meta.ZedQuery{Knn: map[string]interface{}{"field": "embedding", "k": -1.0}}, "[knn] failed to parse field"},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				req, err := ParseQueryDSL(tt.query, mappings, nil)
+				assert.Nil(t, req)
+				assert.ErrorContains(t, err, tt.want)
+			})
+		}
+	})
+}

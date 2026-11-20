@@ -118,6 +118,12 @@ func TestGeoBoundingBoxQuery(t *testing.T) {
 			assert.Equal(t, []float64{-71.12, 40.01}, q.BottomRight())
 		})
 	}
+
+	t.Run("boost", func(t *testing.T) {
+		got, err := GeoBoundingBoxQuery(geoQuery(t, `{"boost": 3, "location": {"top": 40.73, "left": -74.1, "bottom": 40.01, "right": -71.12}}`), geoMappings())
+		assert.NoError(t, err)
+		assert.Equal(t, 3.0, got.(*riot.GeoBoundingBoxQuery).Boost())
+	})
 }
 
 func TestGeoPolygonQuery(t *testing.T) {

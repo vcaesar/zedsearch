@@ -111,6 +111,7 @@ func TestQuery(t *testing.T) {
 		{"bool nested", map[string]interface{}{"bool": map[string]interface{}{"must": map[string]interface{}{"bool": map[string]interface{}{"filter": []interface{}{rng}}}}}, true},
 		{"bool array without range", map[string]interface{}{"bool": map[string]interface{}{"must": []interface{}{noRange}}}, false},
 		{"meta.Query struct", &meta.Query{Range: map[string]*meta.RangeQuery{meta.TimeFieldName: {GTE: ts1, LT: ts2}}}, true},
+		{"meta.Query not marshalable", &meta.Query{Nested: &meta.NestedQuery{Path: "p", Query: make(chan int)}}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

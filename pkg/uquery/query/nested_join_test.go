@@ -90,6 +90,11 @@ func TestNestedQuery(t *testing.T) {
 			query:   map[string]interface{}{"path": "comments", "query": map[string]interface{}{"nope": map[string]interface{}{}}},
 			wantErr: "[nested] failed to parse field",
 		},
+		{
+			name:    "empty path",
+			query:   map[string]interface{}{"path": "", "query": termOn("tag", "a")},
+			wantErr: "[nested] path doesn't support values of type: string",
+		},
 	}
 
 	for _, tt := range tests {
@@ -99,6 +104,16 @@ func TestNestedQuery(t *testing.T) {
 			assert.ErrorContains(t, err, tt.wantErr)
 		})
 	}
+
+	t.Run("accepted no-op fields", func(t *testing.T) {
+		q, err := NestedQuery(map[string]interface{}{
+			"path":            "comments",
+			"query":           termOn("tag", "a"),
+			"ignore_unmapped": true,
+		}, mappings, nil)
+		require.NoError(t, err)
+		tagTerm(t, q, map[string]string{meta.NestedPathField: "comments"})
+	})
 }
 
 func TestJoinQueries(t *testing.T) {
@@ -124,6 +139,21 @@ func TestJoinQueries(t *testing.T) {
 		}, mappings, nil)
 		require.NoError(t, err)
 		tagTerm(t, q, map[string]string{meta.JoinNameField: "question"})
+	})
+
+	t.Run("accepted no-op fields", func(t *testing.T) {
+		for _, key := range []string{"ignore_unmapped", "boost", "inner_hits"} {
+			q, err := HasChildQuery(map[string]interface{}{"type": "answer", "query": termOn("tag", "a"), key: 1.0}, mappings, nil)
+			require.NoError(t, err, key)
+			tagTerm(t, q, map[string]string{meta.JoinNameField: "answer"})
+
+			q, err = HasParentQuery(map[string]interface{}{"type": "question", "query": termOn("tag", "a"), key: 1.0}, mappings, nil)
+			require.NoError(t, err, key)
+			tagTerm(t, q, map[string]string{meta.JoinNameField: "question"})
+		}
+		q, err := ParentIDQuery(map[string]interface{}{"type": "answer", "id": "q1", "ignore_unmapped": true})
+		require.NoError(t, err)
+		tagTerm(t, q, map[string]string{meta.JoinParentField: "q1"})
 	})
 
 	t.Run("parent_id", func(t *testing.T) {
@@ -195,6 +225,60 @@ func TestJoinQueries(t *testing.T) {
 			query:   map[string]interface{}{"type": "answer", "id": "q1", "nope": 1},
 			wantErr: "[parent_id] unknown field [nope]",
 		},
+		{
+			name:    "has_child empty type",
+			parse:   func(q map[string]interface{}) (riot.Query, error) { return HasChildQuery(q, mappings, nil) },
+			query:   map[string]interface{}{"type": "", "query": termOn("tag", "a")},
+			wantErr: "[has_child] type doesn't support values of type: string",
+		},
+		{
+			name:    "has_child bad query",
+			parse:   func(q map[string]interface{}) (riot.Query, error) { return HasChildQuery(q, mappings, nil) },
+			query:   map[string]interface{}{"type": "answer", "query": "a"},
+			wantErr: "[has_child] query doesn't support values of type: string",
+		},
+		{
+			name:    "has_child bad min_children",
+			parse:   func(q map[string]interface{}) (riot.Query, error) { return HasChildQuery(q, mappings, nil) },
+			query:   map[string]interface{}{"type": "answer", "query": termOn("tag", "a"), "min_children": "many"},
+			wantErr: "[has_child] min_children doesn't support values of type: string",
+		},
+		{
+			name:    "has_parent empty parent_type",
+			parse:   func(q map[string]interface{}) (riot.Query, error) { return HasParentQuery(q, mappings, nil) },
+			query:   map[string]interface{}{"parent_type": "", "query": termOn("tag", "a")},
+			wantErr: "[has_parent] parent_type doesn't support values of type: string",
+		},
+		{
+			name:    "has_parent without query",
+			parse:   func(q map[string]interface{}) (riot.Query, error) { return HasParentQuery(q, mappings, nil) },
+			query:   map[string]interface{}{"parent_type": "question"},
+			wantErr: "[has_parent] requires [query] query",
+		},
+		{
+			name:    "has_parent bad score",
+			parse:   func(q map[string]interface{}) (riot.Query, error) { return HasParentQuery(q, mappings, nil) },
+			query:   map[string]interface{}{"parent_type": "question", "query": termOn("tag", "a"), "score": []interface{}{}},
+			wantErr: "[has_parent] score doesn't support values of type: []interface {}",
+		},
+		{
+			name:    "has_parent unknown field",
+			parse:   func(q map[string]interface{}) (riot.Query, error) { return HasParentQuery(q, mappings, nil) },
+			query:   map[string]interface{}{"parent_type": "question", "query": termOn("tag", "a"), "nope": 1},
+			wantErr: "[has_parent] unknown field [nope]",
+		},
+		{
+			name:    "parent_id empty type",
+			parse:   func(q map[string]interface{}) (riot.Query, error) { return ParentIDQuery(q) },
+			query:   map[string]interface{}{"type": "", "id": "q1"},
+			wantErr: "[parent_id] type doesn't support values of type: string",
+		},
+		{
+			name:    "parent_id empty id",
+			parse:   func(q map[string]interface{}) (riot.Query, error) { return ParentIDQuery(q) },
+			query:   map[string]interface{}{"type": "answer", "id": ""},
+			wantErr: "[parent_id] id doesn't support values of type: string",
+		},
 	}
 
 	for _, tt := range tests {
@@ -233,4 +317,22 @@ func TestNestedJoinQuery_Dispatch(t *testing.T) {
 		_, err := Query(map[string]interface{}{"nested": map[string]interface{}{"path": "comments"}}, mappings, nil)
 		assert.ErrorContains(t, err, "[nested] failed to parse field")
 	})
+
+	errTests := []struct {
+		name    string
+		query   map[string]interface{}
+		wantErr string
+	}{
+		{name: "has_child", query: map[string]interface{}{"has_child": map[string]interface{}{"type": "answer"}}, wantErr: "[has_child] failed to parse field"},
+		{name: "has_parent", query: map[string]interface{}{"has_parent": map[string]interface{}{"parent_type": "question"}}, wantErr: "[has_parent] failed to parse field"},
+		{name: "parent_id", query: map[string]interface{}{"parent_id": map[string]interface{}{"type": "answer"}}, wantErr: "[parent_id] failed to parse field"},
+		{name: "function_score", query: map[string]interface{}{"function_score": map[string]interface{}{"query": termOn("tag", "a")}}, wantErr: "[function_score] failed to parse field"},
+	}
+	for _, tt := range errTests {
+		t.Run(tt.name+" parse error is wrapped", func(t *testing.T) {
+			q, err := Query(tt.query, mappings, nil)
+			assert.Nil(t, q)
+			assert.ErrorContains(t, err, tt.wantErr)
+		})
+	}
 }
