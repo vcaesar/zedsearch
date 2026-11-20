@@ -55,17 +55,25 @@ Elasticsearch ist zwar ein sehr gutes Produkt, aber es ist komplex, benötigt vi
 
 # Funktionen:
 
-go + gin + react
+go + gin (oder fiber v3 mit `-tags fiber`) + react
 
-1. Bietet Volltextindizierung
-2. Eine einzige Binärdatei für Installation und Betrieb. Binärdateien für mehrere Plattformen sind unter Releases verfügbar.
-3. In React geschriebene Web-Oberfläche zum Abfragen von Daten (in die Binärdatei eingebettet)
-4. Kompatibilität mit Elasticsearch-APIs für die Datenaufnahme (Einzeldatensatz- und Bulk-API)
-5. Authentifizierung ab Werk
-6. Schemalos – kein Schema muss vorab definiert werden, und verschiedene Dokumente im selben Index können unterschiedliche Felder haben.
-7. Indexspeicherung auf der Festplatte
-8. Unterstützung für Aggregationen
-9. Optionale [Log-Indizes](../pkg/logs/README.md) mit Normalisierung der Ereigniszeit und Standardeinstellungen für die Log-Suche
+1. Schnelle Abfragen und kleinere Indexdateien
+2. Bietet Volltext- und Vektorindizierung
+3. Eine einzige Binärdatei für Installation und Betrieb. Binärdateien für mehrere Plattformen sind unter Releases verfügbar.
+4. In React geschriebene Web-Oberfläche zum Abfragen von Daten (in die Binärdatei eingebettet)
+5. Kompatibilität mit Elasticsearch-APIs für die Datenaufnahme (Einzeldatensatz- und Bulk-API)
+6. Authentifizierung ab Werk
+7. Schemalos – kein Schema muss vorab definiert werden, und verschiedene Dokumente im selben Index können unterschiedliche Felder haben.
+8. Indexspeicherung auf Festplatte, S3, MinIO und mehr
+9. Unterstützung für Aggregationen und den vollen Elasticsearch-Funktionsumfang
+10. Mehrsprachige Unterstützung, inklusive CJK
+11. Optionale [Log-Indizes](../pkg/logs/README.md) mit Normalisierung der Ereigniszeit und Standardeinstellungen für die Log-Suche; Aufnahme von JSON, Splunk HEC, Loki und OTLP/HTTP JSON (OpenObserve-kompatibel) sowie Logstash-Ereignissen
+12. kNN-Vektorsuche und Geo-Abfragen (`geo_distance`, `geo_bounding_box`, `geo_polygon`, `geo_shape`)
+13. Elasticsearch-SQL-API (`/es/_sql`, `/es/_sql/translate`) und [MySQL-`CREATE TABLE`-Schemas als Mappings](../docs/sql-mappings.md)
+14. Hochverfügbarer [Cluster](../pkg/cluster/README.md): über etcd koordinierter Partitionsbesitz, Übergabe mit Fencing, Replikate und Scatter-Gather-Suche
+15. OpenTelemetry-Tracing über OTLP/HTTP (`zed_tracing_enable`); jede Anfrage erhält eine `X-Trace-Id`, die ihr über alle Knoten folgt
+16. Fleet und `zedagent` (`agent/`): Agents registrieren, Richtlinien verwalten, Logdateien und Systemmetriken senden oder den Agent eigenständig betreiben
+17. robots-konformer [Web-Crawler](../pkg/crawler/README.md) (`cmd/zedcrawl`) mit PageRank und Bulk-Indizierung in ZedSearch
 
 # Benchmarks
 

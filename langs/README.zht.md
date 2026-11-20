@@ -55,17 +55,25 @@ docker run -d --name zedsearch -p 4080:4080 \
 
 # 功能：
 
-go + gin + react
+go + gin（或使用 `-tags fiber` 改用 fiber v3）+ react
 
-1. 提供全文索引能力
-2. 單一執行檔即可安裝與執行。Releases 中提供多種平台的執行檔。
-3. 以 React 撰寫的資料查詢 Web UI（內嵌於執行檔中）
-4. 相容 Elasticsearch 的資料寫入 API（單筆記錄與批次 API）
-5. 開箱即用的身分驗證
-6. 無結構描述（Schema less）—— 無需預先定義 schema，同一索引中的不同文件可以擁有不同的欄位。
-7. 索引儲存於磁碟
-8. 支援聚合
-9. 可選擇啟用的[日誌索引](../pkg/logs/README.md)，支援事件時間正規化與日誌搜尋預設設定
+1. 查詢速度快，索引檔案更小
+2. 提供全文索引與向量索引能力
+3. 單一執行檔即可安裝與執行。Releases 中提供多種平台的執行檔。
+4. 以 React 撰寫的資料查詢 Web UI（內嵌於執行檔中）
+5. 相容 Elasticsearch 的資料寫入 API（單筆記錄與批次 API）
+6. 開箱即用的身分驗證
+7. 無結構描述（Schema less）—— 無需預先定義 schema，同一索引中的不同文件可以擁有不同的欄位。
+8. 索引可儲存於磁碟、S3、MinIO 等
+9. 支援聚合及完整的 Elasticsearch 功能
+10. 多語言支援，支援中日韓（CJK）
+11. 可選擇啟用的[日誌索引](../pkg/logs/README.md)，支援事件時間正規化與日誌搜尋預設設定，可寫入 JSON、Splunk HEC、Loki、OTLP/HTTP JSON（相容 OpenObserve）及 Logstash 事件
+12. kNN 向量搜尋與地理查詢（`geo_distance`、`geo_bounding_box`、`geo_polygon`、`geo_shape`）
+13. Elasticsearch SQL API（`/es/_sql`、`/es/_sql/translate`），並支援將 MySQL `CREATE TABLE` [schema 用作 mappings](../docs/sql-mappings.md)
+14. 高可用[叢集](../pkg/cluster/README.md)：以 etcd 協調的分區擁有權、具 fencing 的移交、副本以及 scatter-gather 搜尋
+15. 透過 OTLP/HTTP 匯出 OpenTelemetry 追蹤（`zed_tracing_enable`）；每個請求都有跨節點傳遞的 `X-Trace-Id`
+16. Fleet 與 `zedagent`（`agent/`）：註冊 agent、管理政策、收集日誌檔與系統指標，也可獨立執行 agent
+17. 遵循 robots 的[網頁爬蟲](../pkg/crawler/README.md)（`cmd/zedcrawl`），支援 PageRank 並批次寫入 ZedSearch
 
 # 效能測試
 

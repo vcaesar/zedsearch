@@ -55,17 +55,25 @@ Elasticsearch는 매우 좋은 제품이지만 복잡하고 많은 리소스가 
 
 # 기능:
 
-go + gin + react
+go + gin (`-tags fiber`로 fiber v3 사용 가능) + react
 
-1. 전문 색인 기능 제공
-2. 설치와 실행을 위한 단일 바이너리. 여러 플랫폼용 바이너리를 Releases에서 제공합니다.
-3. React로 작성된 데이터 조회용 Web UI(바이너리에 내장)
-4. 데이터 수집을 위한 Elasticsearch API 호환성(단일 레코드 및 벌크 API)
-5. 기본 제공 인증
-6. 스키마리스 - 스키마를 미리 정의할 필요가 없으며, 같은 인덱스 내의 서로 다른 문서가 서로 다른 필드를 가질 수 있습니다.
-7. 인덱스를 디스크에 저장
-8. 집계(aggregation) 지원
-9. 이벤트 시간 정규화와 로그 검색 기본값을 갖춘 옵트인 [로그 인덱스](../pkg/logs/README.md)
+1. 빠른 쿼리와 더 작은 인덱스 파일
+2. 전문 색인 및 벡터 색인 기능 제공
+3. 설치와 실행을 위한 단일 바이너리. 여러 플랫폼용 바이너리를 Releases에서 제공합니다.
+4. React로 작성된 데이터 조회용 Web UI(바이너리에 내장)
+5. 데이터 수집을 위한 Elasticsearch API 호환성(단일 레코드 및 벌크 API)
+6. 기본 제공 인증
+7. 스키마리스 - 스키마를 미리 정의할 필요가 없으며, 같은 인덱스 내의 서로 다른 문서가 서로 다른 필드를 가질 수 있습니다.
+8. 디스크, S3, MinIO 등에 인덱스 저장
+9. 집계(aggregation) 및 Elasticsearch 기능 전반 지원
+10. 다국어 지원, CJK(한중일) 지원
+11. 이벤트 시간 정규화와 로그 검색 기본값을 갖추고 JSON, Splunk HEC, Loki, OTLP/HTTP JSON(OpenObserve 호환) 및 Logstash 이벤트를 수집하는 옵트인 [로그 인덱스](../pkg/logs/README.md)
+12. kNN 벡터 검색 및 지리 쿼리(`geo_distance`, `geo_bounding_box`, `geo_polygon`, `geo_shape`)
+13. Elasticsearch SQL API(`/es/_sql`, `/es/_sql/translate`) 및 MySQL `CREATE TABLE` [스키마를 매핑으로 사용](../docs/sql-mappings.md)
+14. 고가용성 [클러스터](../pkg/cluster/README.md): etcd로 조정되는 파티션 소유권, 펜싱 핸드오프, 레플리카, scatter-gather 검색
+15. OTLP/HTTP 기반 OpenTelemetry 추적(`zed_tracing_enable`). 모든 요청에 노드 간에 전달되는 `X-Trace-Id` 부여
+16. Fleet 및 `zedagent`(`agent/`): 에이전트 등록, 정책 관리, 로그 파일과 시스템 메트릭 전송, 단독 실행도 지원
+17. robots를 준수하는 [웹 크롤러](../pkg/crawler/README.md)(`cmd/zedcrawl`), PageRank 계산 및 ZedSearch 벌크 색인 지원
 
 # 벤치마크
 

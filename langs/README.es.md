@@ -55,17 +55,25 @@ Aunque Elasticsearch es un producto muy bueno, es complejo, requiere muchos recu
 
 # Características:
 
-go + gin + react
+go + gin (o fiber v3 con `-tags fiber`) + react
 
-1. Proporciona capacidad de indexación de texto completo
-2. Un único binario para la instalación y ejecución. Binarios disponibles en las releases para múltiples plataformas.
-3. Interfaz web para consultar datos escrita en React (embebida en el binario)
-4. Compatibilidad con las APIs de Elasticsearch para la ingesta de datos (API de registro único y bulk)
-5. Autenticación lista para usar
-6. Sin esquema: no es necesario definir un esquema por adelantado y diferentes documentos del mismo índice pueden tener campos distintos.
-7. Almacenamiento de índices en disco
-8. Soporte de agregaciones
-9. [Índices de logs](../pkg/logs/README.md) opcionales con normalización del tiempo del evento y valores predeterminados para búsqueda de logs
+1. Consultas rápidas y archivos de índice más pequeños
+2. Proporciona capacidad de indexación de texto completo y vectorial
+3. Un único binario para la instalación y ejecución. Binarios disponibles en las releases para múltiples plataformas.
+4. Interfaz web para consultar datos escrita en React (embebida en el binario)
+5. Compatibilidad con las APIs de Elasticsearch para la ingesta de datos (API de registro único y bulk)
+6. Autenticación lista para usar
+7. Sin esquema: no es necesario definir un esquema por adelantado y diferentes documentos del mismo índice pueden tener campos distintos.
+8. Almacenamiento de índices en disco, S3, MinIO y otros
+9. Soporte de agregaciones y de las funcionalidades completas de Elasticsearch
+10. Soporte multilingüe, incluido CJK
+11. [Índices de logs](../pkg/logs/README.md) opcionales con normalización del tiempo del evento y valores predeterminados para búsqueda de logs, con ingesta de JSON, Splunk HEC, Loki y OTLP/HTTP JSON (compatible con OpenObserve) y eventos de Logstash
+12. Búsqueda vectorial kNN y consultas geográficas (`geo_distance`, `geo_bounding_box`, `geo_polygon`, `geo_shape`)
+13. API SQL de Elasticsearch (`/es/_sql`, `/es/_sql/translate`) y [esquemas MySQL `CREATE TABLE` como mappings](../docs/sql-mappings.md)
+14. [Clúster](../pkg/cluster/README.md) de alta disponibilidad: propiedad de particiones coordinada por etcd, traspaso con fencing, réplicas y búsqueda scatter-gather
+15. Trazado OpenTelemetry mediante OTLP/HTTP (`zed_tracing_enable`); cada petición recibe un `X-Trace-Id` que la sigue entre nodos
+16. Fleet y `zedagent` (`agent/`): registro de agentes, gestión de políticas, envío de archivos de logs y métricas del sistema, o agente independiente
+17. [Rastreador web](../pkg/crawler/README.md) que respeta robots.txt (`cmd/zedcrawl`), con PageRank e indexación bulk en ZedSearch
 
 # Benchmarks
 
