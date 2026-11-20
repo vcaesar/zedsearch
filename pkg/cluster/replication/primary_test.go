@@ -18,6 +18,7 @@ package replication
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -173,11 +174,45 @@ func TestShip(t *testing.T) {
 	tests := []struct {
 		name      string
 		trimmed   bool // the owner dropped its retained operations
+		insync    bool // the replica is in the in-sync set
 		answers   func(p *primary) []func(*Batch) (Ack, error)
 		recoverOK bool
 		want      bool
 		recovered bool
 	}{
+		{
+			name:   "in-sync replica is sent the log at once",
+			insync: true,
+			answers: func(p *primary) []func(*Batch) (Ack, error) {
+				return []func(*Batch) (Ack, error){func(b *Batch) (Ack, error) {
+					if b.From != 1 || len(b.Ops) != 3 {
+						return Ack{}, errors.New("unexpected batch")
+					}
+					return Ack{Term: p.term, Seq: 3}, nil
+				}}
+			},
+			want: true,
+		},
+		{
+			name: "replica not in sync is probed before the log is sent",
+			answers: func(p *primary) []func(*Batch) (Ack, error) {
+				return []func(*Batch) (Ack, error){
+					func(b *Batch) (Ack, error) {
+						if b.From != 4 || len(b.Ops) != 0 {
+							return Ack{}, errors.New("unexpected batch")
+						}
+						return Ack{Term: p.term, Seq: 1}, ErrOutOfSync
+					},
+					func(b *Batch) (Ack, error) {
+						if b.From != 2 || len(b.Ops) != 2 {
+							return Ack{}, errors.New("unexpected batch")
+						}
+						return Ack{Term: p.term, Seq: 3}, nil
+					},
+				}
+			},
+			want: true,
+		},
 		{
 			name:    "trimmed log probes the replica",
 			trimmed: true,
@@ -283,6 +318,9 @@ func TestShip(t *testing.T) {
 			if tt.trimmed {
 				p.ops = nil
 			}
+			if tt.insync {
+				p.insync = []string{"node-b"}
+			}
 			answers = tt.answers(p)
 			assert.Equal(t, tt.want, m.ship(context.Background(), p, "node-b", 3, nil, false))
 			assert.Equal(t, tt.recovered, recovered)
@@ -314,6 +352,208 @@ func TestCommitToleratesUnrecordedJoin(t *testing.T) {
 	topo.insyncErr = errors.New("etcd down")
 	require.NoError(t, m.commit(context.Background(), p, false))
 	assert.Empty(t, p.insync)
+}
+
+// A bulk ships what it wrote to a replica that is not in sync yet: a new
+// index is replicated from its first bulk, not from the next probe.
+func TestCommitAllShipsToReplicaNotInSync(t *testing.T) {
+	name := "TestCommitAllShipsToReplicaNotInSync.index_1"
+	newDiskIndex(t, name)
+	topo := newFakeTopology("node-a")
+	topo.set(name, "node-a", "node-b")
+	var mu sync.Mutex
+	var seq uint64 // what the replica holds
+	calls := 0
+	transport := &funcTransport{replicate: func(_ string, b *Batch) (Ack, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		if b.From > seq+1 {
+			return Ack{Term: b.Term, Seq: seq}, ErrOutOfSync
+		}
+		seq = max(seq, b.From-1+uint64(len(b.Ops)))
+		return Ack{Term: b.Term, Seq: seq}, nil
+	}}
+	m := newManager(t, ModeDocument, topo, transport)
+	activate(t, m)
+	ctx := context.Background()
+	p, err := m.prepare(ctx, name)
+	require.NoError(t, err)
+
+	m.record(name, "0", []byte(testEntry))
+	require.True(t, p.dirty())
+	require.NoError(t, CommitAll(ctx, &Bulk{m: m}))
+	assert.Equal(t, uint64(1), seq)
+	insync, _ := topo.inSyncOf(name)
+	assert.Equal(t, []string{"node-b"}, insync)
+
+	m.record(name, "0", []byte(testEntry))
+	m.record(name, "0", []byte(testEntry))
+	require.NoError(t, CommitAll(ctx, &Bulk{m: m}))
+	assert.Equal(t, uint64(3), seq)
+
+	shipped := calls
+	assert.False(t, p.dirty())
+	require.NoError(t, CommitAll(ctx, &Bulk{m: m}))
+	assert.Equal(t, shipped, calls, "nothing was written since the last commit")
+}
+
+// A bulk has no path index to fence: CommitAll must fail the operations of
+// a partition that moved, whether it now has another owner or came back
+// under a new epoch, instead of acknowledging them.
+func TestCommitAllFailsMovedPartition(t *testing.T) {
+	tests := []struct {
+		name string
+		move func(topo *fakeTopology, index string)
+	}{
+		{name: "owned by another node", move: func(topo *fakeTopology, index string) { topo.set(index, "node-c", "node-b") }},
+		{name: "moved away and back", move: func(topo *fakeTopology, _ string) { topo.setEpoch(topo.Epoch("") + 1) }},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			name := fmt.Sprintf("TestCommitAllFailsMovedPartition.index_%d", i+1)
+			newDiskIndex(t, name)
+			topo := newFakeTopology("node-a")
+			topo.set(name, "node-a", "node-b")
+			transport := &funcTransport{replicate: func(_ string, b *Batch) (Ack, error) {
+				return Ack{Term: b.Term, Seq: b.From - 1 + uint64(len(b.Ops))}, nil
+			}}
+			m := newManager(t, ModeDocument, topo, transport)
+			activate(t, m)
+			ctx := context.Background()
+			_, err := m.prepare(ctx, name)
+			require.NoError(t, err)
+
+			m.record(name, "0", []byte(testEntry))
+			tt.move(topo, name)
+			assert.ErrorIs(t, CommitAll(ctx, &Bulk{m: m}), errStaleEpoch)
+		})
+	}
+}
+
+// A primary that left the map with operations of a running bulk, dropped by
+// cleanup or replaced under a new epoch, still fails that bulk; a later bulk
+// that wrote nothing to it is not failed by it.
+func TestCommitAllFailsRetiredPrimary(t *testing.T) {
+	tests := []struct {
+		name   string
+		retire func(m *manager, topo *fakeTopology, index string)
+	}{
+		{name: "dropped by cleanup after a move", retire: func(m *manager, topo *fakeTopology, index string) {
+			topo.set(index, "node-c", "node-b")
+			m.cleanup(context.Background())
+		}},
+		{name: "replaced under a new epoch", retire: func(m *manager, topo *fakeTopology, index string) {
+			topo.setEpoch(topo.Epoch("") + 1)
+			require.NotNil(t, m.primaryFor(index))
+		}},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			name := fmt.Sprintf("TestCommitAllFailsRetiredPrimary.index_%d", i+1)
+			newDiskIndex(t, name)
+			topo := newFakeTopology("node-a")
+			topo.set(name, "node-a", "node-b")
+			transport := &funcTransport{replicate: func(_ string, b *Batch) (Ack, error) {
+				return Ack{Term: b.Term, Seq: b.From - 1 + uint64(len(b.Ops))}, nil
+			}}
+			m := newManager(t, ModeDocument, topo, transport)
+			activate(t, m)
+			ctx := context.Background()
+
+			bulk, err := PrepareAll(ctx)
+			require.NoError(t, err)
+			m.record(name, "0", []byte(testEntry))
+			tt.retire(m, topo, name)
+			m.cleanup(ctx)
+			assert.ErrorIs(t, CommitAll(ctx, bulk), errStaleEpoch, "kept however long the bulk runs")
+			bulk.Done()
+			assert.Empty(t, m.retired, "no running bulk waits for it")
+
+			later, err := PrepareAll(ctx)
+			require.NoError(t, err)
+			defer later.Done()
+			assert.NoError(t, CommitAll(ctx, later), "the next bulk did not write to it")
+		})
+	}
+}
+
+// A primary replaced while an operation is recorded on it is retired with
+// that operation: record holds m.mu until it holds p.mu, so the replacement
+// cannot find the primary clean and drop it in between.
+func TestRecordRacesRetire(t *testing.T) {
+	name := "TestRecordRacesRetire.index_1"
+	newDiskIndex(t, name)
+	topo := newFakeTopology("node-a")
+	topo.set(name, "node-a")
+	m := newManager(t, ModeDocument, topo, newLoopTransport())
+	activate(t, m)
+	ctx := context.Background()
+	bulk, err := PrepareAll(ctx)
+	require.NoError(t, err)
+	defer bulk.Done()
+	p := m.primaryFor(name)
+	require.NotNil(t, p)
+
+	p.mu.Lock() // stops the recorder once it selected p
+	var wg sync.WaitGroup
+	wg.Go(func() { m.record(name, "0", []byte(testEntry)) })
+	assert.Eventually(t, func() bool {
+		if m.mu.TryLock() {
+			m.mu.Unlock()
+			return false
+		}
+		return true
+	}, 5*time.Second, time.Millisecond, "record released m.mu before it held p.mu")
+	wg.Go(func() {
+		topo.setEpoch(topo.Epoch("") + 1)
+		m.primaryFor(name)
+	})
+	p.mu.Unlock()
+	wg.Wait()
+
+	assert.Equal(t, uint64(1), p.seq)
+	assert.Equal(t, []*primary{p}, m.retired)
+	assert.ErrorIs(t, CommitAll(ctx, bulk), errStaleEpoch)
+}
+
+// A primary dropped after a failed promotion may hold operations of a
+// running bulk, it is retired like any other and fails the bulk.
+func TestPrepareFailureRetires(t *testing.T) {
+	name := "TestPrepareFailureRetires.index_1"
+	newDiskIndex(t, name)
+	topo := newFakeTopology("node-a")
+	topo.set(name, "node-a", "node-b")
+	m := newManager(t, ModeDocument, topo, newLoopTransport())
+	activate(t, m)
+	ctx := context.Background()
+	bulk, err := PrepareAll(ctx)
+	require.NoError(t, err)
+	defer bulk.Done()
+	delete(m.primaries, name)
+
+	m.record(name, "0", []byte(testEntry))
+	topo.listErr = errors.New("etcd down")
+	err = CommitAll(ctx, bulk)
+	topo.listErr = nil
+	assert.ErrorContains(t, err, "etcd down")
+	assert.NotContains(t, m.primaries, name)
+	assert.Len(t, m.retired, 1)
+}
+
+// A partition that moves after the first epoch check still fails the
+// commit of its primary, which is no longer writable here.
+func TestCommitRecordedMovedAfterCheck(t *testing.T) {
+	name := "TestCommitRecordedMovedAfterCheck.index_1"
+	newDiskIndex(t, name)
+	topo := newFakeTopology("node-a")
+	topo.set(name, "node-a")
+	m := newManager(t, ModeDocument, topo, newLoopTransport())
+	p := m.primaryFor(name)
+	require.NotNil(t, p)
+
+	topo.checked = func() { topo.set(name, "node-c") }
+	assert.ErrorIs(t, m.commitRecorded(context.Background(), p), errStaleEpoch)
 }
 
 // The background tick promotes owned indexes, probes their replicas,
@@ -406,8 +646,8 @@ func TestCleanup(t *testing.T) {
 	topo.set("TestCleanup.gone", "node-a")
 	m := newManager(t, ModeDocument, topo, newLoopTransport())
 	ctx := context.Background()
-	require.NoError(t, topo.UpdateInSync(ctx, name, []string{"node-b"}))
-	require.NoError(t, topo.UpdateInSync(ctx, "TestCleanup.gone", []string{"node-b"}))
+	require.NoError(t, topo.UpdateInSync(ctx, name, []string{"node-b"}, topo.Epoch(name)))
+	require.NoError(t, topo.UpdateInSync(ctx, "TestCleanup.gone", []string{"node-b"}, 7))
 	m.primaries["TestCleanup.gone"] = &primary{}
 	m.primaries[name] = &primary{}
 
@@ -473,7 +713,8 @@ func TestCommitAllShipsIndexesInParallel(t *testing.T) {
 	activate(t, m)
 	ctx := context.Background()
 
-	require.NoError(t, PrepareAll(ctx))
+	_, err := PrepareAll(ctx)
+	require.NoError(t, err)
 	for _, name := range names {
 		// only an index with an in-sync replica behind is committed
 		p := m.primaries[name]
@@ -482,7 +723,7 @@ func TestCommitAllShipsIndexesInParallel(t *testing.T) {
 		p.mu.Unlock()
 		m.record(name, "0", []byte(testEntry))
 	}
-	require.NoError(t, CommitAll(ctx))
+	require.NoError(t, CommitAll(ctx, &Bulk{m: m}))
 	mu.Lock()
 	assert.False(t, alone, "an index waited for another one to finish")
 	mu.Unlock()
@@ -500,7 +741,7 @@ func TestCommitAllShipsIndexesInParallel(t *testing.T) {
 	down = true
 	mu.Unlock()
 	topo.insyncErr = errors.New("etcd down")
-	err := CommitAll(ctx)
+	err = CommitAll(ctx, &Bulk{m: m})
 	topo.insyncErr = nil
 	for _, name := range names {
 		assert.ErrorContains(t, err, name)
@@ -538,14 +779,15 @@ func TestActiveManagerAPI(t *testing.T) {
 	assert.NoError(t, Prepare(ctx, replicated), "not owned here")
 	assert.NoError(t, Prepare(ctx, "TestActiveManagerAPI.missing"), "about to be created")
 	require.NoError(t, Prepare(ctx, owned))
-	require.NoError(t, PrepareAll(ctx))
+	_, prepErr := PrepareAll(ctx)
+	require.NoError(t, prepErr)
 	assert.NoError(t, Commit(ctx, replicated))
 
+	m.primaries[owned].insync = []string{"node-b"}
 	m.record(owned, "0", []byte(testEntry))
 	require.NoError(t, Commit(ctx, owned))
 	m.record(owned, "0", []byte(testEntry))
-	m.primaries[owned].insync = []string{"node-b"}
-	require.NoError(t, CommitAll(ctx))
+	require.NoError(t, CommitAll(ctx, &Bulk{m: m}))
 	mu.Lock()
 	assert.Equal(t, 2, shipped)
 	mu.Unlock()
@@ -553,7 +795,8 @@ func TestActiveManagerAPI(t *testing.T) {
 	delete(m.primaries, owned)
 	topo.listErr = errors.New("etcd down")
 	assert.Error(t, Commit(ctx, owned))
-	assert.Error(t, PrepareAll(ctx))
+	_, prepErr = PrepareAll(ctx)
+	assert.Error(t, prepErr)
 	topo.listErr = nil
 
 	assert.False(t, Ready(replicated))
@@ -592,6 +835,10 @@ func TestReadable(t *testing.T) {
 		})
 	}
 
+	member := true
+	previous := inSync
+	inSync = func(string) bool { return member }
+	t.Cleanup(func() { inSync = previous })
 	m := newManager(t, ModeDocument, newFakeTopology("node-b"), newLoopTransport())
 	activate(t, m)
 	m.replicaFor(installed).ready = true
@@ -600,4 +847,56 @@ func TestReadable(t *testing.T) {
 			assert.Equal(t, tt.want, Readable(tt.index))
 		})
 	}
+
+	// the owner dropped this replica: its copy misses acknowledged writes
+	member = false
+	assert.False(t, Readable(installed), "a copy outside the in-sync set serves no read")
+	assert.True(t, Readable(cold), "a cold index has no in-sync set")
+}
+
+// A copy is current once it is in the in-sync set and applied what the
+// owner shipped; a cold index is the same data on every node.
+func TestCurrent(t *testing.T) {
+	const disk, cold = "TestCurrent.index_1", "TestCurrent.index_2"
+	index := newDiskIndex(t, disk)
+	newColdIndex(t, cold)
+	member := true
+	previous := inSync
+	inSync = func(string) bool { return member }
+	t.Cleanup(func() { inSync = previous })
+
+	assert.True(t, Current(cold))
+	assert.False(t, Current("TestCurrent.missing"))
+	assert.False(t, Current(disk), "replication is off")
+
+	m := newManager(t, ModeDocument, newFakeTopology("node-b"), newLoopTransport())
+	activate(t, m)
+	assert.True(t, Current(disk), "nothing was shipped")
+	member = false
+	assert.False(t, Current(disk), "the owner dropped this replica from the in-sync set")
+	member = true
+
+	entry := []byte(`{"@_id":"1","@_action":"insert","@_shard":-1,"name":"one"}`)
+	require.NoError(t, core.ApplyReplicaEntries(index, firstShard(t, index), [][]byte{entry}))
+	waitDocs(t, index, 1)
+	assert.Eventually(t, func() bool { return Current(disk) }, 30*time.Second, 10*time.Millisecond)
+
+	// a catch-up writes the WAL, then restores membership: seen in sync, the
+	// entry it wrote is not applied yet
+	caughtUp := []byte(`{"@_id":"2","@_action":"insert","@_shard":-1,"name":"two"}`)
+	inSync = func(string) bool {
+		require.NoError(t, core.ApplyReplicaEntries(index, firstShard(t, index), [][]byte{caughtUp}))
+		return true
+	}
+	assert.False(t, Current(disk), "in sync again before the caught up entry is applied")
+	inSync = func(string) bool { return member }
+	assert.Eventually(t, func() bool { return Current(disk) }, 30*time.Second, 10*time.Millisecond)
+
+	// a segment replica serves its installed files, not the operations it kept
+	m.mode = ModeSegment
+	assert.False(t, Current(disk), "no replica state")
+	r := m.replicaFor(disk)
+	assert.True(t, Current(disk))
+	r.seq = r.filesSeq + 1
+	assert.False(t, Current(disk), "operations kept beyond the installed files")
 }

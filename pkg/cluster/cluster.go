@@ -11,7 +11,16 @@
 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 * See the License for the specific language governing permissions and
 * limitations under the License.
- */
+*
+Part of this work fall under the AtomAI Enterprise Edition (EE)
+and are licensed under the Business Source License 1.1,
+if you are the Cloud companies or your companies with revenue greater than $1M,
+please refer to [AGPL-3.0](./LICENSE-AGPL)) and [LICENSE-EE](./LICENSE-EE) for details,
+and production use of the Licensed Work requires a commercial license agreement with Zedsearch.
+Contact info@atomai.cc for licensing.
+
+The other parts of this work are licensed under the [Apache license](./LICENSE).
+*/
 
 package cluster
 
@@ -128,6 +137,12 @@ func startLocked(ctx context.Context, store Store) error {
 	fence := NewFence(assigner, local.ID, partitions)
 
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	// before joining: the leader must not hand partitions to a node that
+	// maps indexes onto them differently
+	if err := assigner.ClaimPartitions(runCtx); err != nil {
+		cancel()
+		return err
+	}
 	if err := membership.Join(runCtx); err != nil {
 		cancel()
 		return err
@@ -262,8 +277,9 @@ func Nodes() []NodeStatus {
 }
 
 // NodeAddr returns the advertised address of a node id. It is answered from
-// the member cache; a miss (a node that just joined) falls back to one read.
-func NodeAddr(id string) (string, bool) {
+// the member cache; a miss (a node that just joined) falls back to one read,
+// bounded by ctx and at most five seconds.
+func NodeAddr(ctx context.Context, id string) (string, bool) {
 	n := get()
 	if n == nil {
 		return "", false
@@ -274,7 +290,7 @@ func NodeAddr(id string) (string, bool) {
 	if addr, ok := n.membership.Addr(id); ok {
 		return addr, addr != ""
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	if err := n.membership.Refresh(ctx); err != nil {
 		log.Error().Err(err).Msg("cluster: list nodes")
@@ -324,6 +340,16 @@ func IsLocalReplica(indexName string) bool {
 		return false
 	}
 	return n.fence.IsLocalReplica(indexName)
+}
+
+// IsLocalInSync reports whether this node is in the in-sync set of
+// indexName, false when clustering is off.
+func IsLocalInSync(indexName string) bool {
+	n := get()
+	if n == nil {
+		return false
+	}
+	return n.fence.IsLocalInSync(indexName)
 }
 
 // CheckEpoch fails when the partition of indexName moved since epoch was
@@ -414,13 +440,18 @@ func heartbeat() (ttl, interval time.Duration) {
 }
 
 // UpdateInSync records the in-sync replicas of an index this node owns, nil
-// drops the entry. A no-op with clustering disabled.
-func UpdateInSync(ctx context.Context, index string, nodes []string) error {
+// drops the entry. epoch is the ownership epoch the caller took over the
+// index at; it fails when the partition is owned by another node, or moved
+// since that epoch. A no-op with clustering disabled.
+func UpdateInSync(ctx context.Context, index string, nodes []string, epoch int64) error {
 	n := get()
 	if n == nil {
 		return nil
 	}
-	return n.assigner.UpdateInSync(ctx, index, nodes)
+	if err := n.fence.CheckEpoch(index, epoch); err != nil {
+		return err
+	}
+	return n.assigner.UpdateInSync(ctx, index, nodes, epoch)
 }
 
 // InSync returns the in-sync map, empty with clustering disabled.

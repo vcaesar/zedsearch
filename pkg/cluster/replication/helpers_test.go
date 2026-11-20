@@ -26,9 +26,14 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/vcaesar/zedsearch/pkg/cluster"
 	"github.com/vcaesar/zedsearch/pkg/config"
 	"github.com/vcaesar/zedsearch/pkg/core"
 )
+
+// errStaleEpoch is what the fake answers an in-sync write of an old epoch,
+// the same error type the cluster returns.
+var errStaleEpoch error = &cluster.EpochError{Index: "fake", Owner: "node-c"}
 
 // fakeTopology is a hand-set cluster view.
 type fakeTopology struct {
@@ -37,8 +42,11 @@ type fakeTopology struct {
 	owners    map[string]string
 	replicas  map[string][]string
 	insync    map[string][]string
+	epoch     int64
 	insyncErr error
 	listErr   error
+	// checked runs after every CheckEpoch, to move a partition between checks
+	checked func()
 }
 
 func newFakeTopology(local string) *fakeTopology {
@@ -47,6 +55,7 @@ func newFakeTopology(local string) *fakeTopology {
 		owners:   map[string]string{},
 		replicas: map[string][]string{},
 		insync:   map[string][]string{},
+		epoch:    7,
 	}
 }
 
@@ -81,13 +90,37 @@ func (f *fakeTopology) Replicas(index string) []string {
 	return append([]string(nil), f.replicas[index]...)
 }
 
-func (f *fakeTopology) Epoch(string) int64 { return 7 }
+func (f *fakeTopology) Epoch(string) int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.epoch
+}
 
-func (f *fakeTopology) UpdateInSync(_ context.Context, index string, nodes []string) error {
+func (f *fakeTopology) CheckEpoch(index string, epoch int64) error {
+	if f.checked != nil {
+		defer f.checked()
+	}
+	if !f.IsOwner(index) || epoch != f.Epoch(index) {
+		return errStaleEpoch
+	}
+	return nil
+}
+
+// setEpoch moves ownership to a new epoch, as a handoff away and back would.
+func (f *fakeTopology) setEpoch(epoch int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.epoch = epoch
+}
+
+func (f *fakeTopology) UpdateInSync(_ context.Context, index string, nodes []string, epoch int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.insyncErr != nil {
 		return f.insyncErr
+	}
+	if epoch != f.epoch {
+		return errStaleEpoch
 	}
 	if nodes == nil {
 		delete(f.insync, index)
@@ -219,6 +252,7 @@ func newManager(t *testing.T, mode string, topo topology, transport Transport) *
 		transport: transport,
 		primaries: map[string]*primary{},
 		replicas:  map[string]*replica{},
+		bulks:     map[*Bulk]struct{}{},
 		ctx:       ctx,
 		cancel:    cancel,
 	}

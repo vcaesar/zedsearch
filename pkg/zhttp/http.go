@@ -20,6 +20,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"strconv"
 
 	"github.com/rs/zerolog/log"
 
@@ -125,6 +126,9 @@ func (c *HTTPContext) renderJSON(code int, obj interface{}, indent bool) {
 
 func (c *HTTPContext) Data(code int, contentType string, data []byte) {
 	c.Header("Content-Type", contentType)
+	// net/http chunks a body it was not told the length of, and a node
+	// proxying a chunked response flushes every chunk to the client
+	c.Header("Content-Length", strconv.Itoa(len(data)))
 	c.writer.WriteHeader(code)
 	if _, err := c.writer.Write(data); err != nil {
 		log.Warn().Err(err).Msg("http: write response")

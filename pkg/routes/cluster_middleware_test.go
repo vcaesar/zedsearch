@@ -367,6 +367,13 @@ func stubReplicaReadable(t *testing.T, readable bool) {
 	t.Cleanup(func() { replicaReadable = previous })
 }
 
+func stubReplicaCurrent(t *testing.T, current bool) {
+	t.Helper()
+	previous := replicaCurrent
+	replicaCurrent = func(string) bool { return current }
+	t.Cleanup(func() { replicaCurrent = previous })
+}
+
 func TestClusterRouteLocalReplica(t *testing.T) {
 	env := setupClusterEnv(t)
 	env.setReplicas(t, remoteIndex, "node-a")
@@ -374,17 +381,20 @@ func TestClusterRouteLocalReplica(t *testing.T) {
 	tests := []struct {
 		name      string
 		readable  bool
+		current   bool
 		method    string
 		path      string
 		wantLocal bool
 	}{
-		{name: "cold index read is served by the replica", readable: true, method: http.MethodGet, path: "/api/" + remoteIndex + "/_doc/1", wantLocal: true},
-		{name: "write still goes to the owner", readable: true, method: http.MethodPost, path: "/api/" + remoteIndex + "/_doc", wantLocal: false},
-		{name: "non cold index read goes to the owner", readable: false, method: http.MethodGet, path: "/api/" + remoteIndex + "/_doc/1", wantLocal: false},
+		{name: "cold index read is served by the replica", readable: true, current: true, method: http.MethodGet, path: "/api/" + remoteIndex + "/_doc/1", wantLocal: true},
+		{name: "write still goes to the owner", readable: true, current: true, method: http.MethodPost, path: "/api/" + remoteIndex + "/_doc", wantLocal: false},
+		{name: "non cold index read goes to the owner", readable: false, current: true, method: http.MethodGet, path: "/api/" + remoteIndex + "/_doc/1", wantLocal: false},
+		{name: "read of a copy still applying goes to the owner", readable: true, current: false, method: http.MethodGet, path: "/api/" + remoteIndex + "/_doc/1", wantLocal: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			stubReplicaReadable(t, tt.readable)
+			stubReplicaCurrent(t, tt.current)
 			w := env.do(httptest.NewRequest(tt.method, tt.path, nil))
 			assert.Equal(t, http.StatusOK, w.Code)
 			if tt.wantLocal {
@@ -434,20 +444,59 @@ func TestClusterRouteFallsBackToReplica(t *testing.T) {
 	})
 }
 
+// A copy still applying what it was shipped answers once its owner is gone:
+// the read would have nowhere else to go.
+func TestClusterRouteLaggingReplicaWithoutOwner(t *testing.T) {
+	env := setupClusterEnv(t)
+	env.own(t, remoteIndex, "node-gone")
+	env.setReplicas(t, remoteIndex, "node-a")
+	stubReplicaReadable(t, true)
+	stubReplicaCurrent(t, false)
+
+	w := env.do(httptest.NewRequest(http.MethodGet, "/api/"+remoteIndex+"/_doc/1", nil))
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "node-a")
+	assert.Empty(t, env.requests)
+}
+
 func TestGroupByOwnerUsesLocalReplica(t *testing.T) {
 	env := setupClusterEnv(t)
 	env.setReplicas(t, remoteIndex, "node-a")
 	indexes := []string{localIndex, remoteIndex}
 
 	stubReplicaReadable(t, false)
-	groups, replicas := groupByOwner(indexes)
+	groups, replicas := groupByOwner(context.Background(), indexes)
 	assert.Equal(t, map[string][]string{"node-a": {localIndex}, "node-b": {remoteIndex}}, groups)
 	assert.Empty(t, replicas)
 
 	stubReplicaReadable(t, true)
-	groups, replicas = groupByOwner(indexes)
+	stubReplicaCurrent(t, false)
+	groups, replicas = groupByOwner(context.Background(), indexes)
+	assert.Equal(t, map[string][]string{"node-a": {localIndex}, "node-b": {remoteIndex}}, groups, "a copy still applying is not asked")
+	assert.Empty(t, replicas)
+
+	stubReplicaCurrent(t, true)
+	groups, replicas = groupByOwner(context.Background(), indexes)
 	assert.Equal(t, map[string][]string{"node-a": {localIndex, remoteIndex}}, groups)
 	assert.Empty(t, replicas)
+}
+
+// A routing pass resolves each node once, and a cancelled request stops the
+// lookup of an owner missing from the member cache instead of waiting on it.
+func TestResolverResolvesOncePerPass(t *testing.T) {
+	setupClusterEnv(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r := newResolver(ctx)
+
+	start := time.Now()
+	assert.False(t, r.reachable("node-ghost"))
+	assert.Less(t, time.Since(start), time.Second, "the cancelled request bounds the lookup")
+	assert.True(t, r.reachable(localNodeID()))
+	assert.Contains(t, r.resolved, "node-ghost")
+
+	r.resolved["node-ghost"] = true
+	assert.True(t, r.reachable("node-ghost"), "the answer of the pass is reused")
 }
 
 func TestIsMultiTarget(t *testing.T) {

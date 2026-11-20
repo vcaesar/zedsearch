@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -90,9 +91,12 @@ func TestModeFromConfig(t *testing.T) {
 	assert.False(t, Enabled())
 	assert.Equal(t, ModeNone, Mode())
 	assert.NoError(t, Commit(context.Background(), "x"))
-	assert.NoError(t, CommitAll(context.Background()))
+	assert.NoError(t, CommitAll(context.Background(), nil))
 	assert.NoError(t, Prepare(context.Background(), "x"))
-	assert.NoError(t, PrepareAll(context.Background()))
+	bulk, prepErr := PrepareAll(context.Background())
+	assert.NoError(t, prepErr)
+	assert.Nil(t, bulk)
+	bulk.Done()
 	assert.False(t, Ready("x"))
 	_, err = Apply(&Batch{})
 	assert.Error(t, err)
@@ -185,7 +189,7 @@ func TestFailedReplicaIsMarkedStale(t *testing.T) {
 	ctx := context.Background()
 	env.bootstrapReplica(t)
 	p := env.owner.primaries[env.name]
-	require.NoError(t, env.ownerTopo.UpdateInSync(ctx, env.name, []string{"node-b"}))
+	require.NoError(t, env.ownerTopo.UpdateInSync(ctx, env.name, []string{"node-b"}, p.epoch))
 	p.insync = []string{"node-b"}
 
 	env.transport.down["node-b"] = true
@@ -201,7 +205,53 @@ func TestFailedReplicaIsMarkedStale(t *testing.T) {
 	assert.Empty(t, nodes)
 }
 
-// A replica that missed operations is caught up from the retained log; one
+// An add-only in-sync update the store rejects because the partition moved
+// fails the commit: the local fence may not have seen the move yet, so the
+// route's epoch check would still pass. Other failures only delay the add.
+func TestCommitFailsWhenAddIsFenced(t *testing.T) {
+	env := setupTwoNodes(t, ModeDocument, "TestCommitFailsWhenAddIsFenced.index_1")
+	ctx := context.Background()
+	env.bootstrapReplica(t)
+	p := env.owner.primaries[env.name]
+	shard := firstShard(t, env.source)
+
+	env.owner.record(env.name, shard, []byte(`{"@_id":"1","@_action":"insert","@_shard":-1}`))
+	env.ownerTopo.insyncErr = errors.New("etcd slow")
+	require.NoError(t, env.owner.commit(ctx, p, false), "a transient failure only delays adding the replica")
+
+	env.owner.record(env.name, shard, []byte(`{"@_id":"2","@_action":"insert","@_shard":-1}`))
+	env.ownerTopo.insyncErr = fmt.Errorf("store: %w", errStaleEpoch)
+	assert.ErrorIs(t, env.owner.commit(ctx, p, false), errStaleEpoch)
+}
+
+// Ownership left and came back while a commit of the old ownership was in
+// flight: that commit must not change the in-sync set under the new epoch,
+// and the next write runs on a fresh primary of the new epoch.
+func TestCommitOfOldEpochIsFenced(t *testing.T) {
+	env := setupTwoNodes(t, ModeDocument, "TestCommitOfOldEpochIsFenced.index_1")
+	ctx := context.Background()
+	env.bootstrapReplica(t)
+	old := env.owner.primaries[env.name]
+	require.NoError(t, env.ownerTopo.UpdateInSync(ctx, env.name, []string{"node-b"}, old.epoch))
+	old.insync = []string{"node-b"}
+
+	env.ownerTopo.setEpoch(old.epoch + 1)
+	env.transport.down["node-b"] = true
+	env.owner.record(env.name, "0", []byte(`{"@_id":"1","@_action":"insert","@_shard":-1}`))
+	assert.ErrorIs(t, env.owner.commit(ctx, old, false), errStaleEpoch)
+	nodes, _ := env.ownerTopo.inSyncOf(env.name)
+	assert.Equal(t, []string{"node-b"}, nodes, "the old ownership must not drop the replica")
+
+	p, err := env.owner.prepare(ctx, env.name)
+	require.NoError(t, err)
+	assert.NotSame(t, old, p)
+	assert.Equal(t, old.epoch+1, p.epoch)
+	assert.NotEqual(t, old.term, p.term)
+	require.NoError(t, env.owner.commit(ctx, p, false))
+	nodes, _ = env.ownerTopo.inSyncOf(env.name)
+	assert.Empty(t, nodes)
+}
+
 // on another term is asked to recover from files.
 func TestCatchUpAndRecovery(t *testing.T) {
 	env := setupTwoNodes(t, ModeSegment, "TestCatchUpAndRecovery.index_1")
@@ -274,6 +324,9 @@ func TestPrimaryTrimAndOpsFrom(t *testing.T) {
 	assert.Len(t, ops, 2)
 	assert.True(t, p.retained(4, 5))
 
+	assert.True(t, p.dirty(), "no commit shipped the operations yet")
+	p.shipped = 5
+	assert.False(t, p.dirty())
 	p.insync = []string{"n1"}
 	assert.True(t, p.dirty())
 	p.acked["n1"] = 5
@@ -471,7 +524,7 @@ func TestRemoteTranslog(t *testing.T) {
 func TestCleanupDropsDeletedIndexes(t *testing.T) {
 	topo := newFakeTopology("node-a")
 	topo.set("TestCleanupDropsDeletedIndexes.gone", "node-a")
-	require.NoError(t, topo.UpdateInSync(context.Background(), "TestCleanupDropsDeletedIndexes.gone", []string{}))
+	require.NoError(t, topo.UpdateInSync(context.Background(), "TestCleanupDropsDeletedIndexes.gone", []string{}, 7))
 	m := newManager(t, ModeDocument, topo, newLoopTransport())
 	m.replicas["TestCleanupDropsDeletedIndexes.other"] = new(replica)
 

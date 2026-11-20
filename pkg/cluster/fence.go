@@ -11,7 +11,16 @@
 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 * See the License for the specific language governing permissions and
 * limitations under the License.
- */
+*
+Part of this work fall under the AtomAI Enterprise Edition (EE)
+and are licensed under the Business Source License 1.1,
+if you are the Cloud companies or your companies with revenue greater than $1M,
+please refer to [AGPL-3.0](./LICENSE-AGPL)) and [LICENSE-EE](./LICENSE-EE) for details,
+and production use of the Licensed Work requires a commercial license agreement with Zedsearch.
+Contact info@atomai.cc for licensing.
+
+The other parts of this work are licensed under the [Apache license](./LICENSE).
+*/
 
 package cluster
 
@@ -68,6 +77,8 @@ type Fence struct {
 	mu          sync.RWMutex
 	assignments map[int]Assignment
 	replicas    map[int][]string
+	insync      map[string][]string
+	insyncRev   int64 // store revision insync was read or watched at
 }
 
 // NewFence builds an empty fence, call Refresh or Run to fill it.
@@ -81,6 +92,7 @@ func NewFence(assigner *Assigner, nodeID string, partitions int) *Fence {
 		partitions:  partitions,
 		assignments: make(map[int]Assignment),
 		replicas:    make(map[int][]string),
+		insync:      make(map[string][]string),
 	}
 }
 
@@ -102,6 +114,25 @@ func (f *Fence) Refresh(ctx context.Context) error {
 	f.mu.Lock()
 	f.assignments = assignments
 	f.replicas = replicas
+	seen := f.insyncRev
+	f.mu.Unlock()
+	// ownership is published first: a failed in-sync read must not keep
+	// routing on old assignments while the watch is down
+	insync, insyncRev, err := f.assigner.ListInSync(ctx)
+	if err != nil {
+		return err
+	}
+	f.mu.Lock()
+	switch {
+	case insyncRev >= f.insyncRev:
+		// a watch event newer than this read may already be applied
+		f.insync, f.insyncRev = insync, insyncRev
+	case insyncRev == 0 && f.insyncRev == seen:
+		// the key is absent and no watch event landed during the read: the
+		// cached set is older than the removal. Its revision stays, so a
+		// queued event for it is still ignored.
+		f.insync = insync
+	}
 	f.mu.Unlock()
 	return nil
 }
@@ -119,6 +150,11 @@ func (f *Fence) Run(ctx context.Context, resync time.Duration) {
 	if err != nil {
 		log.Error().Err(err).Msg("cluster: watch replicas")
 		replicaEvents = nil
+	}
+	insyncEvents, err := f.assigner.store.Watch(ctx, f.assigner.InSyncKey())
+	if err != nil {
+		log.Error().Err(err).Msg("cluster: watch in-sync set")
+		insyncEvents = nil
 	}
 	if err := f.Refresh(ctx); err != nil {
 		log.Error().Err(err).Msg("cluster: load assignments")
@@ -146,8 +182,43 @@ func (f *Fence) Run(ctx context.Context, resync time.Duration) {
 				continue
 			}
 			f.applyReplicas(event)
+		case event, ok := <-insyncEvents:
+			if !ok {
+				insyncEvents = nil
+				continue
+			}
+			f.applyInSync(event)
 		}
 	}
+}
+
+func (f *Fence) applyInSync(event Event) {
+	if event.KV.Key != f.assigner.InSyncKey() {
+		return
+	}
+	insync := make(map[string][]string)
+	if event.Type == EventPut {
+		if err := json.Unmarshal(event.KV.Value, &insync); err != nil {
+			log.Error().Err(err).Str("key", event.KV.Key).Msg("cluster: bad in-sync map")
+			return
+		}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	// an event queued before a Refresh must not undo a newer removal
+	if event.KV.Revision <= f.insyncRev {
+		return
+	}
+	f.insync, f.insyncRev = insync, event.KV.Revision
+}
+
+// IsLocalInSync reports whether this node is in the in-sync set of
+// indexName as last seen by the watch: the owner removes a replica that
+// failed a write before acknowledging that write.
+func (f *Fence) IsLocalInSync(indexName string) bool {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return slices.Contains(f.insync[indexName], f.nodeID)
 }
 
 func (f *Fence) applyReplicas(event Event) {

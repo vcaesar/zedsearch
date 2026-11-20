@@ -17,6 +17,7 @@ package zhttp
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -321,6 +322,46 @@ func TestEngineServe(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Serve did not return after Shutdown")
 	}
+}
+
+// A body larger than net/http's buffer still goes out with its length:
+// chunked, a node proxying the response would flush every chunk.
+func TestEngineDataDeclaresLength(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "larger than the write buffer", body: strings.Repeat("x", 5000)},
+		{name: "empty", body: ""},
+		{name: "multibyte", body: strings.Repeat("搜索é🙂", 700)},
+	}
+	e := New()
+	for i, tt := range tests {
+		e.GET(fmt.Sprintf("/data/%d", i), func(c Context) { c.Data(http.StatusOK, "text/plain", []byte(tt.body)) })
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	served := make(chan error, 1)
+	go func() { served <- e.Serve(ln) }()
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, err := http.Get(fmt.Sprintf("http://%s/data/%d", ln.Addr(), i))
+			require.NoError(t, err)
+			got, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			require.NoError(t, resp.Body.Close())
+			assert.Equal(t, tt.body, string(got))
+			assert.Equal(t, int64(len(tt.body)), resp.ContentLength, "the byte length, not the rune count")
+			assert.Empty(t, resp.TransferEncoding)
+		})
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, e.Shutdown(ctx))
+	assert.NoError(t, <-served)
 }
 
 func TestEngineClose(t *testing.T) {

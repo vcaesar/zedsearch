@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/vcaesar/zedsearch/pkg/core"
 	"github.com/vcaesar/zedsearch/pkg/meta/elastic"
@@ -98,6 +99,44 @@ func TestCatIndices(t *testing.T) {
 	})
 }
 
+func TestCatIndices_Sorted(t *testing.T) {
+	names := []string{"TestCatIndices_Sorted.index_b", "TestCatIndices_Sorted.index_a"}
+	for _, name := range names {
+		index, err := core.NewIndex(name, "disk", 1)
+		require.NoError(t, err)
+		require.NoError(t, core.StoreIndex(index))
+		t.Cleanup(func() { assert.NoError(t, core.DeleteIndex(name)) })
+	}
+
+	c, w := utils.NewContext()
+	utils.SetRequestParams(c, map[string]string{"target": "TestCatIndices_Sorted.*"})
+	utils.SetRequestURL(c, "/es/_cat/indices", map[string]string{"format": "json"})
+	CatIndices(c)
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	items := make([]elastic.CatIndexResponse, 0)
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &items))
+	require.Len(t, items, 2)
+	assert.Equal(t, names[1], items[0].Index)
+	assert.Equal(t, names[0], items[1].Index)
+}
+
+func TestCatHealthCluster(t *testing.T) {
+	startTestCluster(t, nil)
+
+	c, w := utils.NewContext()
+	utils.SetRequestURL(c, "/es/_cat/health", map[string]string{"format": "json"})
+	CatHealth(c)
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	items := make([]elastic.CatHealthResponse, 0)
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &items))
+	require.Len(t, items, 1)
+	assert.Equal(t, t.Name(), items[0].Cluster, "a cluster reports the configured name")
+	assert.Equal(t, "2", items[0].NodeTotal)
+	assert.Equal(t, "2", items[0].NodeData)
+}
+
 func TestCatHealth(t *testing.T) {
 	t.Run("json format", func(t *testing.T) {
 		c, w := utils.NewContext()
@@ -140,6 +179,7 @@ func TestFormatBytes(t *testing.T) {
 		{name: "kilobytes", size: 2048, want: "2.0kb"},
 		{name: "megabytes", size: 5 * 1024 * 1024, want: "5.0mb"},
 		{name: "gigabytes", size: 3 * 1024 * 1024 * 1024, want: "3.0gb"},
+		{name: "beyond petabytes", size: 2 << 60, want: "2048.0pb"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

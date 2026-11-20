@@ -11,7 +11,16 @@
 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 * See the License for the specific language governing permissions and
 * limitations under the License.
- */
+*
+Part of this work fall under the AtomAI Enterprise Edition (EE)
+and are licensed under the Business Source License 1.1,
+if you are the Cloud companies or your companies with revenue greater than $1M,
+please refer to [AGPL-3.0](./LICENSE-AGPL)) and [LICENSE-EE](./LICENSE-EE) for details,
+and production use of the Licensed Work requires a commercial license agreement with Zedsearch.
+Contact info@atomai.cc for licensing.
+
+The other parts of this work are licensed under the [Apache license](./LICENSE).
+*/
 
 package replication
 
@@ -28,6 +37,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/vcaesar/zedsearch/pkg/cluster"
 	"github.com/vcaesar/zedsearch/pkg/core"
 	"github.com/vcaesar/zedsearch/pkg/zutils/json"
 )
@@ -40,6 +50,7 @@ import (
 // owner it followed and recover instead of mixing two histories.
 type primary struct {
 	index  string
+	epoch  int64 // ownership epoch the term belongs to, guards in-sync writes
 	term   string
 	remote bool
 	// storageType is the bucket of a remote index
@@ -54,6 +65,8 @@ type primary struct {
 	opsBytes int    // size of the retained entries
 	acked    map[string]uint64
 	insync   []string
+	last     uint64   // manager.recorded at the latest operation
+	shipped  uint64   // last operation a commit took to the replicas
 	uploaded uint64   // remote: last operation in the bucket
 	sums     sumCache // of the owned segments, for incremental snapshots
 
@@ -83,6 +96,11 @@ func (p *primary) dirty() bool {
 	defer p.mu.Unlock()
 	if p.remote {
 		return p.uploaded < p.seq
+	}
+	// a write no commit shipped yet also reaches a replica that is not in
+	// sync: a new index is replicated from its first bulk, not the next probe
+	if p.shipped < p.seq {
+		return true
 	}
 	for _, node := range p.insync {
 		if p.acked[node] < p.seq {
@@ -129,29 +147,74 @@ func (p *primary) trim(replicas []string) {
 }
 
 // record is core.WALHook: it appends a local write to the operation log
-// of the index when this node owns it.
+// of the index when this node owns it. p.mu is taken before m.mu is
+// released, so a retire, which runs under m.mu, sees the operation and
+// keeps p for the bulk that wrote it.
 func (m *manager) record(index, shard string, entry []byte) {
 	if !m.topo.IsOwner(index) {
 		return
 	}
-	p := m.primaryFor(index)
+	m.mu.Lock()
+	p := m.primaryLocked(index)
 	if p == nil {
+		m.mu.Unlock()
 		return
 	}
 	p.mu.Lock()
+	m.mu.Unlock()
 	p.seq++
 	p.ops = append(p.ops, Op{Seq: p.seq, Shard: shard, Entry: append(json.RawMessage(nil), entry...)})
 	p.opsBytes += len(entry)
+	p.last = m.recorded.Add(1)
 	p.mu.Unlock()
 }
 
+// recordedSince reports whether p took an operation after mark.
+func (p *primary) recordedSince(mark uint64) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.last > mark
+}
+
+// retire keeps a primary leaving the map while a running bulk may have
+// written to it, CommitAll of that bulk still finds it. m.mu must be held.
+func (m *manager) retire(p *primary) {
+	if m.awaited(p) {
+		m.retired = append(m.retired, p)
+	}
+}
+
+// awaited reports whether a running bulk began before the latest operation
+// of p. m.mu must be held.
+func (m *manager) awaited(p *primary) bool {
+	p.mu.Lock()
+	last := p.last
+	p.mu.Unlock()
+	for b := range m.bulks {
+		if last > b.mark {
+			return true
+		}
+	}
+	return false
+}
+
 // primaryFor returns the state of an owned writable index, created on
-// first use. Nil for cold indexes, which take no writes.
+// first use and again once ownership moved to a new epoch: a commit still
+// running on the old one fails its in-sync write. Nil for cold indexes,
+// which take no writes. The epoch is read under m.mu: one read before it
+// could replace the primary a later caller installed for a newer epoch.
 func (m *manager) primaryFor(name string) *primary {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if p, ok := m.primaries[name]; ok {
-		return p
+	return m.primaryLocked(name)
+}
+
+// primaryLocked is primaryFor with m.mu held.
+func (m *manager) primaryLocked(name string) *primary {
+	epoch := m.topo.Epoch(name)
+	old, ok := m.primaries[name]
+	if ok && old.epoch == epoch {
+		return old
 	}
 	index, ok := core.GetIndex(name)
 	if !ok || index.IsCold() {
@@ -159,12 +222,16 @@ func (m *manager) primaryFor(name string) *primary {
 	}
 	p := &primary{
 		index: name,
-		term:  newTerm(m.topo.Epoch(name)),
+		epoch: epoch,
+		term:  newTerm(epoch),
 		acked: make(map[string]uint64),
 	}
 	if !index.IsDisk() {
 		p.remote = true
 		p.storageType = index.GetStorageType()
+	}
+	if old != nil {
+		m.retire(old)
 	}
 	m.primaries[name] = p
 	return p
@@ -188,6 +255,7 @@ func (m *manager) prepare(ctx context.Context, name string) (*primary, error) {
 	if p.prepErr != nil {
 		m.mu.Lock()
 		if m.primaries[name] == p {
+			m.retire(p)
 			delete(m.primaries, name)
 		}
 		m.mu.Unlock()
@@ -219,7 +287,7 @@ func (m *manager) promote(ctx context.Context, p *primary) error {
 	}
 	local := m.topo.LocalID()
 	nodes := slices.DeleteFunc(append([]string{}, insync[p.index]...), func(node string) bool { return node == local })
-	if err := m.topo.UpdateInSync(ctx, p.index, nodes); err != nil {
+	if err := m.topo.UpdateInSync(ctx, p.index, nodes, p.epoch); err != nil {
 		return err
 	}
 	p.mu.Lock()
@@ -274,14 +342,20 @@ func (m *manager) commit(ctx context.Context, p *primary, probe bool) error {
 	sort.Strings(next)
 
 	p.mu.Lock()
+	p.shipped = max(p.shipped, target)
 	p.trim(replicas)
 	p.mu.Unlock()
 	if slices.Equal(next, insync) {
 		return nil
 	}
-	if err := m.topo.UpdateInSync(ctx, p.index, next); err != nil {
+	if err := m.topo.UpdateInSync(ctx, p.index, next, p.epoch); err != nil {
 		if removed := slices.ContainsFunc(insync, func(node string) bool { return !slices.Contains(next, node) }); removed {
 			return fmt.Errorf("replication: cannot mark stale replicas of [%s]: %w", p.index, err)
+		}
+		// the store saw the partition move before the local fence did: the
+		// new owner never fenced these operations
+		if _, moved := errors.AsType[*cluster.EpochError](err); moved {
+			return fmt.Errorf("replication: record caught up replicas of [%s]: %w", p.index, err)
 		}
 		log.Warn().Err(err).Str("index", p.index).Msg("replication: record caught up replicas")
 		return nil
@@ -300,6 +374,7 @@ func (m *manager) ship(ctx context.Context, p *primary, node string, target uint
 	p.mu.Lock()
 	from := p.acked[node] + 1
 	known := p.acked[node] > 0
+	insync := slices.Contains(p.insync, node)
 	p.mu.Unlock()
 	if !probe && known && from > target {
 		return true
@@ -310,12 +385,14 @@ func (m *manager) ship(ctx context.Context, p *primary, node string, target uint
 		ops, ok := p.opsFrom(from, target)
 		p.mu.Unlock()
 		batch := &Batch{Index: p.index, Term: p.term, From: from, Ops: ops}
-		if !ok {
-			// the operations are gone: ask where the replica is
+		if !ok || !insync {
+			// the operations are gone, or the replica may be recovering and
+			// would refuse the whole log: ask where it is
 			batch = &Batch{Index: p.index, Term: p.term, From: target + 1}
 		} else if len(ops) > 0 {
 			batch.Mappings = mappings
 		}
+		insync = true
 		ack, err := m.transport.Replicate(ctx, node, batch)
 		if err == nil {
 			p.mu.Lock()

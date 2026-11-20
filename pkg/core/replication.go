@@ -168,6 +168,27 @@ func (index *Index) WaitApplied(timeout time.Duration) error {
 	return nil
 }
 
+// Applied reports whether every entry in the open shard WALs was applied to
+// the writers, so a search sees everything written so far.
+func (index *Index) Applied() bool {
+	for _, shard := range index.shards {
+		shard.lock.RLock()
+		w := shard.wal
+		shard.lock.RUnlock()
+		if w == nil {
+			continue
+		}
+		last, err := w.LastIndex()
+		if err != nil {
+			return false
+		}
+		if committed, err := shard.committedIndex(); err != nil || committed < last {
+			return false
+		}
+	}
+	return true
+}
+
 // committedIndex returns the last WAL entry applied to the writers. It fails
 // once the WAL is closed, by a flush, tier move or delete: what was left to
 // apply is unknown then. A WAL opened again continues the same redo log.

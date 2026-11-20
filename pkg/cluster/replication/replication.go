@@ -11,7 +11,16 @@
 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 * See the License for the specific language governing permissions and
 * limitations under the License.
- */
+*
+Part of this work fall under the AtomAI Enterprise Edition (EE)
+and are licensed under the Business Source License 1.1,
+if you are the Cloud companies or your companies with revenue greater than $1M,
+please refer to [AGPL-3.0](./LICENSE-AGPL)) and [LICENSE-EE](./LICENSE-EE) for details,
+and production use of the Licensed Work requires a commercial license agreement with Zedsearch.
+Contact info@atomai.cc for licensing.
+
+The other parts of this work are licensed under the [Apache license](./LICENSE).
+*/
 
 // Package replication keeps the data of every index on more than one node,
 // following the three OpenSearch replication paths:
@@ -37,7 +46,9 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -83,7 +94,8 @@ type topology interface {
 	IsReplica(index string) bool
 	Replicas(index string) []string
 	Epoch(index string) int64
-	UpdateInSync(ctx context.Context, index string, nodes []string) error
+	CheckEpoch(index string, epoch int64) error
+	UpdateInSync(ctx context.Context, index string, nodes []string, epoch int64) error
 	InSync(ctx context.Context) (map[string][]string, error)
 }
 
@@ -116,8 +128,12 @@ func (clusterTopology) Epoch(index string) int64 {
 	return epoch
 }
 
-func (clusterTopology) UpdateInSync(ctx context.Context, index string, nodes []string) error {
-	return cluster.UpdateInSync(ctx, index, nodes)
+func (clusterTopology) CheckEpoch(index string, epoch int64) error {
+	return cluster.CheckEpoch(index, epoch)
+}
+
+func (clusterTopology) UpdateInSync(ctx context.Context, index string, nodes []string, epoch int64) error {
+	return cluster.UpdateInSync(ctx, index, nodes, epoch)
 }
 
 func (clusterTopology) InSync(ctx context.Context) (map[string][]string, error) {
@@ -134,6 +150,13 @@ type manager struct {
 	mu        sync.Mutex
 	primaries map[string]*primary
 	replicas  map[string]*replica
+	// retired keeps primaries replaced or dropped while a running bulk may
+	// have written to them, so that bulk fails instead of skipping them
+	retired []*primary
+	// bulks are the running bulks, from PrepareAll to Done
+	bulks map[*Bulk]struct{}
+	// recorded counts operations of every index, a bulk marks where it began
+	recorded atomic.Uint64
 
 	ctx    context.Context // cancelled by Stop
 	cancel context.CancelFunc
@@ -209,6 +232,7 @@ func start(ctx context.Context, mode string, interval time.Duration, topo topolo
 		transport: transport,
 		primaries: make(map[string]*primary),
 		replicas:  make(map[string]*replica),
+		bulks:     make(map[*Bulk]struct{}),
 		ctx:       runCtx,
 		cancel:    cancel,
 	}
@@ -366,8 +390,9 @@ func (m *manager) replicaTick(name string) {
 // replicates, and the in-sync entries of deleted indexes it owns.
 func (m *manager) cleanup(ctx context.Context) {
 	m.mu.Lock()
-	for name := range m.primaries {
+	for name, p := range m.primaries {
 		if _, exists := core.GetIndex(name); !exists || !m.topo.IsOwner(name) {
+			m.retire(p)
 			delete(m.primaries, name)
 		}
 	}
@@ -387,7 +412,7 @@ func (m *manager) cleanup(ctx context.Context) {
 		if _, exists := core.GetIndex(name); exists || !m.topo.IsOwner(name) {
 			continue
 		}
-		if err := m.topo.UpdateInSync(ctx, name, nil); err != nil {
+		if err := m.topo.UpdateInSync(ctx, name, nil, m.topo.Epoch(name)); err != nil {
 			log.Warn().Err(err).Str("index", name).Msg("replication: drop in-sync entry")
 		}
 	}
@@ -405,14 +430,41 @@ func Prepare(ctx context.Context, index string) error {
 	return err
 }
 
+// Bulk is a running write that names its indexes in the body (`_bulk`),
+// from PrepareAll until Done. Primaries retired while it runs are kept for
+// its CommitAll, however long the request takes. A nil Bulk is a no-op.
+type Bulk struct {
+	m    *manager
+	mark uint64 // manager.recorded when the bulk began
+}
+
+// Done ends the bulk and drops the retired primaries no running bulk
+// waits for. It must be called once the bulk returns.
+func (b *Bulk) Done() {
+	if b == nil {
+		return
+	}
+	m := b.m
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.bulks, b)
+	m.retired = slices.DeleteFunc(m.retired, func(p *primary) bool { return !m.awaited(p) })
+}
+
 // PrepareAll prepares every writable index owned here, for writes that
 // name their indexes in the body (`_bulk`): a promoted node must replay
-// what it kept before such a write lands.
-func PrepareAll(ctx context.Context) error {
+// what it kept before such a write lands. The bulk it returns is handed to
+// CommitAll; on error it is already done.
+func PrepareAll(ctx context.Context) (*Bulk, error) {
 	m := get()
 	if m == nil {
-		return nil
+		return nil, nil
 	}
+	b := &Bulk{m: m}
+	m.mu.Lock()
+	b.mark = m.recorded.Load()
+	m.bulks[b] = struct{}{}
+	m.mu.Unlock()
 	var errs []error
 	for _, index := range core.ZED_INDEX_LIST.List() {
 		if name := index.GetName(); m.writable(name) {
@@ -420,7 +472,11 @@ func PrepareAll(ctx context.Context) error {
 			errs = append(errs, err)
 		}
 	}
-	return errors.Join(errs...)
+	if err := errors.Join(errs...); err != nil {
+		b.Done()
+		return nil, err
+	}
+	return b, nil
 }
 
 // writable reports whether index is an existing writable index owned here.
@@ -453,25 +509,36 @@ func Commit(ctx context.Context, index string) error {
 // CommitAll commits every index with recorded operations, for writes that
 // name their indexes in the body (`_bulk`). The indexes ship side by side:
 // a bulk over many of them waits for the slowest, not for their sum.
-func CommitAll(ctx context.Context) error {
-	m := get()
-	if m == nil {
+//
+// A primary retired with an operation recorded after b began fails it:
+// its partition moved and the new owner may lack that operation. WAL
+// entries carry no request, so an operation of a concurrent request counts
+// too; such a bulk gets a 409 and retries, it is never acknowledged for a
+// write the new owner did not fence.
+func CommitAll(ctx context.Context, b *Bulk) error {
+	if b == nil {
 		return nil
 	}
+	m, mark := b.m, b.mark
 	m.mu.Lock()
-	pending := make([]string, 0, len(m.primaries))
-	for name, p := range m.primaries {
+	pending := make([]*primary, 0, len(m.primaries))
+	for _, p := range m.primaries {
 		if p.dirty() {
-			pending = append(pending, name)
+			pending = append(pending, p)
+		}
+	}
+	for _, p := range m.retired {
+		if p.recordedSince(mark) {
+			pending = append(pending, p)
 		}
 	}
 	m.mu.Unlock()
 	errs := make([]error, len(pending))
 	var group errgroup.Group
 	group.SetLimit(commitParallelism)
-	for i, name := range pending {
+	for i, p := range pending {
 		group.Go(func() error {
-			errs[i] = Commit(ctx, name)
+			errs[i] = m.commitRecorded(ctx, p)
 			return errs[i]
 		})
 	}
@@ -479,6 +546,27 @@ func CommitAll(ctx context.Context) error {
 		return nil
 	}
 	return errors.Join(errs...) // every failed index, not only the first
+}
+
+// commitRecorded commits what p recorded. It fails when the partition moved
+// since p was created, before or while shipping: the new owner never fenced
+// those operations. A `_bulk` has no path index for the route to check, so
+// this is its only ownership check.
+func (m *manager) commitRecorded(ctx context.Context, p *primary) error {
+	if err := m.topo.CheckEpoch(p.index, p.epoch); err != nil {
+		return err
+	}
+	if !m.writable(p.index) {
+		// deleted meanwhile, or moved since the check above
+		return m.topo.CheckEpoch(p.index, p.epoch)
+	}
+	if _, err := m.prepare(ctx, p.index); err != nil {
+		return err
+	}
+	if err := m.commit(ctx, p, false); err != nil {
+		return err
+	}
+	return m.topo.CheckEpoch(p.index, p.epoch)
 }
 
 // Ready reports whether this node holds a usable copy of index as a
@@ -497,8 +585,42 @@ func Ready(index string) bool {
 // Readable reports whether this node may serve reads of an index it
 // replicates: a cold index is read-only on object storage, so every node
 // sees the same data; a disk index qualifies once its replicated copy is
-// installed.
+// installed and while it is in the in-sync set. The owner drops a failed
+// replica from the set before acknowledging the write it missed, so such a
+// copy serves no read, not even as a fallback for an unreachable owner.
 func Readable(name string) bool {
 	index, ok := core.GetIndex(name)
-	return ok && (index.IsCold() || Ready(name))
+	return ok && (index.IsCold() || Ready(name) && inSync(name))
 }
+
+// Current reports whether the copy this node replicates holds every write
+// the owner acknowledged: it is in the in-sync set, which the owner leaves
+// a failed replica out of before acknowledging, and it applied everything
+// it received. A segment replica answers from its installed files, so
+// operations it only kept leave it behind until its next checkpoint.
+func Current(name string) bool {
+	index, ok := core.GetIndex(name)
+	if !ok {
+		return false
+	}
+	if index.IsCold() {
+		return true
+	}
+	m := get()
+	// in-sync first: a catch-up restores membership after writing the WAL,
+	// before applying it
+	if m == nil || !inSync(name) || !index.Applied() {
+		return false
+	}
+	if m.mode != ModeSegment {
+		return true
+	}
+	m.mu.Lock()
+	r := m.replicas[name]
+	m.mu.Unlock()
+	return r != nil && !r.hasKept()
+}
+
+// inSync reports whether this node is in the in-sync set of an index. A
+// variable for tests.
+var inSync = cluster.IsLocalInSync

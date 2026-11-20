@@ -11,7 +11,16 @@
 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 * See the License for the specific language governing permissions and
 * limitations under the License.
- */
+*
+Part of this work fall under the AtomAI Enterprise Edition (EE)
+and are licensed under the Business Source License 1.1,
+if you are the Cloud companies or your companies with revenue greater than $1M,
+please refer to [AGPL-3.0](./LICENSE-AGPL)) and [LICENSE-EE](LICENSE-EE) for details,
+and production use of the Licensed Work requires a commercial license agreement with Zedsearch.
+Contact info@atomai.cc for licensing.
+
+The other parts of this work are licensed under the [Apache license](./LICENSE).
+*/
 
 package cluster
 
@@ -35,7 +44,6 @@ import (
 const (
 	// ClusterName is the single node cluster name reported to ES clients.
 	ClusterName = "zedsearch"
-	statusGreen = "green"
 	statusOpen  = "open"
 )
 
@@ -74,6 +82,11 @@ func CatIndices(c zhttp.Context) {
 	sort.Slice(indexes, func(i, j int) bool {
 		return indexes[i].GetName() < indexes[j].GetName()
 	})
+	names := make([]string, 0, len(indexes))
+	for _, index := range indexes {
+		names = append(names, index.GetName())
+	}
+	health := cluster.Health(c.Context(), names)
 
 	items := make([]elastic.CatIndexResponse, 0, len(indexes))
 	for _, index := range indexes {
@@ -83,7 +96,7 @@ func CatIndices(c zhttp.Context) {
 			replicas = settings.NumberOfReplicas
 		}
 		items = append(items, elastic.CatIndexResponse{
-			Health: statusGreen,
+			Health: health[index.GetName()].Status,
 			Status: statusOpen,
 			Index:  index.GetName(),
 			// zed has no index uuid, the name identifies the index
@@ -125,23 +138,23 @@ func CatIndices(c zhttp.Context) {
 // @Router /es/_cat/health [get]
 func CatHealth(c zhttp.Context) {
 	now := time.Now()
-	shards := activeShards("")
+	shards := countShards(c.Context(), "")
 	nodes := strconv.Itoa(len(cluster.Nodes()))
 	item := elastic.CatHealthResponse{
 		Epoch:               strconv.FormatInt(now.Unix(), 10),
 		Timestamp:           now.UTC().Format("15:04:05"),
 		Cluster:             clusterName(),
-		Status:              statusGreen,
+		Status:              shards.status,
 		NodeTotal:           nodes,
 		NodeData:            nodes,
-		Shards:              strconv.FormatInt(shards, 10),
-		Pri:                 strconv.FormatInt(shards, 10),
+		Shards:              strconv.FormatInt(shards.active(), 10),
+		Pri:                 strconv.FormatInt(shards.primaries, 10),
 		Relo:                "0",
 		Init:                "0",
-		Unassign:            "0",
+		Unassign:            strconv.FormatInt(shards.unassigned, 10),
 		PendingTasks:        "0",
 		MaxTaskWaitTime:     "-",
-		ActiveShardsPercent: "100.0%",
+		ActiveShardsPercent: fmt.Sprintf("%.1f%%", shards.activePercent()),
 	}
 
 	if isJSONFormat(c) {

@@ -202,6 +202,108 @@ func TestFenceWatchTracksHandoff(t *testing.T) {
 	assert.Error(t, fence.CheckEpoch(index, first.Epoch))
 }
 
+// A replica the owner drops from the in-sync set learns it from the watch.
+func TestFenceWatchTracksInSync(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store := NewMemoryStore()
+	defer func() { require.NoError(t, store.Close()) }()
+
+	fence, assigner := newTestFence(t, store, "node-b")
+	const index = "logs-2024"
+	partition := PartitionOfN(index, fencePartitions)
+	owned, ok, err := assigner.Set(ctx, partition, "node-a", 0)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.NoError(t, assigner.UpdateInSync(ctx, index, []string{"node-b"}, owned.Epoch))
+
+	go fence.Run(ctx, time.Minute)
+	require.Eventually(t, func() bool { return fence.IsLocalInSync(index) }, 2*time.Second, 5*time.Millisecond)
+	assert.False(t, fence.IsLocalInSync("other"))
+
+	require.NoError(t, assigner.UpdateInSync(ctx, index, []string{}, owned.Epoch))
+	require.Eventually(t, func() bool { return !fence.IsLocalInSync(index) }, 2*time.Second, 5*time.Millisecond)
+
+	require.NoError(t, assigner.UpdateInSync(ctx, index, []string{"node-b"}, owned.Epoch))
+	require.Eventually(t, func() bool { return fence.IsLocalInSync(index) }, 2*time.Second, 5*time.Millisecond)
+	require.NoError(t, store.Delete(ctx, assigner.InSyncKey()))
+	require.Eventually(t, func() bool { return !fence.IsLocalInSync(index) }, 2*time.Second, 5*time.Millisecond)
+}
+
+// An in-sync event queued before a Refresh must not undo the newer state the
+// Refresh read, a removed replica would otherwise serve reads again.
+func TestFenceIgnoresStaleInSyncEvent(t *testing.T) {
+	ctx := context.Background()
+	fence, assigner := newTestFence(t, NewMemoryStore(), "node-b")
+	owned, ok, err := assigner.Set(ctx, PartitionOfN("logs", fencePartitions), "node-a", 0)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.NoError(t, assigner.UpdateInSync(ctx, "logs", []string{"node-b"}, owned.Epoch))
+	_, added, err := assigner.ListInSync(ctx)
+	require.NoError(t, err)
+	require.NoError(t, assigner.UpdateInSync(ctx, "logs", []string{}, owned.Epoch))
+
+	require.NoError(t, fence.Refresh(ctx))
+	assert.False(t, fence.IsLocalInSync("logs"))
+	stale := Event{Type: EventPut, KV: KV{Key: assigner.InSyncKey(), Value: []byte(`{"logs":["node-b"]}`), Revision: added}}
+	fence.applyInSync(stale)
+	assert.False(t, fence.IsLocalInSync("logs"), "the queued add is older than the removal")
+
+	fence.applyInSync(Event{Type: EventPut, KV: KV{Key: assigner.InSyncKey(), Value: []byte(`{"logs":["node-b"]}`), Revision: added + 100}})
+	assert.True(t, fence.IsLocalInSync("logs"), "a newer event applies")
+}
+
+// A failed in-sync read still publishes the ownership read before it.
+func TestFenceRefreshInSyncFails(t *testing.T) {
+	store := newFaultStore(failOn(errFault, "/test/insync", "Get"))
+	fence, assigner := newTestFence(t, store, "node-a")
+	_, ok, err := assigner.Set(context.Background(), PartitionOfN("logs", fencePartitions), "node-b", 0)
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.ErrorIs(t, fence.Refresh(context.Background()), errFault)
+	owner, _, ok := fence.Owner("logs")
+	assert.True(t, ok)
+	assert.Equal(t, "node-b", owner)
+}
+
+// A Refresh that finds the in-sync key gone clears the membership a missed
+// delete left behind, and still ignores the event that set it. A watch event
+// that lands during that read is newer than it and stays.
+func TestFenceRefreshClearsAbsentInSync(t *testing.T) {
+	tests := []struct {
+		name   string
+		during int64 // revision of an event applied while Refresh reads, 0 for none
+		want   bool
+	}{
+		{name: "missed delete", want: false},
+		{name: "event during the read", during: 6, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newFaultStore(nil)
+			fence, assigner := newTestFence(t, store, "node-b")
+			put := func(revision int64) Event {
+				return Event{Type: EventPut, KV: KV{Key: assigner.InSyncKey(), Value: []byte(`{"logs":["node-b"]}`), Revision: revision}}
+			}
+			fence.applyInSync(put(5))
+			require.True(t, fence.IsLocalInSync("logs"))
+			if tt.during > 0 {
+				store.setRule(func(op, key string) error {
+					if op == "Get" && key == assigner.InSyncKey() {
+						fence.applyInSync(put(tt.during))
+					}
+					return nil
+				})
+			}
+
+			require.NoError(t, fence.Refresh(context.Background()))
+			assert.Equal(t, tt.want, fence.IsLocalInSync("logs"))
+			fence.applyInSync(put(5))
+			assert.Equal(t, tt.want, fence.IsLocalInSync("logs"), "the queued add is older than the read")
+		})
+	}
+}
+
 func TestFenceDefaultsAndError(t *testing.T) {
 	fence := NewFence(NewAssigner(NewMemoryStore(), "/test/", 0), "node-a", 0)
 	assert.Equal(t, DefaultPartitions, fence.partitions)
@@ -235,11 +337,11 @@ func TestFenceRunStopsOnClosedWatch(t *testing.T) {
 		defer close(done)
 		fence.Run(ctx, time.Minute)
 	}()
-	// closing the store ends both watch streams, Run keeps going until ctx ends
+	// closing the store ends every watch stream, Run keeps going until ctx ends
 	require.Eventually(t, func() bool {
 		store.mu.Lock()
 		defer store.mu.Unlock()
-		return len(store.watchers) == 2
+		return len(store.watchers) == 3
 	}, time.Second, time.Millisecond)
 	require.NoError(t, store.Close())
 	time.Sleep(10 * time.Millisecond)
@@ -258,6 +360,9 @@ func TestFenceApplyIgnoresBadEvents(t *testing.T) {
 
 	fence.applyReplicas(Event{Type: EventPut, KV: KV{Key: "/other", Value: []byte(`{"1":["b"]}`)}})
 	fence.applyReplicas(Event{Type: EventPut, KV: KV{Key: assigner.ReplicasKey(), Value: []byte("{")}})
+	fence.applyInSync(Event{Type: EventPut, KV: KV{Key: "/other", Value: []byte(`{"logs":["node-a"]}`)}})
+	fence.applyInSync(Event{Type: EventPut, KV: KV{Key: assigner.InSyncKey(), Value: []byte("{")}})
+	assert.False(t, fence.IsLocalInSync("logs"))
 	fence.mu.RLock()
 	defer fence.mu.RUnlock()
 	assert.Empty(t, fence.replicas)

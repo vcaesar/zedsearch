@@ -11,7 +11,16 @@
 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 * See the License for the specific language governing permissions and
 * limitations under the License.
- */
+*
+Part of this work fall under the AtomAI Enterprise Edition (EE)
+and are licensed under the Business Source License 1.1,
+if you are the Cloud companies or your companies with revenue greater than $1M,
+please refer to [AGPL-3.0](./LICENSE-AGPL)) and [LICENSE-EE](./LICENSE-EE) for details,
+and production use of the Licensed Work requires a commercial license agreement with Zedsearch.
+Contact info@atomai.cc for licensing.
+
+The other parts of this work are licensed under the [Apache license](./LICENSE).
+*/
 
 package cluster
 
@@ -59,6 +68,13 @@ type Event struct {
 	KV   KV
 }
 
+// Guard is an extra condition of a CompareAndSwap: Key must be at Revision,
+// 0 when it must not exist, in the same transaction as the write.
+type Guard struct {
+	Key      string
+	Revision int64
+}
+
 // Store is the small slice of a consistent key value store the cluster
 // needs: leases for liveness, revisions for fencing, prefix watches for
 // change notification. It is implemented by etcd in production and by an
@@ -84,9 +100,9 @@ type Store interface {
 	// the write happened; when it did not, the returned revision belongs to
 	// the value that is already there.
 	Create(ctx context.Context, key string, value []byte, lease LeaseID) (int64, bool, error)
-	// CompareAndSwap writes key only when its current revision is rev. Use
-	// rev == 0 to require that the key does not exist.
-	CompareAndSwap(ctx context.Context, key string, value []byte, rev int64, lease LeaseID) (int64, bool, error)
+	// CompareAndSwap writes key only when its current revision is rev and
+	// every guard holds. Use rev == 0 to require that the key does not exist.
+	CompareAndSwap(ctx context.Context, key string, value []byte, rev int64, lease LeaseID, guards ...Guard) (int64, bool, error)
 
 	// Watch streams changes under prefix until ctx is done.
 	Watch(ctx context.Context, prefix string) (<-chan Event, error)

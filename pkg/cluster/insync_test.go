@@ -36,20 +36,20 @@ func TestUpdateInSync(t *testing.T) {
 	assert.Empty(t, insync)
 	assert.Zero(t, rev)
 
-	require.NoError(t, assigner.UpdateInSync(ctx, "logs", []string{"node-c", "node-b"}))
-	require.NoError(t, assigner.UpdateInSync(ctx, "empty", []string{}))
+	require.NoError(t, assigner.UpdateInSync(ctx, "logs", []string{"node-c", "node-b"}, 0))
+	require.NoError(t, assigner.UpdateInSync(ctx, "empty", []string{}, 0))
 	insync, rev, err = assigner.ListInSync(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, map[string][]string{"logs": {"node-b", "node-c"}, "empty": {}}, insync)
 
 	// unchanged sets do not write
-	require.NoError(t, assigner.UpdateInSync(ctx, "logs", []string{"node-b", "node-c"}))
+	require.NoError(t, assigner.UpdateInSync(ctx, "logs", []string{"node-b", "node-c"}, 0))
 	_, again, err := assigner.ListInSync(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, rev, again)
 
-	require.NoError(t, assigner.UpdateInSync(ctx, "logs", nil))
-	require.NoError(t, assigner.UpdateInSync(ctx, "missing", nil))
+	require.NoError(t, assigner.UpdateInSync(ctx, "logs", nil, 0))
+	require.NoError(t, assigner.UpdateInSync(ctx, "missing", nil, 0))
 	insync, _, err = assigner.ListInSync(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, map[string][]string{"empty": {}}, insync)
@@ -68,8 +68,8 @@ func (s *slowReadStore) Get(ctx context.Context, key string) (KV, error) {
 	return kv, err
 }
 
-func (s *slowReadStore) CompareAndSwap(ctx context.Context, key string, value []byte, rev int64, lease LeaseID) (int64, bool, error) {
-	newRev, swapped, err := s.Store.CompareAndSwap(ctx, key, value, rev, lease)
+func (s *slowReadStore) CompareAndSwap(ctx context.Context, key string, value []byte, rev int64, lease LeaseID, guards ...Guard) (int64, bool, error) {
+	newRev, swapped, err := s.Store.CompareAndSwap(ctx, key, value, rev, lease, guards...)
 	if err == nil && !swapped {
 		s.lost.Add(1)
 	}
@@ -90,7 +90,7 @@ func TestUpdateInSyncConcurrentIndexes(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errs[i] = assigner.UpdateInSync(ctx, "index-"+strconv.Itoa(i), []string{"node-b"})
+			errs[i] = assigner.UpdateInSync(ctx, "index-"+strconv.Itoa(i), []string{"node-b"}, 0)
 		}()
 	}
 	wg.Wait()
@@ -146,10 +146,10 @@ func TestRebalanceKeepsInSyncOwner(t *testing.T) {
 	prefix := "/test/insync-rebalance/"
 	assigner := NewAssigner(store, prefix, 1)
 
-	_, ok, err := assigner.Set(ctx, 0, "gone", 0)
+	gone, ok, err := assigner.Set(ctx, 0, "gone", 0)
 	require.NoError(t, err)
 	require.True(t, ok)
-	require.NoError(t, assigner.UpdateInSync(ctx, "logs", []string{}))
+	require.NoError(t, assigner.UpdateInSync(ctx, "logs", []string{}, gone.Epoch))
 
 	membership := NewMembership(store, prefix, Node{ID: "n1"}, time.Minute, time.Second)
 	require.NoError(t, membership.Join(ctx))
@@ -164,11 +164,110 @@ func TestRebalanceKeepsInSyncOwner(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "gone", current[0].Owner, "a stale node must not be promoted")
 
-	require.NoError(t, assigner.UpdateInSync(ctx, "logs", []string{"n1"}))
+	require.NoError(t, assigner.UpdateInSync(ctx, "logs", []string{"n1"}, gone.Epoch))
 	require.NoError(t, coordinator.RebalanceOnce(ctx))
 	current, err = assigner.List(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, "n1", current[0].Owner)
+}
+
+// The owner drops a replica from the in-sync set and acknowledges a write
+// the replica does not have, while the leader is about to promote that
+// replica from the set it read before: whichever commits second must fail.
+func TestInSyncAndAssignmentAreFenced(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("owner drops the replica first", func(t *testing.T) {
+		assigner := NewAssigner(NewMemoryStore(), "/test/insync-fenced-a/", 1)
+		owned, ok, err := assigner.Set(ctx, 0, "n1", 0)
+		require.NoError(t, err)
+		require.True(t, ok)
+		require.NoError(t, assigner.UpdateInSync(ctx, "logs", []string{"n2"}, owned.Epoch))
+
+		current, err := assigner.List(ctx)
+		require.NoError(t, err)
+		_, read, err := assigner.ListInSync(ctx)
+		require.NoError(t, err)
+
+		require.NoError(t, assigner.UpdateInSync(ctx, "logs", []string{}, owned.Epoch))
+		require.NoError(t, assigner.Apply(ctx, current, map[int]string{0: "n2"}, read))
+
+		current, err = assigner.List(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, "n1", current[0].Owner, "a replica dropped from the in-sync set must not be promoted")
+	})
+
+	t.Run("leader moves the partition first", func(t *testing.T) {
+		assigner := NewAssigner(NewMemoryStore(), "/test/insync-fenced-b/", 1)
+		owned, ok, err := assigner.Set(ctx, 0, "n1", 0)
+		require.NoError(t, err)
+		require.True(t, ok)
+		require.NoError(t, assigner.UpdateInSync(ctx, "logs", []string{"n2"}, owned.Epoch))
+
+		current, err := assigner.List(ctx)
+		require.NoError(t, err)
+		_, read, err := assigner.ListInSync(ctx)
+		require.NoError(t, err)
+		require.NoError(t, assigner.Apply(ctx, current, map[int]string{0: "n2"}, read))
+
+		err = assigner.UpdateInSync(ctx, "logs", []string{}, owned.Epoch)
+		assert.ErrorContains(t, err, "partition moved", "the deposed owner must not acknowledge the write")
+		var moved *EpochError
+		require.ErrorAs(t, err, &moved, "callers tell a move from a store failure by type")
+		assert.Equal(t, "n2", moved.Owner)
+		assert.Equal(t, owned.Epoch, moved.Have)
+		insync, _, err := assigner.ListInSync(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, map[string][]string{"logs": {"n2"}}, insync)
+	})
+
+	t.Run("an index replicated meanwhile blocks the move", func(t *testing.T) {
+		assigner := NewAssigner(NewMemoryStore(), "/test/insync-fenced-c/", 1)
+		owned, ok, err := assigner.Set(ctx, 0, "n1", 0)
+		require.NoError(t, err)
+		require.True(t, ok)
+		current, err := assigner.List(ctx)
+		require.NoError(t, err)
+
+		// the in-sync key did not exist when the leader read it
+		require.NoError(t, assigner.UpdateInSync(ctx, "logs", []string{}, owned.Epoch))
+		require.NoError(t, assigner.Apply(ctx, current, map[int]string{0: "n2"}, 0))
+
+		current, err = assigner.List(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, "n1", current[0].Owner)
+	})
+
+	t.Run("assignment read fails", func(t *testing.T) {
+		store := newFaultStore(nil)
+		assigner := NewAssigner(store, "/test/insync-fenced-d/", 1)
+		store.setRule(func(op, key string) error {
+			switch {
+			case op == "CompareAndSwap":
+				return errLose
+			case op == "Get" && key == assigner.key(0):
+				return errFault
+			}
+			return nil
+		})
+		assert.ErrorIs(t, assigner.UpdateInSync(ctx, "logs", []string{}, 0), errFault)
+	})
+
+	t.Run("a deposed owner fails even when nothing changes", func(t *testing.T) {
+		assigner := NewAssigner(NewMemoryStore(), "/test/insync-fenced-e/", 1)
+		owned, ok, err := assigner.Set(ctx, 0, "n1", 0)
+		require.NoError(t, err)
+		require.True(t, ok)
+		require.NoError(t, assigner.UpdateInSync(ctx, "logs", []string{"n2"}, owned.Epoch))
+		require.NoError(t, assigner.UpdateInSync(ctx, "logs", []string{"n2"}, owned.Epoch), "an unchanged set is accepted")
+		require.NoError(t, assigner.UpdateInSync(ctx, "absent", nil, owned.Epoch))
+
+		_, ok, err = assigner.Set(ctx, 0, "n2", owned.Epoch)
+		require.NoError(t, err)
+		require.True(t, ok)
+		assert.ErrorContains(t, assigner.UpdateInSync(ctx, "logs", []string{"n2"}, owned.Epoch), "partition moved")
+		assert.ErrorContains(t, assigner.UpdateInSync(ctx, "absent", nil, owned.Epoch), "partition moved")
+	})
 }
 
 func TestInSyncFailures(t *testing.T) {
@@ -178,7 +277,7 @@ func TestInSyncFailures(t *testing.T) {
 		assigner := NewAssigner(newFaultStore(failOn(errFault, "/test/insync", "Get")), "/test/", 8)
 		_, _, err := assigner.ListInSync(ctx)
 		assert.ErrorIs(t, err, errFault)
-		assert.ErrorIs(t, assigner.UpdateInSync(ctx, "idx", []string{"a"}), errFault)
+		assert.ErrorIs(t, assigner.UpdateInSync(ctx, "idx", []string{"a"}, 0), errFault)
 	})
 	t.Run("bad value", func(t *testing.T) {
 		store := NewMemoryStore()
@@ -190,10 +289,10 @@ func TestInSyncFailures(t *testing.T) {
 	})
 	t.Run("swap fails", func(t *testing.T) {
 		assigner := NewAssigner(newFaultStore(failOn(errFault, "/test/insync", "CompareAndSwap")), "/test/", 8)
-		assert.ErrorIs(t, assigner.UpdateInSync(ctx, "idx", []string{"a"}), errFault)
+		assert.ErrorIs(t, assigner.UpdateInSync(ctx, "idx", []string{"a"}, 0), errFault)
 	})
 	t.Run("swap keeps losing", func(t *testing.T) {
 		assigner := NewAssigner(newFaultStore(failOn(errLose, "/test/insync", "CompareAndSwap")), "/test/", 8)
-		assert.ErrorContains(t, assigner.UpdateInSync(ctx, "idx", []string{"a"}), "kept changing")
+		assert.ErrorContains(t, assigner.UpdateInSync(ctx, "idx", []string{"a"}, 0), "kept changing")
 	})
 }

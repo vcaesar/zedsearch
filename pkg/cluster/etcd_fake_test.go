@@ -142,12 +142,17 @@ func (f *fakeEtcd) DeleteRange(ctx context.Context, req *pb.DeleteRangeRequest) 
 
 // Txn supports the two shapes EtcdStore sends: create-if-absent and
 // compare-and-swap on the mod revision, each with a put and an else-get.
+// Compares after the first are the guards of a compare-and-swap.
 func (f *fakeEtcd) Txn(ctx context.Context, req *pb.TxnRequest) (*pb.TxnResponse, error) {
 	if err := f.check(); err != nil {
 		return nil, err
 	}
 	cmp, put := req.Compare[0], req.Success[0].GetRequestPut()
 	key, lease := string(cmp.Key), LeaseID(put.Lease)
+	guards := make([]Guard, 0, len(req.Compare)-1)
+	for _, guard := range req.Compare[1:] {
+		guards = append(guards, Guard{Key: string(guard.Key), Revision: guard.GetModRevision()})
+	}
 
 	var (
 		rev int64
@@ -157,7 +162,7 @@ func (f *fakeEtcd) Txn(ctx context.Context, req *pb.TxnRequest) (*pb.TxnResponse
 	if cmp.Target == pb.Compare_CREATE {
 		rev, ok, err = f.mem.Create(ctx, key, put.Value, lease)
 	} else {
-		rev, ok, err = f.mem.CompareAndSwap(ctx, key, put.Value, cmp.GetModRevision(), lease)
+		rev, ok, err = f.mem.CompareAndSwap(ctx, key, put.Value, cmp.GetModRevision(), lease, guards...)
 	}
 	if err != nil {
 		return nil, err

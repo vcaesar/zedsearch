@@ -17,6 +17,7 @@ package cluster
 
 import (
 	"context"
+	"fmt"
 	"hash/fnv"
 	"sort"
 	"strconv"
@@ -100,6 +101,31 @@ func (a *Assigner) key(partition int) string {
 	return a.AssignPrefix() + strconv.Itoa(partition)
 }
 
+// PartitionsKey is the key holding the partition count of the cluster.
+func (a *Assigner) PartitionsKey() string {
+	return a.prefix + "partitions"
+}
+
+// ClaimPartitions records the partition count of the cluster the first time
+// a node joins and fails for a node configured with another one. Such a
+// node would hash an index to a different partition than its peers, and
+// two nodes could both believe they own it.
+func (a *Assigner) ClaimPartitions(ctx context.Context) error {
+	want := strconv.Itoa(a.partitions)
+	_, created, err := a.store.Create(ctx, a.PartitionsKey(), []byte(want), NoLease)
+	if err != nil || created {
+		return err
+	}
+	kv, err := a.store.Get(ctx, a.PartitionsKey())
+	if err != nil {
+		return err
+	}
+	if have := string(kv.Value); have != want {
+		return fmt.Errorf("cluster: zed_cluster_partitions is %s on this node but the cluster was created with %s", want, have)
+	}
+	return nil
+}
+
 // List returns the current ownership map keyed by partition.
 func (a *Assigner) List(ctx context.Context) (map[int]Assignment, error) {
 	kvs, err := a.store.List(ctx, a.AssignPrefix())
@@ -125,36 +151,41 @@ func (a *Assigner) List(ctx context.Context) (map[int]Assignment, error) {
 
 // Set installs owner for a partition. rev is the revision the caller last saw
 // for that partition (0 when it was unassigned); the write is rejected when
-// somebody else changed it meanwhile, which keeps epochs strictly ordered.
-func (a *Assigner) Set(ctx context.Context, partition int, owner string, rev int64) (Assignment, bool, error) {
+// somebody else changed it meanwhile, which keeps epochs strictly ordered,
+// or when a guard no longer holds.
+func (a *Assigner) Set(ctx context.Context, partition int, owner string, rev int64, guards ...Guard) (Assignment, bool, error) {
 	value, err := json.Marshal(assignmentValue{Owner: owner})
 	if err != nil {
 		return Assignment{}, false, err
 	}
-	newRev, ok, err := a.store.CompareAndSwap(ctx, a.key(partition), value, rev, NoLease)
+	newRev, ok, err := a.store.CompareAndSwap(ctx, a.key(partition), value, rev, NoLease, guards...)
 	if err != nil || !ok {
 		return Assignment{}, false, err
 	}
 	return Assignment{Partition: partition, Owner: owner, Epoch: newRev}, true, nil
 }
 
-// Apply writes a rebalance result. Partitions whose assignment changed under
-// us are skipped, the next rebalance round picks them up again.
-func (a *Assigner) Apply(ctx context.Context, current map[int]Assignment, changes map[int]string) error {
+// Apply writes a rebalance result computed from the in-sync map at
+// insyncRev. Every move is one transaction with that revision: an owner
+// that dropped a replica from the in-sync set meanwhile makes the move
+// fail instead of promoting that replica. Partitions skipped that way, or
+// whose assignment changed under us, are picked up by the next round.
+func (a *Assigner) Apply(ctx context.Context, current map[int]Assignment, changes map[int]string, insyncRev int64) error {
 	partitions := make([]int, 0, len(changes))
 	for partition := range changes {
 		partitions = append(partitions, partition)
 	}
 	sort.Ints(partitions)
 
+	insync := Guard{Key: a.InSyncKey(), Revision: insyncRev}
 	for _, partition := range partitions {
 		owner := changes[partition]
-		_, ok, err := a.Set(ctx, partition, owner, current[partition].Epoch)
+		_, ok, err := a.Set(ctx, partition, owner, current[partition].Epoch, insync)
 		if err != nil {
 			return err
 		}
 		if !ok {
-			log.Warn().Int("partition", partition).Msg("cluster: assignment changed concurrently, skipped")
+			log.Warn().Int("partition", partition).Msg("cluster: assignment or in-sync set changed concurrently, skipped")
 			continue
 		}
 		log.Info().Int("partition", partition).Str("owner", owner).Msg("cluster: partition assigned")

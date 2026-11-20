@@ -62,7 +62,7 @@ func TestClusterDisabled(t *testing.T) {
 
 	_, _, ok := Owner("anything")
 	assert.False(t, ok)
-	_, ok = NodeAddr("other")
+	_, ok = NodeAddr(context.Background(), "other")
 	assert.False(t, ok)
 
 	nodes := Nodes()
@@ -80,7 +80,7 @@ func TestClusterStartStop(t *testing.T) {
 	assert.Equal(t, "node-a", local.ID)
 	assert.Equal(t, "http://node-a:4080", local.Addr, "a bare address gets an http scheme")
 
-	addr, ok := NodeAddr("node-a")
+	addr, ok := NodeAddr(context.Background(), "node-a")
 	assert.True(t, ok)
 	assert.Equal(t, "http://node-a:4080", addr)
 
@@ -130,7 +130,7 @@ func TestClusterSecondNodeSharesPartitions(t *testing.T) {
 		return counts["node-a"] == 2 && counts["node-b"] == 2
 	}, 5*time.Second, 20*time.Millisecond, "the leader must hand half the partitions to the new node")
 
-	addr, ok := NodeAddr("node-b")
+	addr, ok := NodeAddr(context.Background(), "node-b")
 	require.True(t, ok)
 	assert.Equal(t, "http://node-b:4080", addr)
 
@@ -170,6 +170,27 @@ func TestClusterFailedStartLeaves(t *testing.T) {
 	nodes, err := NewMembership(store, KeyPrefix(), Node{ID: "probe"}, time.Minute, time.Second).ListNodes(context.Background())
 	require.NoError(t, err)
 	assert.Empty(t, nodes)
+}
+
+// A node configured with another partition count would route an index to a
+// different owner than its peers: it must not join at all.
+func TestClusterRejectsPartitionMismatch(t *testing.T) {
+	previous := config.Global.Cluster
+	t.Cleanup(func() { config.Global.Cluster = previous })
+	config.Global.Cluster.Name = "test-cluster"
+	config.Global.Cluster.NodeID = "node-a"
+	config.Global.Cluster.Partitions = 16
+
+	ctx := context.Background()
+	store := NewMemoryStore()
+	defer func() { require.NoError(t, store.Close()) }()
+	require.NoError(t, NewAssigner(store, KeyPrefix(), 8).ClaimPartitions(ctx))
+
+	assert.ErrorContains(t, StartWith(ctx, store), "the cluster was created with 8")
+	assert.False(t, Enabled())
+	nodes, err := NewMembership(store, KeyPrefix(), Node{ID: "probe"}, time.Minute, time.Second).ListNodes(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, nodes, "a rejected node never registers")
 }
 
 func TestClusterConcurrentStart(t *testing.T) {
@@ -273,11 +294,11 @@ func TestClusterReadFailures(t *testing.T) {
 	require.NotNil(t, local)
 	assert.Equal(t, "https://node-a:4080", local.Addr, "the trailing slash is dropped")
 
-	_, ok := NodeAddr("ghost")
+	_, ok := NodeAddr(context.Background(), "ghost")
 	assert.False(t, ok, "an unknown node has no address after a refresh")
 
 	store.setRule(failOn(errFault, KeyPrefix()+"nodes/", "List"))
-	_, ok = NodeAddr("ghost")
+	_, ok = NodeAddr(context.Background(), "ghost")
 	assert.False(t, ok)
 
 	nodes := Nodes()
@@ -298,7 +319,7 @@ func TestClusterReplicasAndInSync(t *testing.T) {
 	ctx := context.Background()
 	assert.Nil(t, Replicas("logs"))
 	assert.False(t, IsLocalReplica("logs"))
-	assert.NoError(t, UpdateInSync(ctx, "logs", []string{"node-b"}))
+	assert.NoError(t, UpdateInSync(ctx, "logs", []string{"node-b"}, 0))
 	insync, err := InSync(ctx)
 	require.NoError(t, err)
 	assert.Empty(t, insync)
@@ -307,12 +328,36 @@ func TestClusterReplicasAndInSync(t *testing.T) {
 	assert.Empty(t, Replicas("logs"))
 	assert.False(t, IsLocalReplica("logs"))
 
-	require.NoError(t, UpdateInSync(ctx, "logs", []string{"node-b"}))
+	// the in-sync set is written under the epoch this node owns the index at
+	require.Eventually(t, func() bool { return len(Assignments()) == 4 }, 3*time.Second, 10*time.Millisecond)
+	_, epoch, _ := Owner("logs")
+	require.NoError(t, UpdateInSync(ctx, "logs", []string{"node-b"}, epoch))
 	insync, err = InSync(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, map[string][]string{"logs": {"node-b"}}, insync)
 
-	_, ok := NodeAddr("node-a")
+	// another node took the partition: this one may not change the set
+	current := Assignments()[PartitionOfN("logs", 4)]
+	_, ok, err := get().assigner.Set(ctx, current.Partition, "node-b", current.Epoch)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Eventually(t, func() bool { return !IsLocalOwner("logs") }, 3*time.Second, 10*time.Millisecond)
+	var moved *EpochError
+	require.ErrorAs(t, UpdateInSync(ctx, "logs", []string{}, epoch), &moved)
+	assert.Equal(t, "node-b", moved.Owner)
+
+	// it came back under a new epoch: a write begun under the old one still fails
+	back := Assignments()[PartitionOfN("logs", 4)]
+	_, ok, err = get().assigner.Set(ctx, back.Partition, "node-a", back.Epoch)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Eventually(t, func() bool { return IsLocalOwner("logs") }, 3*time.Second, 10*time.Millisecond)
+	require.ErrorAs(t, UpdateInSync(ctx, "logs", []string{}, epoch), &moved)
+	assert.Equal(t, "node-a", moved.Owner)
+	_, backEpoch, _ := Owner("logs")
+	require.NoError(t, UpdateInSync(ctx, "logs", []string{}, backEpoch))
+
+	_, ok = NodeAddr(context.Background(), "node-a")
 	assert.False(t, ok, "a node without an advertise address cannot be routed to")
 }
 

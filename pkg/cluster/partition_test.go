@@ -195,7 +195,7 @@ func TestAssignerApplySkipsConcurrentChange(t *testing.T) {
 	assigner := NewAssigner(store, "/test/", 4)
 	current, err := assigner.List(ctx)
 	require.NoError(t, err)
-	require.NoError(t, assigner.Apply(ctx, current, map[int]string{0: "node-a", 1: "node-a"}))
+	require.NoError(t, assigner.Apply(ctx, current, map[int]string{0: "node-a", 1: "node-a"}, 0))
 
 	current, err = assigner.List(ctx)
 	require.NoError(t, err)
@@ -204,7 +204,7 @@ func TestAssignerApplySkipsConcurrentChange(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, ok)
 
-	require.NoError(t, assigner.Apply(ctx, current, map[int]string{0: "node-b", 1: "node-b"}))
+	require.NoError(t, assigner.Apply(ctx, current, map[int]string{0: "node-b", 1: "node-b"}, 0))
 	assignments, err := assigner.List(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, "node-b", assignments[0].Owner)
@@ -274,11 +274,39 @@ func TestAssignerDefaultsAndBadRecords(t *testing.T) {
 	assert.Equal(t, "a", assignments[2].Owner)
 }
 
+func TestClaimPartitions(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	defer func() { require.NoError(t, store.Close()) }()
+
+	first := NewAssigner(store, "/test/", 8)
+	require.NoError(t, first.ClaimPartitions(ctx), "the first node records its count")
+	kv, err := store.Get(ctx, first.PartitionsKey())
+	require.NoError(t, err)
+	assert.Equal(t, "8", string(kv.Value))
+
+	require.NoError(t, NewAssigner(store, "/test/", 8).ClaimPartitions(ctx), "the same count joins")
+	err = NewAssigner(store, "/test/", 16).ClaimPartitions(ctx)
+	assert.ErrorContains(t, err, "zed_cluster_partitions is 16 on this node but the cluster was created with 8")
+	require.NoError(t, NewAssigner(store, "/other/", 16).ClaimPartitions(ctx), "another cluster keeps its own count")
+
+	t.Run("store failures", func(t *testing.T) {
+		create := NewAssigner(newFaultStore(failOn(errFault, "/test/partitions", "Create")), "/test/", 8)
+		assert.ErrorIs(t, create.ClaimPartitions(ctx), errFault)
+
+		faulty := newFaultStore(nil)
+		read := NewAssigner(faulty, "/test/", 8)
+		require.NoError(t, read.ClaimPartitions(ctx))
+		faulty.setRule(failOn(errFault, "/test/partitions", "Get"))
+		assert.ErrorIs(t, read.ClaimPartitions(ctx), errFault)
+	})
+}
+
 func TestAssignerFailures(t *testing.T) {
 	ctx := context.Background()
 	assigner := NewAssigner(newFaultStore(failOn(errFault, "/test/assign/", "List", "CompareAndSwap")), "/test/", 4)
 
 	_, err := assigner.List(ctx)
 	assert.ErrorIs(t, err, errFault)
-	assert.ErrorIs(t, assigner.Apply(ctx, nil, map[int]string{1: "a"}), errFault)
+	assert.ErrorIs(t, assigner.Apply(ctx, nil, map[int]string{1: "a"}, 0), errFault)
 }
