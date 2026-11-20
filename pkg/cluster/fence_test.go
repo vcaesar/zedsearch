@@ -230,6 +230,29 @@ func TestFenceWatchTracksInSync(t *testing.T) {
 	require.Eventually(t, func() bool { return !fence.IsLocalInSync(index) }, 2*time.Second, 5*time.Millisecond)
 }
 
+// An in-sync event queued before a Refresh must not undo the newer state the
+// Refresh read, a removed replica would otherwise serve reads again.
+func TestFenceIgnoresStaleInSyncEvent(t *testing.T) {
+	ctx := context.Background()
+	fence, assigner := newTestFence(t, NewMemoryStore(), "node-b")
+	owned, ok, err := assigner.Set(ctx, PartitionOfN("logs", fencePartitions), "node-a", 0)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.NoError(t, assigner.UpdateInSync(ctx, "logs", []string{"node-b"}, owned.Epoch))
+	_, added, err := assigner.ListInSync(ctx)
+	require.NoError(t, err)
+	require.NoError(t, assigner.UpdateInSync(ctx, "logs", []string{}, owned.Epoch))
+
+	require.NoError(t, fence.Refresh(ctx))
+	assert.False(t, fence.IsLocalInSync("logs"))
+	stale := Event{Type: EventPut, KV: KV{Key: assigner.InSyncKey(), Value: []byte(`{"logs":["node-b"]}`), Revision: added}}
+	fence.applyInSync(stale)
+	assert.False(t, fence.IsLocalInSync("logs"), "the queued add is older than the removal")
+
+	fence.applyInSync(Event{Type: EventPut, KV: KV{Key: assigner.InSyncKey(), Value: []byte(`{"logs":["node-b"]}`), Revision: added + 100}})
+	assert.True(t, fence.IsLocalInSync("logs"), "a newer event applies")
+}
+
 func TestFenceRefreshInSyncFails(t *testing.T) {
 	store := newFaultStore(failOn(errFault, "/test/insync", "Get"))
 	fence, _ := newTestFence(t, store, "node-a")

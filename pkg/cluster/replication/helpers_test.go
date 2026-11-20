@@ -26,12 +26,14 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/vcaesar/zedsearch/pkg/cluster"
 	"github.com/vcaesar/zedsearch/pkg/config"
 	"github.com/vcaesar/zedsearch/pkg/core"
 )
 
-// errStaleEpoch is what the fake answers an in-sync write of an old epoch.
-var errStaleEpoch = errors.New("fake: partition moved")
+// errStaleEpoch is what the fake answers an in-sync write of an old epoch,
+// the same error type the cluster returns.
+var errStaleEpoch error = &cluster.EpochError{Index: "fake", Owner: "node-c"}
 
 // fakeTopology is a hand-set cluster view.
 type fakeTopology struct {

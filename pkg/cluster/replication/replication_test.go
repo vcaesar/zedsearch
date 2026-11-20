@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -90,9 +91,10 @@ func TestModeFromConfig(t *testing.T) {
 	assert.False(t, Enabled())
 	assert.Equal(t, ModeNone, Mode())
 	assert.NoError(t, Commit(context.Background(), "x"))
-	assert.NoError(t, CommitAll(context.Background()))
+	assert.NoError(t, CommitAll(context.Background(), 0))
 	assert.NoError(t, Prepare(context.Background(), "x"))
-	assert.NoError(t, PrepareAll(context.Background()))
+	_, prepErr := PrepareAll(context.Background())
+	assert.NoError(t, prepErr)
 	assert.False(t, Ready("x"))
 	_, err = Apply(&Batch{})
 	assert.Error(t, err)
@@ -199,6 +201,25 @@ func TestFailedReplicaIsMarkedStale(t *testing.T) {
 	nodes, ok := env.ownerTopo.inSyncOf(env.name)
 	assert.True(t, ok)
 	assert.Empty(t, nodes)
+}
+
+// An add-only in-sync update the store rejects because the partition moved
+// fails the commit: the local fence may not have seen the move yet, so the
+// route's epoch check would still pass. Other failures only delay the add.
+func TestCommitFailsWhenAddIsFenced(t *testing.T) {
+	env := setupTwoNodes(t, ModeDocument, "TestCommitFailsWhenAddIsFenced.index_1")
+	ctx := context.Background()
+	env.bootstrapReplica(t)
+	p := env.owner.primaries[env.name]
+	shard := firstShard(t, env.source)
+
+	env.owner.record(env.name, shard, []byte(`{"@_id":"1","@_action":"insert","@_shard":-1}`))
+	env.ownerTopo.insyncErr = errors.New("etcd slow")
+	require.NoError(t, env.owner.commit(ctx, p, false), "a transient failure only delays adding the replica")
+
+	env.owner.record(env.name, shard, []byte(`{"@_id":"2","@_action":"insert","@_shard":-1}`))
+	env.ownerTopo.insyncErr = fmt.Errorf("store: %w", errStaleEpoch)
+	assert.ErrorIs(t, env.owner.commit(ctx, p, false), errStaleEpoch)
 }
 
 // Ownership left and came back while a commit of the old ownership was in

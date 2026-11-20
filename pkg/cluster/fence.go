@@ -69,6 +69,7 @@ type Fence struct {
 	assignments map[int]Assignment
 	replicas    map[int][]string
 	insync      map[string][]string
+	insyncRev   int64 // store revision insync was read or watched at
 }
 
 // NewFence builds an empty fence, call Refresh or Run to fill it.
@@ -101,14 +102,17 @@ func (f *Fence) Refresh(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	insync, _, err := f.assigner.ListInSync(ctx)
+	insync, insyncRev, err := f.assigner.ListInSync(ctx)
 	if err != nil {
 		return err
 	}
 	f.mu.Lock()
 	f.assignments = assignments
 	f.replicas = replicas
-	f.insync = insync
+	// a watch event newer than this read may already be applied
+	if insyncRev >= f.insyncRev {
+		f.insync, f.insyncRev = insync, insyncRev
+	}
 	f.mu.Unlock()
 	return nil
 }
@@ -180,8 +184,12 @@ func (f *Fence) applyInSync(event Event) {
 		}
 	}
 	f.mu.Lock()
-	f.insync = insync
-	f.mu.Unlock()
+	defer f.mu.Unlock()
+	// an event queued before a Refresh must not undo a newer removal
+	if event.KV.Revision <= f.insyncRev {
+		return
+	}
+	f.insync, f.insyncRev = insync, event.KV.Revision
 }
 
 // IsLocalInSync reports whether this node is in the in-sync set of

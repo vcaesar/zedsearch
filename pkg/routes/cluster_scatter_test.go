@@ -698,8 +698,8 @@ func stubReplication(t *testing.T, prepare, commit error) {
 	t.Cleanup(func() { prepareWrite, commitWrite, prepareAllWrites, commitAllWrites = p, c, pa, ca })
 	prepareWrite = func(context.Context, string) error { return prepare }
 	commitWrite = func(context.Context, string) error { return commit }
-	prepareAllWrites = func(context.Context) error { return prepare }
-	commitAllWrites = func(context.Context) error { return commit }
+	prepareAllWrites = func(context.Context) (uint64, error) { return 0, prepare }
+	commitAllWrites = func(context.Context, uint64) error { return commit }
 }
 
 // failingWriter accepts headers but fails every body write.

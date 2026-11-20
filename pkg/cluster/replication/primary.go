@@ -28,6 +28,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/vcaesar/zedsearch/pkg/cluster"
 	"github.com/vcaesar/zedsearch/pkg/core"
 	"github.com/vcaesar/zedsearch/pkg/zutils/json"
 )
@@ -55,9 +56,12 @@ type primary struct {
 	opsBytes int    // size of the retained entries
 	acked    map[string]uint64
 	insync   []string
+	last     uint64   // manager.recorded at the latest operation
 	shipped  uint64   // last operation a commit took to the replicas
 	uploaded uint64   // remote: last operation in the bucket
 	sums     sumCache // of the owned segments, for incremental snapshots
+
+	retiredAt time.Time // set under manager.mu once replaced or dropped
 
 	// commitMu serializes shipping, a commit that waited finds its
 	// operations already acknowledged by the one before it
@@ -149,7 +153,24 @@ func (m *manager) record(index, shard string, entry []byte) {
 	p.seq++
 	p.ops = append(p.ops, Op{Seq: p.seq, Shard: shard, Entry: append(json.RawMessage(nil), entry...)})
 	p.opsBytes += len(entry)
+	p.last = m.recorded.Add(1)
 	p.mu.Unlock()
+}
+
+// recordedSince reports whether p took an operation after mark.
+func (p *primary) recordedSince(mark uint64) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.last > mark
+}
+
+// retire keeps a primary leaving the map while it holds unshipped
+// operations, CommitAll still finds it. m.mu must be held.
+func (m *manager) retire(p *primary) {
+	if p.dirty() {
+		p.retiredAt = time.Now()
+		m.retired = append(m.retired, p)
+	}
 }
 
 // primaryFor returns the state of an owned writable index, created on
@@ -161,8 +182,9 @@ func (m *manager) primaryFor(name string) *primary {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	epoch := m.topo.Epoch(name)
-	if p, ok := m.primaries[name]; ok && p.epoch == epoch {
-		return p
+	old, ok := m.primaries[name]
+	if ok && old.epoch == epoch {
+		return old
 	}
 	index, ok := core.GetIndex(name)
 	if !ok || index.IsCold() {
@@ -177,6 +199,9 @@ func (m *manager) primaryFor(name string) *primary {
 	if !index.IsDisk() {
 		p.remote = true
 		p.storageType = index.GetStorageType()
+	}
+	if old != nil {
+		m.retire(old)
 	}
 	m.primaries[name] = p
 	return p
@@ -295,6 +320,11 @@ func (m *manager) commit(ctx context.Context, p *primary, probe bool) error {
 	if err := m.topo.UpdateInSync(ctx, p.index, next, p.epoch); err != nil {
 		if removed := slices.ContainsFunc(insync, func(node string) bool { return !slices.Contains(next, node) }); removed {
 			return fmt.Errorf("replication: cannot mark stale replicas of [%s]: %w", p.index, err)
+		}
+		// the store saw the partition move before the local fence did: the
+		// new owner never fenced these operations
+		if _, moved := errors.AsType[*cluster.EpochError](err); moved {
+			return fmt.Errorf("replication: record caught up replicas of [%s]: %w", p.index, err)
 		}
 		log.Warn().Err(err).Str("index", p.index).Msg("replication: record caught up replicas")
 		return nil

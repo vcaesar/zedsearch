@@ -140,7 +140,12 @@ func serveFenced(c zhttp.Context, target string, epoch int64) {
 	prepare := func(ctx context.Context) error { return prepareWrite(ctx, target) }
 	commit := func(ctx context.Context) error { return commitWrite(ctx, target) }
 	if bulk {
-		prepare, commit = prepareAllWrites, commitAllWrites
+		var mark uint64
+		prepare = func(ctx context.Context) (err error) {
+			mark, err = prepareAllWrites(ctx)
+			return err
+		}
+		commit = func(ctx context.Context) error { return commitAllWrites(ctx, mark) }
 	}
 	if err := prepare(c.Context()); err != nil {
 		rejectUnreplicated(c, target, err)
@@ -203,12 +208,13 @@ func serveUntargeted(c zhttp.Context) {
 		c.Next()
 		return
 	}
-	if err := prepareAllWrites(c.Context()); err != nil {
+	mark, err := prepareAllWrites(c.Context())
+	if err != nil {
 		rejectUnreplicated(c, "", err)
 		return
 	}
 	flush := c.NextBuffered()
-	if err := commitAllWrites(c.Context()); err != nil {
+	if err := commitAllWrites(c.Context(), mark); err != nil {
 		rejectUnreplicated(c, "", err)
 		return
 	}

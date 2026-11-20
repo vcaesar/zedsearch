@@ -37,7 +37,9 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -63,6 +65,9 @@ const (
 	// retainBytes bounds the memory those operations take per index while
 	// a replica lags or is gone.
 	retainBytes = 64 << 20
+	// retiredTTL bounds how long a retired primary waits for the bulk that
+	// wrote to it; a request outliving it already failed on its timeout.
+	retiredTTL = 5 * time.Minute
 	// commitParallelism is how many indexes of one bulk ship at a time.
 	commitParallelism = 8
 	// callTimeout bounds one node to node replication call.
@@ -139,6 +144,11 @@ type manager struct {
 	mu        sync.Mutex
 	primaries map[string]*primary
 	replicas  map[string]*replica
+	// retired keeps primaries replaced or dropped with unshipped operations,
+	// so the bulk that wrote them fails instead of skipping them
+	retired []*primary
+	// recorded counts operations of every index, a bulk marks where it began
+	recorded atomic.Uint64
 
 	ctx    context.Context // cancelled by Stop
 	cancel context.CancelFunc
@@ -371,11 +381,13 @@ func (m *manager) replicaTick(name string) {
 // replicates, and the in-sync entries of deleted indexes it owns.
 func (m *manager) cleanup(ctx context.Context) {
 	m.mu.Lock()
-	for name := range m.primaries {
+	for name, p := range m.primaries {
 		if _, exists := core.GetIndex(name); !exists || !m.topo.IsOwner(name) {
+			m.retire(p)
 			delete(m.primaries, name)
 		}
 	}
+	m.retired = slices.DeleteFunc(m.retired, func(p *primary) bool { return time.Since(p.retiredAt) > retiredTTL })
 	for name, r := range m.replicas {
 		if !r.isRecovering() && !m.topo.IsReplica(name) && !m.topo.IsOwner(name) {
 			delete(m.replicas, name)
@@ -412,12 +424,14 @@ func Prepare(ctx context.Context, index string) error {
 
 // PrepareAll prepares every writable index owned here, for writes that
 // name their indexes in the body (`_bulk`): a promoted node must replay
-// what it kept before such a write lands.
-func PrepareAll(ctx context.Context) error {
+// what it kept before such a write lands. The mark it returns is handed to
+// CommitAll.
+func PrepareAll(ctx context.Context) (uint64, error) {
 	m := get()
 	if m == nil {
-		return nil
+		return 0, nil
 	}
+	mark := m.recorded.Load()
 	var errs []error
 	for _, index := range core.ZED_INDEX_LIST.List() {
 		if name := index.GetName(); m.writable(name) {
@@ -425,7 +439,7 @@ func PrepareAll(ctx context.Context) error {
 			errs = append(errs, err)
 		}
 	}
-	return errors.Join(errs...)
+	return mark, errors.Join(errs...)
 }
 
 // writable reports whether index is an existing writable index owned here.
@@ -457,8 +471,10 @@ func Commit(ctx context.Context, index string) error {
 
 // CommitAll commits every index with recorded operations, for writes that
 // name their indexes in the body (`_bulk`). The indexes ship side by side:
-// a bulk over many of them waits for the slowest, not for their sum.
-func CommitAll(ctx context.Context) error {
+// a bulk over many of them waits for the slowest, not for their sum. A
+// primary retired with operations recorded since mark, the PrepareAll of
+// the request, fails it: its partition moved before they were shipped.
+func CommitAll(ctx context.Context, mark uint64) error {
 	m := get()
 	if m == nil {
 		return nil
@@ -467,6 +483,11 @@ func CommitAll(ctx context.Context) error {
 	pending := make([]*primary, 0, len(m.primaries))
 	for _, p := range m.primaries {
 		if p.dirty() {
+			pending = append(pending, p)
+		}
+	}
+	for _, p := range m.retired {
+		if p.recordedSince(mark) {
 			pending = append(pending, p)
 		}
 	}
@@ -522,10 +543,12 @@ func Ready(index string) bool {
 // Readable reports whether this node may serve reads of an index it
 // replicates: a cold index is read-only on object storage, so every node
 // sees the same data; a disk index qualifies once its replicated copy is
-// installed.
+// installed and while it is in the in-sync set. The owner drops a failed
+// replica from the set before acknowledging the write it missed, so such a
+// copy serves no read, not even as a fallback for an unreachable owner.
 func Readable(name string) bool {
 	index, ok := core.GetIndex(name)
-	return ok && (index.IsCold() || Ready(name))
+	return ok && (index.IsCold() || Ready(name) && inSync(name))
 }
 
 // Current reports whether the copy this node replicates holds every write

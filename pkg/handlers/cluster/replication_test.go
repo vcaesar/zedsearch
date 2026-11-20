@@ -111,8 +111,9 @@ func TestReplicationHandlersEnabled(t *testing.T) {
 		})
 	}
 
-	var info replication.SnapshotInfo
-	t.Run("snapshot streams a tar", func(t *testing.T) {
+	// snapshot reads the checkpoint the owner streams, each subtest takes its own
+	snapshot := func(t *testing.T) replication.SnapshotInfo {
+		t.Helper()
 		w := httptest.NewRecorder()
 		serve(w, ReplicationSnapshot, http.MethodGet, "/x?index="+local, "")
 		require.Equal(t, http.StatusOK, w.Code)
@@ -123,11 +124,17 @@ func TestReplicationHandlersEnabled(t *testing.T) {
 		require.Positive(t, header.Size)
 		data, err := io.ReadAll(io.LimitReader(w.Body, header.Size))
 		require.NoError(t, err)
+		var info replication.SnapshotInfo
 		require.NoError(t, json.Unmarshal(data, &info))
+		return info
+	}
+	t.Run("snapshot streams a tar", func(t *testing.T) {
+		info := snapshot(t)
 		assert.NotEmpty(t, info.Term)
 		assert.NotEmpty(t, info.Index)
 	})
 	t.Run("snapshot at the replica's checkpoint", func(t *testing.T) {
+		info := snapshot(t)
 		w := httptest.NewRecorder()
 		target := "/x?index=" + local + "&term=" + info.Term + "&seq=" + strconv.FormatUint(info.Seq, 10)
 		serve(w, ReplicationSnapshot, http.MethodGet, target, "")

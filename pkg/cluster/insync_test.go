@@ -212,6 +212,10 @@ func TestInSyncAndAssignmentAreFenced(t *testing.T) {
 
 		err = assigner.UpdateInSync(ctx, "logs", []string{}, owned.Epoch)
 		assert.ErrorContains(t, err, "partition moved", "the deposed owner must not acknowledge the write")
+		var moved *EpochError
+		require.ErrorAs(t, err, &moved, "callers tell a move from a store failure by type")
+		assert.Equal(t, "n2", moved.Owner)
+		assert.Equal(t, owned.Epoch, moved.Have)
 		insync, _, err := assigner.ListInSync(ctx)
 		require.NoError(t, err)
 		assert.Equal(t, map[string][]string{"logs": {"n2"}}, insync)

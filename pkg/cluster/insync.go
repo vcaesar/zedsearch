@@ -110,18 +110,25 @@ func (a *Assigner) UpdateInSync(ctx context.Context, index string, nodes []strin
 	return fmt.Errorf("cluster: in-sync set of %q kept changing", index)
 }
 
-// checkOwned fails when the assignment of the partition of index is no
-// longer at the revision of owned.
+// checkOwned fails with an *EpochError when the assignment of the partition
+// of index is no longer at the revision of owned: the caller's writes were
+// not fenced by the new owner and must not be acknowledged.
 func (a *Assigner) checkOwned(ctx context.Context, owned Guard, index string) error {
 	assignment, err := a.store.Get(ctx, owned.Key)
 	if err != nil && !errors.Is(err, errors.ErrKeyNotFound) {
 		return err
 	}
-	if assignment.Revision != owned.Revision {
-		return fmt.Errorf("cluster: in-sync set of %q not changed, its partition moved (epoch %d, presented %d)",
-			index, assignment.Revision, owned.Revision)
+	if assignment.Revision == owned.Revision {
+		return nil
 	}
-	return nil
+	var value assignmentValue
+	if len(assignment.Value) > 0 {
+		if err := json.Unmarshal(assignment.Value, &value); err != nil {
+			return err
+		}
+	}
+	moved := &EpochError{Index: index, Owner: value.Owner, Have: owned.Revision, Want: assignment.Revision}
+	return fmt.Errorf("cluster: in-sync set of %q not changed, its partition moved: %w", index, moved)
 }
 
 // EligibleOwners maps every partition holding a replicated index to the
