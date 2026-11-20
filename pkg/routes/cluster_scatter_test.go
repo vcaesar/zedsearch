@@ -87,7 +87,8 @@ func TestScatterSearchMerges(t *testing.T) {
 		assert.NoError(t, err)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/es/"+remoteIndex+"*/_search", strings.NewReader(`{"from":1,"size":3}`))
+	req := httptest.NewRequest(http.MethodPost, "/es/"+remoteIndex+"*/_search",
+		strings.NewReader(`{"from":1,"size":3,"aggs":{"by":{"terms":{"field":"f","size":10}}}}`))
 	req.Header.Set("Authorization", "Basic dXNlcjpwYXNz")
 	w := env.do(req)
 
@@ -103,6 +104,8 @@ func TestScatterSearchMerges(t *testing.T) {
 	query, ok := payload["query"].(map[string]interface{})
 	require.True(t, ok)
 	assert.EqualValues(t, 4, query["size"], "every owner returns the full window")
+	terms := query["aggs"].(map[string]interface{})["by"].(map[string]interface{})["terms"].(map[string]interface{})
+	assert.EqualValues(t, 25, terms["size"], "every owner returns more terms than asked for")
 }
 
 func TestScatterSearchServesLocally(t *testing.T) {
@@ -163,6 +166,57 @@ func TestScatterSearchErrors(t *testing.T) {
 		w := env.do(httptest.NewRequest(http.MethodPost, path, nil))
 		assert.Equal(t, http.StatusBadGateway, w.Code)
 		assert.Contains(t, w.Body.String(), "node-gone is unreachable")
+	})
+}
+
+// A scattered search whose owner is gone reaches a live replica instead of
+// failing, like a search of that single index does.
+func TestScatterSearchFallsBackToReplica(t *testing.T) {
+	env := setupClusterEnv(t)
+	withSearchRoutes(t, env)
+	env.own(t, remoteIndex, "node-gone")
+	env.respond = func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, err := w.Write([]byte(`{"hits":{"total":{"value":1},"hits":[{"_index":"` + remoteIndex + `","_id":"doc-1","_score":1}]}}`))
+		assert.NoError(t, err)
+	}
+	path := "/es/" + remoteIndex + "*/_search"
+
+	t.Run("cold index", func(t *testing.T) {
+		env.setReplicas(t, remoteIndex, "node-gone-too", "node-b")
+		stubReplicaReadable(t, true)
+		assert.Equal(t, map[string][]string{"node-a": {localIndex}, "node-b": {remoteIndex}},
+			groupByOwner([]string{localIndex, remoteIndex}))
+
+		w := env.do(httptest.NewRequest(http.MethodPost, path, nil))
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.Contains(t, w.Body.String(), "doc-1")
+		assert.Equal(t, InternalSearchPath, env.received(t).URL.Path)
+	})
+
+	t.Run("no live replica", func(t *testing.T) {
+		env.setReplicas(t, remoteIndex, "node-gone-too")
+		stubReplicaReadable(t, true)
+		w := env.do(httptest.NewRequest(http.MethodPost, path, nil))
+		assert.Equal(t, http.StatusBadGateway, w.Code)
+		assert.Contains(t, w.Body.String(), "node-gone is unreachable")
+	})
+
+	t.Run("index without copies", func(t *testing.T) {
+		env.setReplicas(t, remoteIndex, "node-b")
+		stubReplicaReadable(t, false)
+		assert.Equal(t, map[string][]string{"node-gone": {remoteIndex}}, groupByOwner([]string{remoteIndex}),
+			"a disk index is only on its owner while replication is off")
+	})
+
+	t.Run("replicated disk index", func(t *testing.T) {
+		startReplication(t)
+		// this node is a replica too, but its copy is not installed
+		env.setReplicas(t, remoteIndex, "node-a", "node-b")
+		assert.Equal(t, map[string][]string{"node-b": {remoteIndex}}, groupByOwner([]string{remoteIndex}))
+
+		env.setReplicas(t, remoteIndex, "node-a")
+		assert.Equal(t, map[string][]string{"node-gone": {remoteIndex}}, groupByOwner([]string{remoteIndex}))
 	})
 }
 

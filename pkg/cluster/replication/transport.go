@@ -39,7 +39,6 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/vcaesar/zedsearch/pkg/cluster"
-	"github.com/vcaesar/zedsearch/pkg/tracing"
 	"github.com/vcaesar/zedsearch/pkg/zutils/json"
 )
 
@@ -123,7 +122,7 @@ type HTTPTransport struct {
 
 // NewHTTPTransport builds a transport authenticating with secret.
 func NewHTTPTransport(secret string) *HTTPTransport {
-	return &HTTPTransport{secret: secret, client: &http.Client{Transport: tracing.Transport(nil)}}
+	return &HTTPTransport{secret: secret, client: &http.Client{Transport: cluster.Transport()}}
 }
 
 // CheckSecret reports whether a request carries the cluster secret.

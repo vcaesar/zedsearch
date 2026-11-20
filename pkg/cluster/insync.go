@@ -65,6 +65,8 @@ func (a *Assigner) UpdateInSync(ctx context.Context, index string, nodes []strin
 		nodes = append([]string{}, nodes...)
 		sort.Strings(nodes)
 	}
+	a.insyncMu.Lock()
+	defer a.insyncMu.Unlock()
 	for range maxInSyncRetries {
 		insync, rev, err := a.ListInSync(ctx)
 		if err != nil {

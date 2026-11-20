@@ -41,6 +41,7 @@ import (
 	"time"
 
 	"github.com/rs/zerolog/log"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/vcaesar/zedsearch/pkg/cluster"
 	"github.com/vcaesar/zedsearch/pkg/config"
@@ -59,6 +60,11 @@ const (
 	// retainOps is how many committed operations the owner keeps to catch
 	// a lagging replica up without copying files.
 	retainOps = 100000
+	// retainBytes bounds the memory those operations take per index while
+	// a replica lags or is gone.
+	retainBytes = 64 << 20
+	// commitParallelism is how many indexes of one bulk ship at a time.
+	commitParallelism = 8
 	// callTimeout bounds one node to node replication call.
 	callTimeout = 30 * time.Second
 	// snapshotTimeout bounds a full file copy.
@@ -445,7 +451,8 @@ func Commit(ctx context.Context, index string) error {
 }
 
 // CommitAll commits every index with recorded operations, for writes that
-// name their indexes in the body (`_bulk`).
+// name their indexes in the body (`_bulk`). The indexes ship side by side:
+// a bulk over many of them waits for the slowest, not for their sum.
 func CommitAll(ctx context.Context) error {
 	m := get()
 	if m == nil {
@@ -459,11 +466,19 @@ func CommitAll(ctx context.Context) error {
 		}
 	}
 	m.mu.Unlock()
-	var errs []error
-	for _, name := range pending {
-		errs = append(errs, Commit(ctx, name))
+	errs := make([]error, len(pending))
+	var group errgroup.Group
+	group.SetLimit(commitParallelism)
+	for i, name := range pending {
+		group.Go(func() error {
+			errs[i] = Commit(ctx, name)
+			return errs[i]
+		})
 	}
-	return errors.Join(errs...)
+	if group.Wait() == nil {
+		return nil
+	}
+	return errors.Join(errs...) // every failed index, not only the first
 }
 
 // Ready reports whether this node holds a usable copy of index as a

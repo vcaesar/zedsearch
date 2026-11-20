@@ -280,6 +280,52 @@ func TestPrimaryTrimAndOpsFrom(t *testing.T) {
 	assert.False(t, p.dirty())
 }
 
+// The retained log is bounded by size as well as by count, and what is
+// dropped is released: a lagging replica must not pin the owner's memory.
+func TestPrimaryTrimBoundsMemory(t *testing.T) {
+	name := "TestPrimaryTrimBoundsMemory.index_1"
+	newDiskIndex(t, name)
+	topo := newFakeTopology("node-a")
+	topo.set(name, "node-a", "node-b")
+	m := newManager(t, ModeDocument, topo, newLoopTransport())
+	p, err := m.prepare(context.Background(), name)
+	require.NoError(t, err)
+
+	entry := make([]byte, retainBytes/4)
+	for range 6 {
+		m.record(name, "0", entry)
+	}
+	assert.Equal(t, 6*len(entry), p.opsBytes)
+
+	// node-b acknowledged nothing: only the size limit drops operations
+	p.trim([]string{"node-b"})
+	require.Len(t, p.ops, 4)
+	assert.Equal(t, uint64(3), p.ops[0].Seq, "the oldest operations go first")
+	assert.Equal(t, retainBytes, p.opsBytes)
+	assert.False(t, p.retained(2, 6), "a replica that far behind recovers from files")
+	assert.True(t, p.retained(3, 6))
+
+	backing := p.ops[:cap(p.ops)]
+	p.acked["node-b"] = 6
+	p.trim([]string{"node-b"})
+	assert.Empty(t, p.ops)
+	assert.Zero(t, p.opsBytes)
+	for _, op := range backing {
+		assert.Nil(t, op.Entry, "a dropped entry is not kept alive by the log")
+	}
+}
+
+func TestPrimaryTrimBoundsCount(t *testing.T) {
+	p := &primary{acked: map[string]uint64{}}
+	for i := uint64(1); i <= retainOps+2; i++ {
+		p.seq = i
+		p.ops = append(p.ops, Op{Seq: i})
+	}
+	p.trim([]string{"n1"})
+	require.Len(t, p.ops, retainOps)
+	assert.Equal(t, uint64(3), p.ops[0].Seq)
+}
+
 // Segment replication end to end on one process: the owner's files are
 // installed on a replica copy, kept operations are replayed on promotion.
 func TestSegmentCheckpointAndPromotion(t *testing.T) {

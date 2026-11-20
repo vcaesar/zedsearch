@@ -16,6 +16,7 @@
 package cluster
 
 import (
+	"math"
 	"strconv"
 	"testing"
 	"time"
@@ -631,11 +632,355 @@ func TestMergeBucketListSkipsJunk(t *testing.T) {
 	assert.Equal(t, "y", out[0].(map[string]interface{})["key"], "string keys sort by doc_count")
 }
 
-func TestMergeBucketListMultiTerms(t *testing.T) {
+func TestFinishAggMultiTerms(t *testing.T) {
 	def := meta.Aggregations{MultiTerms: &meta.AggregationMultiTerms{Size: 1, Order: map[string]string{"_key": "asc"}}}
-	out := mergeBucketList([]interface{}{bucket("b", 5)}, []interface{}{bucket("a", 1)}, def)
+	agg := map[string]interface{}{
+		"buckets": mergeBucketList([]interface{}{bucket("b", 5)}, []interface{}{bucket("a", 1)}, def),
+	}
+	require.Len(t, agg["buckets"], 2, "nothing is cut while nodes are still merged")
+	finishAgg(agg, def)
+	out := agg["buckets"].([]interface{})
 	require.Len(t, out, 1)
 	assert.Equal(t, "a", out[0].(map[string]interface{})["key"])
+}
+
+func bucketKeys(t *testing.T, buckets interface{}) []string {
+	t.Helper()
+	list, ok := buckets.([]interface{})
+	require.True(t, ok)
+	keys := make([]string, 0, len(list))
+	for _, b := range list {
+		keys = append(keys, bucketKey(b.(map[string]interface{})))
+	}
+	return keys
+}
+
+// A term behind on the first nodes and ahead overall must win: cutting to
+// size between two nodes dropped it before the last node was counted.
+func TestMergeSearchTermsCutAfterEveryNode(t *testing.T) {
+	query := &meta.ZedQuery{Size: 10, Aggregations: map[string]meta.Aggregations{
+		"by": {Terms: &meta.AggregationsTerms{Field: "f", Size: 1}},
+	}}
+	node := func(buckets ...map[string]interface{}) *meta.SearchResponse {
+		resp := response(1, 0, 1)
+		resp.Aggregations = map[string]meta.AggregationResponse{"by": bucketAgg(buckets...)}
+		return resp
+	}
+
+	got := MergeSearch([]*meta.SearchResponse{
+		node(bucket("x", 5), bucket("y", 4)),
+		node(bucket("x", 5), bucket("y", 4)),
+		node(bucket("y", 10)),
+	}, query)
+	buckets := got.Aggregations["by"].Buckets.([]interface{})
+	require.Len(t, buckets, 1)
+	assert.Equal(t, "y", buckets[0].(map[string]interface{})["key"])
+	assert.InDelta(t, 18, buckets[0].(map[string]interface{})["doc_count"], 0)
+
+	// a single answer carries the widened size and is cut too
+	got = MergeSearch([]*meta.SearchResponse{nil, node(bucket("x", 5), bucket("y", 4))}, query)
+	assert.Equal(t, []string{"x"}, bucketKeys(t, got.Aggregations["by"].Buckets))
+}
+
+// Terms below another aggregation are cut as well, whatever holds them.
+func TestMergeSearchTrimsNestedTerms(t *testing.T) {
+	inner := map[string]meta.Aggregations{"by": {Terms: &meta.AggregationsTerms{Field: "f", Size: 1}}}
+	terms := func(buckets ...map[string]interface{}) map[string]interface{} {
+		list := make([]interface{}, 0, len(buckets))
+		for _, b := range buckets {
+			list = append(list, b)
+		}
+		return map[string]interface{}{"buckets": list}
+	}
+	holder := func(by map[string]interface{}) map[string]interface{} {
+		return map[string]interface{}{"key": "k", "doc_count": float64(1), "by": by}
+	}
+
+	tests := []struct {
+		name  string
+		def   meta.Aggregations
+		node  func(by map[string]interface{}) map[string]interface{}
+		inner func(agg map[string]interface{}) interface{}
+	}{
+		{
+			name: "single bucket",
+			def:  meta.Aggregations{Filter: map[string]interface{}{}, Aggregations: inner},
+			node: func(by map[string]interface{}) map[string]interface{} {
+				return map[string]interface{}{"doc_count": float64(1), "by": by}
+			},
+			inner: func(agg map[string]interface{}) interface{} { return agg["by"] },
+		},
+		{
+			name: "bucket list",
+			def:  meta.Aggregations{Terms: &meta.AggregationsTerms{Field: "g"}, Aggregations: inner},
+			node: func(by map[string]interface{}) map[string]interface{} {
+				return map[string]interface{}{"buckets": []interface{}{"junk", holder(by)}}
+			},
+			inner: func(agg map[string]interface{}) interface{} {
+				for _, b := range agg["buckets"].([]interface{}) {
+					if node, ok := b.(map[string]interface{}); ok {
+						return node["by"]
+					}
+				}
+				return nil
+			},
+		},
+		{
+			name: "keyed buckets",
+			def:  meta.Aggregations{Filters: &meta.AggregationFilters{}, Aggregations: inner},
+			node: func(by map[string]interface{}) map[string]interface{} {
+				return map[string]interface{}{"buckets": map[string]interface{}{"k": holder(by)}}
+			},
+			inner: func(agg map[string]interface{}) interface{} {
+				return agg["buckets"].(map[string]interface{})["k"].(map[string]interface{})["by"]
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			agg := tt.node(terms(bucket("x", 1), bucket("y", 7)))
+			finishAgg(agg, tt.def)
+			by, ok := tt.inner(agg).(map[string]interface{})
+			require.True(t, ok)
+			assert.Equal(t, []string{"y"}, bucketKeys(t, by["buckets"]))
+		})
+	}
+}
+
+func TestScatterQuery(t *testing.T) {
+	previous := config.Global.AggregationTermsSize
+	t.Cleanup(func() { config.Global.AggregationTermsSize = previous })
+	config.Global.AggregationTermsSize = 100
+
+	query := &meta.ZedQuery{From: 20, Size: 10, Aggregations: map[string]meta.Aggregations{
+		"by": {
+			Terms: &meta.AggregationsTerms{Field: "f", Size: 10},
+			Aggregations: map[string]meta.Aggregations{
+				"pair":  {MultiTerms: &meta.AggregationMultiTerms{Size: 4}},
+				"total": {Sum: &meta.AggregationMetric{Field: "n"}},
+			},
+		},
+		"all":    {Terms: &meta.AggregationsTerms{Field: "f"}},
+		"paged":  {TopHits: &meta.AggregationTopHits{From: 2, Size: 5}},
+		"second": {TopHits: &meta.AggregationTopHits{From: 2}},
+		"first":  {TopHits: &meta.AggregationTopHits{Size: 5}},
+	}}
+
+	sub := ScatterQuery(query)
+	assert.Zero(t, sub.From)
+	assert.Equal(t, 30, sub.Size, "every owner returns the whole window")
+	assert.Equal(t, 25, sub.Aggregations["by"].Terms.Size)
+	assert.Equal(t, 16, sub.Aggregations["by"].Aggregations["pair"].MultiTerms.Size)
+	assert.Equal(t, 160, sub.Aggregations["all"].Terms.Size, "the default size is widened too")
+	assert.Equal(t, query.Aggregations["by"].Aggregations["total"], sub.Aggregations["by"].Aggregations["total"])
+
+	assert.Equal(t, 20, query.From, "the merge needs the query as asked")
+	assert.Equal(t, 10, query.Aggregations["by"].Terms.Size)
+	assert.Equal(t, 4, query.Aggregations["by"].Aggregations["pair"].MultiTerms.Size)
+	assert.Zero(t, query.Aggregations["all"].Terms.Size)
+
+	assert.Equal(t, meta.AggregationTopHits{Size: 7}, *sub.Aggregations["paged"].TopHits, "every owner returns the whole window")
+	assert.Equal(t, meta.AggregationTopHits{Size: 5}, *sub.Aggregations["second"].TopHits, "the default size counts")
+	assert.Same(t, query.Aggregations["first"].TopHits, sub.Aggregations["first"].TopHits)
+	assert.Equal(t, meta.AggregationTopHits{From: 2, Size: 5}, *query.Aggregations["paged"].TopHits)
+
+	sub = ScatterQuery(&meta.ZedQuery{Size: -1})
+	assert.Equal(t, -1, sub.Size)
+	assert.Nil(t, sub.Aggregations)
+}
+
+func topHitsAgg(total int, hits ...meta.AggregationHit) meta.AggregationResponse {
+	best := float64(0)
+	for _, h := range hits {
+		best = max(best, h.Score)
+	}
+	return meta.AggregationResponse{Hits: &meta.AggregationHits{Total: meta.Total{Value: total}, MaxScore: best, Hits: hits}}
+}
+
+func topHit(id string, score float64, source interface{}) meta.AggregationHit {
+	return meta.AggregationHit{ID: id, Score: score, Source: source}
+}
+
+func topHitIDs(agg meta.AggregationResponse) []string {
+	ids := []string{}
+	if agg.Hits != nil {
+		for _, h := range agg.Hits.Hits {
+			ids = append(ids, h.ID)
+		}
+	}
+	return ids
+}
+
+// top_hits pools the hits of every node and windows them once: the first
+// node's hits alone are not the best of the cluster.
+func TestMergeSearchTopHits(t *testing.T) {
+	n := func(value interface{}) map[string]interface{} { return map[string]interface{}{"n": value} }
+	merge := func(def *meta.AggregationTopHits, nodes ...meta.AggregationResponse) meta.AggregationResponse {
+		query := &meta.ZedQuery{Size: 10, Aggregations: map[string]meta.Aggregations{"top": {TopHits: def}}}
+		responses := make([]*meta.SearchResponse, 0, len(nodes))
+		for _, agg := range nodes {
+			resp := response(1, 0, 1)
+			resp.Aggregations = map[string]meta.AggregationResponse{"top": agg}
+			responses = append(responses, resp)
+		}
+		return MergeSearch(responses, query).Aggregations["top"]
+	}
+	a := topHitsAgg(5, topHit("a1", 0.9, n(1.0)), topHit("a2", 0.2, n(4.0)), topHit("a3", 0.1, nil))
+	b := topHitsAgg(2, topHit("b1", 0.5, n([]interface{}{3.0})), topHit("b2", 0.2, n([]interface{}{})))
+
+	tests := []struct {
+		name  string
+		def   *meta.AggregationTopHits
+		nodes []meta.AggregationResponse
+		want  []string
+	}{
+		{name: "best scores of every node", def: &meta.AggregationTopHits{Size: 2}, nodes: []meta.AggregationResponse{a, b}, want: []string{"a1", "b1"}},
+		{name: "whatever the order", def: &meta.AggregationTopHits{Size: 2}, nodes: []meta.AggregationResponse{b, a}, want: []string{"a1", "b1"}},
+		{name: "default size, ties by id", def: &meta.AggregationTopHits{}, nodes: []meta.AggregationResponse{b, a}, want: []string{"a1", "b1", "a2"}},
+		{name: "from applies to the merged list", def: &meta.AggregationTopHits{From: 1, Size: 2}, nodes: []meta.AggregationResponse{a, b}, want: []string{"b1", "a2"}},
+		{name: "from past the end", def: &meta.AggregationTopHits{From: 9, Size: 2}, nodes: []meta.AggregationResponse{a, b}, want: []string{}},
+		{name: "score order asked for", def: &meta.AggregationTopHits{Size: 1, Sort: "_score"}, nodes: []meta.AggregationResponse{b, a}, want: []string{"a1"}},
+		{name: "sort field ascending, missing last", def: &meta.AggregationTopHits{Size: 5, Sort: "n"}, nodes: []meta.AggregationResponse{a, b}, want: []string{"a1", "b1", "a2", "a3", "b2"}},
+		{
+			name:  "sort field descending",
+			def:   &meta.AggregationTopHits{Size: 2, Sort: []interface{}{map[string]interface{}{"n": "desc"}}},
+			nodes: []meta.AggregationResponse{a, b}, want: []string{"a2", "b1"},
+		},
+		{
+			name:  "equal sort values order by id",
+			def:   &meta.AggregationTopHits{Size: 2, Sort: "n"},
+			nodes: []meta.AggregationResponse{topHitsAgg(1, topHit("z", 0, n(1.0))), topHitsAgg(1, topHit("y", 0, n(1.0)))},
+			want:  []string{"y", "z"},
+		},
+		{name: "a single answer is windowed too", def: &meta.AggregationTopHits{From: 1, Size: 1}, nodes: []meta.AggregationResponse{a}, want: []string{"a2"}},
+		{name: "a node without the aggregation body", def: &meta.AggregationTopHits{Size: 1}, nodes: []meta.AggregationResponse{{}, b, {}}, want: []string{"b1"}},
+		{name: "no node has hits", def: &meta.AggregationTopHits{Size: 1}, nodes: []meta.AggregationResponse{{}, {}}, want: []string{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, topHitIDs(merge(tt.def, tt.nodes...)))
+		})
+	}
+
+	got := merge(&meta.AggregationTopHits{Size: 2}, a, b)
+	assert.Equal(t, 7, got.Hits.Total.Value)
+	assert.InDelta(t, 0.9, got.Hits.MaxScore, 0.0001)
+}
+
+// top_hits inside the buckets of another aggregation are merged per bucket.
+func TestMergeSearchTopHitsInBuckets(t *testing.T) {
+	query := &meta.ZedQuery{Size: 10, Aggregations: map[string]meta.Aggregations{
+		"by": {
+			Terms:        &meta.AggregationsTerms{Field: "f"},
+			Aggregations: map[string]meta.Aggregations{"top": {TopHits: &meta.AggregationTopHits{Size: 1}}},
+		},
+	}}
+	node := func(id string, score float64) *meta.SearchResponse {
+		resp := response(1, 0, 1)
+		b := bucket("red", 1)
+		b["top"] = map[string]interface{}{"hits": map[string]interface{}{
+			"total": map[string]interface{}{"value": float64(1)}, "max_score": score,
+			"hits": []interface{}{map[string]interface{}{"_id": id, "_score": score}},
+		}}
+		resp.Aggregations = map[string]meta.AggregationResponse{"by": bucketAgg(b)}
+		return resp
+	}
+
+	got := MergeSearch([]*meta.SearchResponse{node("low", 1), node("high", 2)}, query)
+	buckets := got.Aggregations["by"].Buckets.([]interface{})
+	require.Len(t, buckets, 1)
+	hits := buckets[0].(map[string]interface{})["top"].(map[string]interface{})["hits"].(map[string]interface{})
+	assert.InDelta(t, 2, hits["total"].(map[string]interface{})["value"], 0)
+	list := hits["hits"].([]interface{})
+	require.Len(t, list, 1)
+	assert.Equal(t, "high", list[0].(map[string]interface{})["_id"])
+}
+
+func statsAgg(count uint64, min, max, sum float64) meta.AggregationResponse {
+	avg := float64(0)
+	if count > 0 {
+		avg = sum / float64(count)
+	}
+	return meta.AggregationResponse{Count: &count, Min: &min, Max: &max, Avg: &avg, Sum: &sum}
+}
+
+func extendedStatsAgg(count uint64, min, max, sum, squares float64) meta.AggregationResponse {
+	agg := statsAgg(count, min, max, sum)
+	zero := float64(0)
+	agg.SumOfSquares, agg.Variance, agg.StdDeviation = &squares, &zero, &zero
+	agg.StdDeviationBounds = &meta.AggregationStdDeviationBounds{}
+	return agg
+}
+
+// stats are merged from their counters, so the result is the one a single
+// node holding every document would give, whatever the response order.
+func TestMergeSearchStats(t *testing.T) {
+	merge := func(def meta.Aggregations, nodes ...meta.AggregationResponse) meta.AggregationResponse {
+		query := &meta.ZedQuery{Size: 10, Aggregations: map[string]meta.Aggregations{"s": def}}
+		responses := make([]*meta.SearchResponse, 0, len(nodes))
+		for _, agg := range nodes {
+			resp := response(1, 0, 1)
+			resp.Aggregations = map[string]meta.AggregationResponse{"s": agg}
+			responses = append(responses, resp)
+		}
+		return MergeSearch(responses, query).Aggregations["s"]
+	}
+	stats := meta.Aggregations{Stats: &meta.AggregationMetric{Field: "n"}}
+
+	t.Run("stats", func(t *testing.T) {
+		a, b, empty := statsAgg(3, 4, 9, 18), statsAgg(1, -3, -3, -3), statsAgg(0, 0, 0, 0)
+		for _, order := range [][]meta.AggregationResponse{{a, b, empty}, {empty, a, b}, {b, empty, a}} {
+			got := merge(stats, order...)
+			assert.Equal(t, uint64(4), *got.Count)
+			assert.InDelta(t, -3, *got.Min, 0)
+			assert.InDelta(t, 9, *got.Max, 0)
+			assert.InDelta(t, 15, *got.Sum, 0)
+			assert.InDelta(t, 3.75, *got.Avg, 0.0001)
+			assert.Nil(t, got.SumOfSquares)
+		}
+	})
+
+	t.Run("an empty node does not win min or max", func(t *testing.T) {
+		for _, order := range [][]meta.AggregationResponse{
+			{statsAgg(2, 4, 9, 13), statsAgg(0, 0, 0, 0)},
+			{statsAgg(0, 0, 0, 0), statsAgg(2, 4, 9, 13)},
+		} {
+			got := merge(stats, order...)
+			assert.InDelta(t, 4, *got.Min, 0)
+			assert.InDelta(t, 9, *got.Max, 0)
+		}
+		got := merge(stats, statsAgg(2, -9, -4, -13), statsAgg(0, 0, 0, 0))
+		assert.InDelta(t, -4, *got.Max, 0)
+	})
+
+	t.Run("no values at all", func(t *testing.T) {
+		got := merge(meta.Aggregations{ExtendedStats: &meta.AggregationExtendedStats{Field: "n"}},
+			extendedStatsAgg(0, 0, 0, 0, 0), extendedStatsAgg(0, 0, 0, 0, 0))
+		assert.Zero(t, *got.Count)
+		assert.Zero(t, *got.Avg)
+		assert.Zero(t, *got.Variance)
+	})
+
+	// values 1, 2, 3 on one node and 4 on the other
+	for _, tt := range []struct {
+		name  string
+		sigma float64
+		want  float64 // sigma in effect
+	}{{"extended_stats", 0, 2}, {"extended_stats sigma", 3, 3}} {
+		t.Run(tt.name, func(t *testing.T) {
+			def := meta.Aggregations{ExtendedStats: &meta.AggregationExtendedStats{Field: "n", Sigma: tt.sigma}}
+			got := merge(def, extendedStatsAgg(3, 1, 3, 6, 14), extendedStatsAgg(1, 4, 4, 4, 16))
+			deviation := math.Sqrt(1.25)
+			assert.Equal(t, uint64(4), *got.Count)
+			assert.InDelta(t, 2.5, *got.Avg, 0.0001)
+			assert.InDelta(t, 30, *got.SumOfSquares, 0.0001)
+			assert.InDelta(t, 1.25, *got.Variance, 0.0001)
+			assert.InDelta(t, deviation, *got.StdDeviation, 0.0001)
+			require.NotNil(t, got.StdDeviationBounds)
+			assert.InDelta(t, 2.5+tt.want*deviation, got.StdDeviationBounds.Upper, 0.0001)
+			assert.InDelta(t, 2.5-tt.want*deviation, got.StdDeviationBounds.Lower, 0.0001)
+		})
+	}
 }
 
 func TestSortTermsBySubAggregation(t *testing.T) {

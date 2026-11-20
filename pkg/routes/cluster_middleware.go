@@ -56,7 +56,7 @@ const (
 )
 
 // clusterClient is shared so node to node calls reuse connections.
-var clusterClient = &http.Client{Timeout: scatterTimeout, Transport: tracing.Transport(nil)}
+var clusterClient = &http.Client{Timeout: scatterTimeout, Transport: cluster.Transport()}
 
 // The replication steps around a write, variables for tests.
 var (
@@ -253,7 +253,7 @@ func forward(c zhttp.Context, owner string, fallbacks []string) {
 	authorization := c.GetHeader("Authorization")
 	proxy := &httputil.ReverseProxy{
 		// traces the hop and passes the trace on in `traceparent`
-		Transport: tracing.Transport(nil),
+		Transport: cluster.Transport(),
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
 			pr.Out.Host = target.Host
@@ -303,12 +303,7 @@ func scatterSearch(c zhttp.Context, target string) {
 		return
 	}
 
-	// every owner returns the full window so the merge can re-sort it
-	sub := *query
-	sub.From = 0
-	if query.From+query.Size > 0 {
-		sub.Size = query.From + query.Size
-	}
+	sub := cluster.ScatterQuery(query)
 
 	authorization := c.GetHeader("Authorization")
 	responses := make([]*meta.SearchResponse, len(groups))
@@ -323,7 +318,7 @@ func scatterSearch(c zhttp.Context, target string) {
 	for i, owner := range owners {
 		i, owner := i, owner
 		group.Go(func() error {
-			resp, err := internalSearch(ctx, owner, groups[owner], &sub, authorization)
+			resp, err := internalSearch(ctx, owner, groups[owner], sub, authorization)
 			if err != nil {
 				return err
 			}
@@ -387,14 +382,36 @@ func internalSearch(ctx context.Context, owner string, indexes []string, query *
 
 // groupByOwner maps index names onto the node that serves them: the owner,
 // or this node when it is a read replica of a cold index. Indexes nobody
-// owns yet are served locally.
+// owns yet are served locally. An owner that cannot be resolved (it died,
+// the partition is not reassigned yet) is replaced by the first live
+// replica holding a copy, like forward does for a single index.
 func groupByOwner(indexes []string) map[string][]string {
 	local := localNodeID()
+	resolved := map[string]bool{local: true}
+	reachable := func(node string) bool {
+		ok, seen := resolved[node]
+		if !seen {
+			addr, found := cluster.NodeAddr(node)
+			ok = found && addr != ""
+			resolved[node] = ok
+		}
+		return ok
+	}
+
 	groups := make(map[string][]string)
 	for _, name := range indexes {
 		owner, _, ok := cluster.Owner(name)
-		if !ok || (owner != local && cluster.IsLocalReplica(name) && replicaReadable(name)) {
+		switch {
+		case !ok || (owner != local && cluster.IsLocalReplica(name) && replicaReadable(name)):
 			owner = local
+		case !reachable(owner) && (replicaReadable(name) || replicated(name)):
+			for _, replica := range cluster.Replicas(name) {
+				// this node is a replica without a usable copy, or the case above took it
+				if replica != local && reachable(replica) {
+					owner = replica
+					break
+				}
+			}
 		}
 		groups[owner] = append(groups[owner], name)
 	}
