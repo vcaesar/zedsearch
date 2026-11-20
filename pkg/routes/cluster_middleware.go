@@ -19,12 +19,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -295,8 +297,8 @@ func scatterSearch(c zhttp.Context, target string) {
 		}
 	}
 
-	groups := groupByOwner(resolveIndexes(target))
-	if _, local := groups[localNodeID()]; len(groups) <= 1 && (local || len(groups) == 0) {
+	groups, replicas := groupByOwner(resolveIndexes(target))
+	if _, local := groups[localNodeID()]; len(replicas) == 0 && len(groups) <= 1 && (local || len(groups) == 0) {
 		// everything we would ask for is ours: let the normal handler do it
 		c.SetBody(body)
 		c.Next()
@@ -306,26 +308,34 @@ func scatterSearch(c zhttp.Context, target string) {
 	sub := cluster.ScatterQuery(query)
 
 	authorization := c.GetHeader("Authorization")
-	responses := make([]*meta.SearchResponse, len(groups))
-	owners := make([]string, 0, len(groups))
-	for owner := range groups {
-		owners = append(owners, owner)
-	}
-
+	responses := make([]*meta.SearchResponse, len(groups)+len(replicas))
 	group, ctx := errgroup.WithContext(c.Context())
 	group.SetLimit(scatterParallelism)
-	var mu sync.Mutex
-	for i, owner := range owners {
-		i, owner := i, owner
+	i := 0
+	// Stable response order also breaks ties between identical owner sort keys.
+	for _, owner := range slices.Sorted(maps.Keys(groups)) {
+		indexes := groups[owner]
+		slot := i
+		i++
 		group.Go(func() error {
-			resp, err := internalSearch(ctx, owner, groups[owner], sub, authorization)
-			if err != nil {
-				return err
+			resp, err := internalSearch(ctx, owner, indexes, sub, authorization, false)
+			responses[slot] = resp
+			return err
+		})
+	}
+	for _, index := range slices.Sorted(maps.Keys(replicas)) {
+		candidates := replicas[index]
+		slot := i
+		i++
+		group.Go(func() error {
+			var err error
+			for _, node := range candidates {
+				responses[slot], err = internalSearch(ctx, node, []string{index}, sub, authorization, true)
+				if !errors.Is(err, errReplicaIndexMissing) {
+					return err
+				}
 			}
-			mu.Lock()
-			responses[i] = resp
-			mu.Unlock()
-			return nil
+			return err
 		})
 	}
 	if err := group.Wait(); err != nil {
@@ -339,13 +349,15 @@ func scatterSearch(c zhttp.Context, target string) {
 	zutils.RenderJSON(c, http.StatusOK, cluster.MergeSearch(responses, query))
 }
 
+var errReplicaIndexMissing = errors.New("replica index unavailable")
+
 // internalSearch asks one node for its part of a scattered search.
-func internalSearch(ctx context.Context, owner string, indexes []string, query *meta.ZedQuery, authorization string) (*meta.SearchResponse, error) {
+func internalSearch(ctx context.Context, owner string, indexes []string, query *meta.ZedQuery, authorization string, replica bool) (*meta.SearchResponse, error) {
 	addr, ok := cluster.NodeAddr(owner)
 	if !ok || addr == "" {
 		return nil, errors.New("cluster: node " + owner + " is unreachable")
 	}
-	payload, err := json.Marshal(map[string]interface{}{"indexes": indexes, "query": query})
+	payload, err := json.Marshal(map[string]interface{}{"indexes": indexes, "query": query, "replica": replica})
 	if err != nil {
 		return nil, err
 	}
@@ -374,18 +386,31 @@ func internalSearch(ctx context.Context, owner string, indexes []string, query *
 	if err != nil {
 		return nil, err
 	}
+	if replica && len(indexes) == 1 && replicaIndexMissing(resp.StatusCode, data, indexes[0]) {
+		return nil, fmt.Errorf("cluster: node %s: %w: %s", owner, errReplicaIndexMissing, data)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, errors.New("cluster: node " + owner + " returned " + resp.Status + ": " + string(data))
 	}
 	return cluster.DecodeSearchResponse(data)
 }
 
-// groupByOwner maps index names onto the node that serves them: the owner,
-// or this node when it is a read replica of a cold index. Indexes nobody
-// owns yet are served locally. An owner that cannot be resolved (it died,
-// the partition is not reassigned yet) is replaced by the first live
-// replica holding a copy, like forward does for a single index.
-func groupByOwner(indexes []string) map[string][]string {
+// Older peers return a 400 with this exact error for a missing index.
+func replicaIndexMissing(status int, data []byte, index string) bool {
+	if status == http.StatusNotFound {
+		return true
+	}
+	if status != http.StatusBadRequest {
+		return false
+	}
+	var response meta.HTTPResponseError
+	return json.Unmarshal(data, &response) == nil && response.Error == "index "+index+" does not exists"
+}
+
+// groupByOwner batches indexes served by their owner or a readable local
+// replica. For an unreachable owner it collects reachable remote replicas.
+// Those indexes are searched separately so each can retry on a different node.
+func groupByOwner(indexes []string) (groups, replicas map[string][]string) {
 	local := localNodeID()
 	resolved := map[string]bool{local: true}
 	reachable := func(node string) bool {
@@ -398,7 +423,8 @@ func groupByOwner(indexes []string) map[string][]string {
 		return ok
 	}
 
-	groups := make(map[string][]string)
+	groups = make(map[string][]string)
+	replicas = make(map[string][]string)
 	for _, name := range indexes {
 		owner, _, ok := cluster.Owner(name)
 		switch {
@@ -408,14 +434,15 @@ func groupByOwner(indexes []string) map[string][]string {
 			for _, replica := range cluster.Replicas(name) {
 				// this node is a replica without a usable copy, or the case above took it
 				if replica != local && reachable(replica) {
-					owner = replica
-					break
+					replicas[name] = append(replicas[name], replica)
 				}
 			}
 		}
-		groups[owner] = append(groups[owner], name)
+		if len(replicas[name]) == 0 {
+			groups[owner] = append(groups[owner], name)
+		}
 	}
-	return groups
+	return groups, replicas
 }
 
 // replicaReadable reports whether this node may serve reads of an index it

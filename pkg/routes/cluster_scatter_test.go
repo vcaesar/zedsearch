@@ -185,8 +185,9 @@ func TestScatterSearchFallsBackToReplica(t *testing.T) {
 	t.Run("cold index", func(t *testing.T) {
 		env.setReplicas(t, remoteIndex, "node-gone-too", "node-b")
 		stubReplicaReadable(t, true)
-		assert.Equal(t, map[string][]string{"node-a": {localIndex}, "node-b": {remoteIndex}},
-			groupByOwner([]string{localIndex, remoteIndex}))
+		groups, replicas := groupByOwner([]string{localIndex, remoteIndex})
+		assert.Equal(t, map[string][]string{"node-a": {localIndex}}, groups)
+		assert.Equal(t, map[string][]string{remoteIndex: {"node-b"}}, replicas)
 
 		w := env.do(httptest.NewRequest(http.MethodPost, path, nil))
 		assert.Equal(t, http.StatusOK, w.Code)
@@ -205,19 +206,68 @@ func TestScatterSearchFallsBackToReplica(t *testing.T) {
 	t.Run("index without copies", func(t *testing.T) {
 		env.setReplicas(t, remoteIndex, "node-b")
 		stubReplicaReadable(t, false)
-		assert.Equal(t, map[string][]string{"node-gone": {remoteIndex}}, groupByOwner([]string{remoteIndex}),
+		groups, replicas := groupByOwner([]string{remoteIndex})
+		assert.Equal(t, map[string][]string{"node-gone": {remoteIndex}}, groups,
 			"a disk index is only on its owner while replication is off")
+		assert.Empty(t, replicas)
 	})
 
 	t.Run("replicated disk index", func(t *testing.T) {
 		startReplication(t)
 		// this node is a replica too, but its copy is not installed
 		env.setReplicas(t, remoteIndex, "node-a", "node-b")
-		assert.Equal(t, map[string][]string{"node-b": {remoteIndex}}, groupByOwner([]string{remoteIndex}))
+		groups, replicas := groupByOwner([]string{remoteIndex})
+		assert.Empty(t, groups)
+		assert.Equal(t, map[string][]string{remoteIndex: {"node-b"}}, replicas)
 
 		env.setReplicas(t, remoteIndex, "node-a")
-		assert.Equal(t, map[string][]string{"node-gone": {remoteIndex}}, groupByOwner([]string{remoteIndex}))
+		groups, replicas = groupByOwner([]string{remoteIndex})
+		assert.Equal(t, map[string][]string{"node-gone": {remoteIndex}}, groups)
+		assert.Empty(t, replicas)
 	})
+}
+
+func TestScatterSearchRetriesUnavailableReplica(t *testing.T) {
+	env := setupClusterEnv(t)
+	withSearchRoutes(t, env)
+	env.own(t, remoteIndex, "node-gone")
+	stubReplicaReadable(t, true)
+	env.respond = func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}
+	ready := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, InternalSearchPath, r.URL.Path)
+		_, err := io.WriteString(w, `{"hits":{"total":{"value":1},"hits":[{"_id":"from-ready-replica"}]}}`)
+		assert.NoError(t, err)
+	}))
+	defer ready.Close()
+	peer := cluster.NewMembership(env.store, cluster.KeyPrefix(),
+		cluster.Node{ID: "node-c", Addr: ready.URL}, time.Minute, time.Second)
+	require.NoError(t, peer.Join(context.Background()))
+	path := "/es/" + remoteIndex + "*/_search"
+
+	env.setReplicas(t, remoteIndex, "node-b", "node-c")
+	w := env.do(httptest.NewRequest(http.MethodPost, path, nil))
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "from-ready-replica")
+	env.received(t)
+
+	env.setReplicas(t, remoteIndex, "node-b")
+	w = env.do(httptest.NewRequest(http.MethodPost, path, nil))
+	assert.Equal(t, http.StatusBadGateway, w.Code)
+	assert.Contains(t, w.Body.String(), "replica index unavailable")
+	env.received(t)
+
+	env.respond = func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, err := io.WriteString(w, `{"error":"index `+remoteIndex+` does not exists"}`)
+		assert.NoError(t, err)
+	}
+	env.setReplicas(t, remoteIndex, "node-b", "node-c")
+	w = env.do(httptest.NewRequest(http.MethodPost, path, nil))
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "from-ready-replica")
+	env.received(t)
 }
 
 func TestClusterRouteUnassignedIndex(t *testing.T) {

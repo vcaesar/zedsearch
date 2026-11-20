@@ -40,7 +40,7 @@ type TopHit struct {
 	// Stored holds copies of the stored fields named by SetStoredFields.
 	Stored map[string][]byte
 
-	sortKey []byte // doc value of the sort field, nil when sorting by _score
+	SortKey []byte // doc value of the sort field, nil when sorting by _score
 }
 
 // TopHitsAggregation implements the elasticsearch [top_hits] aggregation:
@@ -57,6 +57,8 @@ type TopHitsAggregation struct {
 	sourceEnable bool
 	sourceFields []string
 	storedFields map[string]struct{}
+
+	IncludeSortKey bool // emit the doc value in internal search results
 }
 
 // NewTopHitsAggregation returns the aggregation backing [top_hits].
@@ -95,6 +97,8 @@ func (a *TopHitsAggregation) Calculator() search.Calculator {
 		sourceEnable: a.sourceEnable,
 		sourceFields: a.sourceFields,
 		storedFields: a.storedFields,
+
+		IncludeSortKey: a.IncludeSortKey,
 	}
 }
 
@@ -111,6 +115,8 @@ type TopHitsCalculator struct {
 	sourceFields []string
 	storedFields map[string]struct{}
 
+	IncludeSortKey bool // emit the doc value in internal search results
+
 	hits  []TopHit
 	total uint64
 	err   error
@@ -125,7 +131,7 @@ func (c *TopHitsCalculator) Consume(d *search.DocumentMatch) {
 	c.total++
 	hit := TopHit{Score: d.Score}
 	if c.sortField != "" {
-		hit.sortKey = append([]byte(nil), search.Field(c.sortField).Value(d)...)
+		hit.SortKey = append([]byte(nil), search.Field(c.sortField).Value(d)...)
 	}
 	err := d.VisitStoredFields(func(field string, value []byte) bool {
 		switch field {
@@ -181,11 +187,11 @@ func (c *TopHitsCalculator) less(i, j int) bool {
 		return c.hits[i].Score > c.hits[j].Score // best score first
 	}
 	// Documents without the sort field go last in both directions, as in elasticsearch.
-	if mi, mj := len(c.hits[i].sortKey) == 0, len(c.hits[j].sortKey) == 0; mi != mj {
+	if mi, mj := len(c.hits[i].SortKey) == 0, len(c.hits[j].SortKey) == 0; mi != mj {
 		return mj
 	}
 	// Doc value terms of both text and numeric fields sort in byte order.
-	cmp := bytes.Compare(c.hits[i].sortKey, c.hits[j].sortKey)
+	cmp := bytes.Compare(c.hits[i].SortKey, c.hits[j].SortKey)
 	if c.sortDesc {
 		return cmp > 0
 	}

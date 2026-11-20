@@ -24,6 +24,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/vcaesar/zedsearch/pkg/cluster"
+	"github.com/vcaesar/zedsearch/pkg/cluster/replication"
 	"github.com/vcaesar/zedsearch/pkg/core"
 	"github.com/vcaesar/zedsearch/pkg/meta"
 	"github.com/vcaesar/zedsearch/pkg/zhttp"
@@ -34,6 +35,7 @@ import (
 // during a scatter-gather search.
 type InternalSearchRequest struct {
 	Indexes []string       `json:"indexes"`
+	Replica bool           `json:"replica,omitempty"`
 	Query   *meta.ZedQuery `json:"query"`
 }
 
@@ -78,6 +80,22 @@ func InternalSearch(c zhttp.Context) {
 		req.Query = &meta.ZedQuery{Size: 10}
 	}
 
+	for _, name := range req.Indexes {
+		if !req.Replica && strings.Contains(name, "*") {
+			continue // keep supporting patterns on this internal endpoint
+		}
+		index, ok := core.GetIndex(name)
+		if req.Replica && (!ok || !(index.IsCold() || replication.Ready(name))) {
+			zutils.RenderJSON(c, http.StatusNotFound, meta.HTTPResponseError{Error: fmt.Sprintf("index %s is not installed on this replica", name)})
+			return
+		}
+		if !ok {
+			zutils.RenderJSON(c, http.StatusBadRequest, meta.HTTPResponseError{Error: fmt.Sprintf("index %s does not exists", name)})
+			return
+		}
+	}
+	includeTopHitsSortKeys(req.Query.Aggregations)
+
 	resp, err := searchLocal(req.Indexes, req.Query)
 	if err != nil {
 		log.Error().Err(err).Strs("indexes", req.Indexes).Msg("cluster: internal search")
@@ -87,6 +105,17 @@ func InternalSearch(c zhttp.Context) {
 	addPartialAggregations(resp, req.Query)
 
 	zutils.RenderJSON(c, http.StatusOK, resp)
+}
+
+// includeTopHitsSortKeys keeps the owner's order even when _source lacks
+// the sort field or differs from the stored doc values.
+func includeTopHitsSortKeys(defs map[string]meta.Aggregations) {
+	for _, def := range defs {
+		if def.TopHits != nil {
+			def.TopHits.IncludeSortKey = true
+		}
+		includeTopHitsSortKeys(def.Aggregations)
+	}
 }
 
 // InternalIndexes lists the indexes known to this node

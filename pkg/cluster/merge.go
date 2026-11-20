@@ -556,10 +556,8 @@ func mergeTopHits(dst, src map[string]interface{}) {
 }
 
 // windowTopHits orders the pooled hits like the nodes do, by score or by
-// the single sort field, and cuts them to the requested window. The hits
-// carry no sort values, the field is read from _source, which the owners
-// were asked to return it in: hits without it go last and keep the order
-// they arrived in.
+// the single sort field, and cuts them to the requested window. Older
+// owners do not send sort keys, so mixed responses use _source instead.
 func windowTopHits(agg map[string]interface{}, def *meta.AggregationTopHits) {
 	body, _ := agg["hits"].(map[string]interface{})
 	hits, ok := body["hits"].([]interface{})
@@ -568,6 +566,11 @@ func windowTopHits(agg map[string]interface{}, def *meta.AggregationTopHits) {
 	}
 	field, desc, _ := parseSort(def.Sort)
 	byScore := field == "" || field == "_score"
+	useKeys := !byScore && slices.IndexFunc(hits, func(value interface{}) bool {
+		hit, _ := value.(map[string]interface{})
+		_, ok := hit["_sort_key"].(string)
+		return !ok
+	}) == -1
 	sort.SliceStable(hits, func(i, j int) bool {
 		left, _ := hits[i].(map[string]interface{})
 		right, _ := hits[j].(map[string]interface{})
@@ -576,6 +579,16 @@ func windowTopHits(agg map[string]interface{}, def *meta.AggregationTopHits) {
 				return l > r
 			}
 			return stringify(left["_id"]) < stringify(right["_id"])
+		}
+		if useKeys {
+			l, r := left["_sort_key"].(string), right["_sort_key"].(string)
+			if l == "" || r == "" {
+				return l != "" && r == "" // missing values sort last
+			}
+			if l != r {
+				return (l > r) == desc
+			}
+			return false // preserve the owner's order for equal keys
 		}
 		leftValue, leftOK := sourceValue(left["_source"], field)
 		rightValue, rightOK := sourceValue(right["_source"], field)
@@ -591,6 +604,10 @@ func windowTopHits(agg map[string]interface{}, def *meta.AggregationTopHits) {
 	hits = hits[from:min(from+max(topHitsSize(def), 0), len(hits))]
 	if _, widened := sortSource(def); widened {
 		filterSource(hits, def.Source)
+	}
+	for _, value := range hits {
+		hit, _ := value.(map[string]interface{})
+		delete(hit, "_sort_key")
 	}
 	body["hits"] = hits
 }

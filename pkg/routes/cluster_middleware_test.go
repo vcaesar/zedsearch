@@ -404,14 +404,17 @@ func TestClusterRouteFallsBackToReplica(t *testing.T) {
 func TestGroupByOwnerUsesLocalReplica(t *testing.T) {
 	env := setupClusterEnv(t)
 	env.setReplicas(t, remoteIndex, "node-a")
+	indexes := []string{localIndex, remoteIndex}
 
 	stubReplicaReadable(t, false)
-	assert.Equal(t, map[string][]string{"node-a": {localIndex}, "node-b": {remoteIndex}},
-		groupByOwner([]string{localIndex, remoteIndex}))
+	groups, replicas := groupByOwner(indexes)
+	assert.Equal(t, map[string][]string{"node-a": {localIndex}, "node-b": {remoteIndex}}, groups)
+	assert.Empty(t, replicas)
 
 	stubReplicaReadable(t, true)
-	assert.Equal(t, map[string][]string{"node-a": {localIndex, remoteIndex}},
-		groupByOwner([]string{localIndex, remoteIndex}))
+	groups, replicas = groupByOwner(indexes)
+	assert.Equal(t, map[string][]string{"node-a": {localIndex, remoteIndex}}, groups)
+	assert.Empty(t, replicas)
 }
 
 func TestIsMultiTarget(t *testing.T) {

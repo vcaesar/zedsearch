@@ -1122,6 +1122,31 @@ func TestMergeSearchSiblingPipeline(t *testing.T) {
 		assert.InDelta(t, 140, got.Aggregations["max"].Value, 0.0001)
 	})
 
+	t.Run("multi_terms also trims before pipelines", func(t *testing.T) {
+		q := query(1)
+		def := q.Aggregations["by"]
+		def.Terms = nil
+		def.MultiTerms = &meta.AggregationMultiTerms{Size: 1}
+		q.Aggregations["by"] = def
+
+		multi := func(key string, docs, value float64) map[string]interface{} {
+			b := total(key, docs, value)
+			b["key"] = []interface{}{key, "second"}
+			return b
+		}
+		sub := ScatterQuery(q)
+		assert.Greater(t, sub.Aggregations["by"].MultiTerms.Size, 1)
+		got := MergeSearch([]*meta.SearchResponse{
+			node(multi("x", 5, 50), multi("y", 4, 40)),
+			node(multi("y", 10, 100)),
+		}, q)
+		buckets, ok := got.Aggregations["by"].Buckets.([]map[string]interface{})
+		require.True(t, ok)
+		require.Len(t, buckets, 1)
+		assert.Equal(t, []interface{}{"y", "second"}, buckets[0]["key"])
+		assert.InDelta(t, 140, got.Aggregations["sum"].Value, 0.0001)
+	})
+
 	t.Run("every node is counted", func(t *testing.T) {
 		got := MergeSearch(nodes, query(10))
 		assert.InDelta(t, 210, got.Aggregations["sum"].Value, 0.0001)

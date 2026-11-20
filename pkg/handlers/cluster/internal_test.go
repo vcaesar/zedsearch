@@ -18,6 +18,7 @@ package cluster
 import (
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -62,6 +63,16 @@ func TestInternalSearch(t *testing.T) {
 			wantCode: http.StatusBadRequest,
 		},
 		{
+			name:     "missing index in a batch is an error",
+			body:     `{"indexes":["` + indexName + `","TestInternalSearch.missing"]}`,
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "metadata alone does not make a disk replica readable",
+			body:     `{"indexes":["` + indexName + `"],"replica":true}`,
+			wantCode: http.StatusNotFound,
+		},
+		{
 			name:     "malformed body",
 			body:     `{"indexes":`,
 			wantCode: http.StatusBadRequest,
@@ -82,6 +93,44 @@ func TestInternalSearch(t *testing.T) {
 			assert.Equal(t, 0, resp.Hits.Total.Value, "the index is empty")
 		})
 	}
+}
+
+func TestInternalSearchTopHitsUsesOwnerSortKeys(t *testing.T) {
+	const left = "2024-01-01T10:00:00+02:00"
+	const right = "2024-01-01T09:00:00Z"
+	query := &meta.ZedQuery{Aggregations: map[string]meta.Aggregations{
+		"top": {TopHits: &meta.AggregationTopHits{Size: 1, Sort: "label", Source: false}},
+	}}
+	var responses []*meta.SearchResponse
+	for id, value := range map[string]string{"left": left, "right": right} {
+		name := "TestInternalSearchTopHitsUsesOwnerSortKeys." + id
+		index, err := core.NewIndex(name, "disk", 1)
+		require.NoError(t, err)
+		require.NoError(t, core.StoreIndex(index))
+		index.GetMappings().SetProperty("label", meta.NewProperty("keyword"))
+		t.Cleanup(func() { assert.NoError(t, core.DeleteIndex(name)) })
+		require.NoError(t, index.CreateDocument(id, map[string]interface{}{"label": value}, false))
+		require.Eventually(t, func() bool {
+			resp, err := index.Search(&meta.ZedQuery{Size: 1})
+			return err == nil && resp.Hits.Total.Value == 1
+		}, 5*time.Second, 20*time.Millisecond)
+
+		payload, err := json.Marshal(InternalSearchRequest{Indexes: []string{name}, Query: zcluster.ScatterQuery(query)})
+		require.NoError(t, err)
+		c, w := utils.NewContext()
+		utils.SetRequestData(c, string(payload))
+		InternalSearch(c)
+		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+		resp, err := zcluster.DecodeSearchResponse(w.Body.Bytes())
+		require.NoError(t, err)
+		responses = append(responses, resp)
+	}
+	got := zcluster.MergeSearch(responses, query).Aggregations["top"].Hits
+	require.NotNil(t, got)
+	require.Len(t, got.Hits, 1)
+	assert.Equal(t, "right", got.Hits[0].ID, "keyword sorts by bytes even when its value looks like a date")
+	assert.Empty(t, got.Hits[0].Source)
+	assert.Nil(t, got.Hits[0].SortKey)
 }
 
 func TestInternalIndexes(t *testing.T) {
