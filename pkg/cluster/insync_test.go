@@ -17,6 +17,9 @@ package cluster
 
 import (
 	"context"
+	"strconv"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -50,6 +53,55 @@ func TestUpdateInSync(t *testing.T) {
 	insync, _, err = assigner.ListInSync(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, map[string][]string{"empty": {}}, insync)
+}
+
+// slowReadStore widens the window between the read and the swap of an
+// in-sync update and counts the swaps that lost.
+type slowReadStore struct {
+	Store
+	lost atomic.Int64
+}
+
+func (s *slowReadStore) Get(ctx context.Context, key string) (KV, error) {
+	kv, err := s.Store.Get(ctx, key)
+	time.Sleep(time.Millisecond)
+	return kv, err
+}
+
+func (s *slowReadStore) CompareAndSwap(ctx context.Context, key string, value []byte, rev int64, lease LeaseID) (int64, bool, error) {
+	newRev, swapped, err := s.Store.CompareAndSwap(ctx, key, value, rev, lease)
+	if err == nil && !swapped {
+		s.lost.Add(1)
+	}
+	return newRev, swapped, err
+}
+
+// A replica that dies fails the writes of every index it follows at once:
+// the owner's updates of the shared key must not use up each other's retries.
+func TestUpdateInSyncConcurrentIndexes(t *testing.T) {
+	const indexes = 4 * maxInSyncRetries
+	ctx := context.Background()
+	store := &slowReadStore{Store: NewMemoryStore()}
+	assigner := NewAssigner(store, "/test/insync-concurrent/", 8)
+
+	errs := make([]error, indexes)
+	var wg sync.WaitGroup
+	for i := range indexes {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs[i] = assigner.UpdateInSync(ctx, "index-"+strconv.Itoa(i), []string{"node-b"})
+		}()
+	}
+	wg.Wait()
+
+	for _, err := range errs {
+		assert.NoError(t, err)
+	}
+	assert.Zero(t, store.lost.Load(), "updates of one node do not race each other")
+	insync, _, err := assigner.ListInSync(ctx)
+	require.NoError(t, err)
+	assert.Len(t, insync, indexes)
 }
 
 func TestEligibleOwners(t *testing.T) {

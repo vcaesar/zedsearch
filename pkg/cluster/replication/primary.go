@@ -51,6 +51,7 @@ type primary struct {
 	mu       sync.Mutex
 	seq      uint64 // last recorded operation
 	ops      []Op   // retained operations, ascending and contiguous
+	opsBytes int    // size of the retained entries
 	acked    map[string]uint64
 	insync   []string
 	uploaded uint64   // remote: last operation in the bucket
@@ -106,7 +107,9 @@ func (p *primary) opsFrom(from, to uint64) ([]Op, bool) {
 }
 
 // trim drops operations every replica (or the bucket) already has, and
-// anything beyond retainOps: a replica that far behind recovers from files.
+// anything beyond retainOps or retainBytes: a replica that far behind
+// recovers from files. The bucket has no such recovery, an operation it
+// lacks is kept until its upload succeeds.
 func (p *primary) trim(replicas []string) {
 	keep := p.seq
 	if p.remote {
@@ -116,13 +119,13 @@ func (p *primary) trim(replicas []string) {
 		keep = min(keep, p.acked[node])
 	}
 	drop := 0
-	for drop < len(p.ops) && p.ops[drop].Seq <= keep {
+	for drop < len(p.ops) && (p.ops[drop].Seq <= keep ||
+		!p.remote && (len(p.ops)-drop > retainOps || p.opsBytes > retainBytes)) {
+		p.opsBytes -= len(p.ops[drop].Entry)
 		drop++
 	}
-	drop = max(drop, len(p.ops)-retainOps)
-	if drop > 0 {
-		p.ops = append(p.ops[:0], p.ops[drop:]...)
-	}
+	// Delete clears the dropped slots, which would keep their entries alive
+	p.ops = slices.Delete(p.ops, 0, drop)
 }
 
 // record is core.WALHook: it appends a local write to the operation log
@@ -138,6 +141,7 @@ func (m *manager) record(index, shard string, entry []byte) {
 	p.mu.Lock()
 	p.seq++
 	p.ops = append(p.ops, Op{Seq: p.seq, Shard: shard, Entry: append(json.RawMessage(nil), entry...)})
+	p.opsBytes += len(entry)
 	p.mu.Unlock()
 }
 
@@ -240,11 +244,16 @@ func (m *manager) commit(ctx context.Context, p *primary, probe bool) error {
 	p.mu.Lock()
 	target := p.seq
 	insync := append([]string(nil), p.insync...)
+	// a caught up replica is sent no operations, unless a probe finds it lost some
+	ships := probe || slices.ContainsFunc(replicas, func(node string) bool { return p.acked[node] < target })
 	p.mu.Unlock()
 
-	mappings, err := m.mappings(p.index)
-	if err != nil {
-		return err
+	var mappings json.RawMessage
+	if ships {
+		var err error
+		if mappings, err = m.mappings(p.index); err != nil {
+			return err
+		}
 	}
 	synced := make([]bool, len(replicas))
 	group, groupCtx := errgroup.WithContext(ctx)

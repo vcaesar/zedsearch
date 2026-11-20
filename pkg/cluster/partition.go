@@ -20,6 +20,7 @@ import (
 	"hash/fnv"
 	"sort"
 	"strconv"
+	"sync"
 
 	"github.com/rs/zerolog/log"
 
@@ -76,6 +77,10 @@ type Assigner struct {
 	store      Store
 	prefix     string // key prefix, ends with '/'
 	partitions int
+
+	// insyncMu serializes the in-sync updates of this node: they share one
+	// key, racing each other would only use up their retries
+	insyncMu sync.Mutex
 }
 
 // NewAssigner builds an assigner over `<prefix>assign/`.

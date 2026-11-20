@@ -18,6 +18,7 @@ package replication
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -69,6 +70,50 @@ func TestUploadErrors(t *testing.T) {
 			assert.ErrorContains(t, m.upload(p), tt.want)
 			assert.Zero(t, p.uploaded)
 			assert.Zero(t, store.Len(translogPrefix("x")), "no translog object is written")
+		})
+	}
+}
+
+// The bucket is the only other copy of a remote index: operations recorded
+// while an upload is in flight stay in the log whatever they weigh, or the
+// translog has a gap and every later upload ships nothing.
+func TestUploadKeepsUnuploadedOperations(t *testing.T) {
+	store := useObjectStore(t)
+	m := newManager(t, ModeDocument, newFakeTopology("node-a"), newLoopTransport())
+	tests := []struct {
+		name     string
+		ops      int
+		opsBytes int
+	}{
+		{name: "over the size limit", ops: 5, opsBytes: retainBytes + 1},
+		{name: "over the count limit", ops: retainOps + 2},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &primary{
+				index: fmt.Sprintf("TestUploadKeepsUnuploadedOperations.index_%d", i), term: "t1",
+				remote: true, storageType: core.StorageTypeS3, seq: 1, uploaded: 1, opsBytes: tt.opsBytes,
+			}
+			for range tt.ops {
+				p.seq++
+				p.ops = append(p.ops, Op{Seq: p.seq, Entry: json.RawMessage(`{}`)})
+			}
+
+			p.trim(nil) // the upload of operation 1 just finished
+			require.Len(t, p.ops, tt.ops)
+			assert.True(t, p.retained(2, p.seq))
+
+			require.NoError(t, m.upload(p))
+			assert.Equal(t, p.seq, p.uploaded)
+			assert.False(t, p.dirty())
+			assert.Empty(t, p.ops, "uploaded operations are dropped")
+			data, err := directory.GetObject(core.StorageTypeS3, translogKey(p, p.seq))
+			require.NoError(t, err)
+			var uploaded []Op
+			require.NoError(t, json.Unmarshal(data, &uploaded))
+			require.Len(t, uploaded, tt.ops)
+			assert.Equal(t, uint64(2), uploaded[0].Seq, "the translog has no gap")
+			assert.Equal(t, 1, store.Len(translogPrefix(p.index)))
 		})
 	}
 }

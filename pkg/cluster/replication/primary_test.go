@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -153,6 +154,9 @@ func TestCommitMappingsOfDeletedIndex(t *testing.T) {
 	require.NoError(t, err)
 
 	core.ZED_INDEX_LIST.Delete(name)
+	assert.NoError(t, m.commit(context.Background(), p, false), "nothing to ship, the mappings are not encoded")
+	assert.Error(t, m.commit(context.Background(), p, true), "a probe may have to resend operations")
+	m.record(name, "0", []byte(testEntry))
 	assert.Error(t, m.commit(context.Background(), p, false))
 	_, err = m.mappings(name)
 	assert.Error(t, err)
@@ -424,6 +428,83 @@ func TestCleanup(t *testing.T) {
 	assert.False(t, ok)
 	_, ok = topo.inSyncOf(name)
 	assert.True(t, ok, "entries of existing indexes stay")
+}
+
+// A bulk over several indexes ships them side by side, and reports every
+// index that could not be made durable.
+func TestCommitAllShipsIndexesInParallel(t *testing.T) {
+	names := []string{"TestCommitAllShipsIndexesInParallel.index_1", "TestCommitAllShipsIndexesInParallel.index_2"}
+	topo := newFakeTopology("node-a")
+	for _, name := range names {
+		newDiskIndex(t, name)
+		topo.set(name, "node-a", "node-b")
+	}
+
+	var mu sync.Mutex
+	arrived := map[string]bool{}
+	together := make(chan struct{})
+	alone, down := false, false
+	transport := &funcTransport{replicate: func(_ string, b *Batch) (Ack, error) {
+		mu.Lock()
+		arrived[b.Index] = true
+		if len(arrived) == len(names) {
+			select {
+			case <-together:
+			default:
+				close(together)
+			}
+		}
+		failing := down
+		mu.Unlock()
+		if failing {
+			return Ack{}, errors.New("connection refused")
+		}
+		// hold the batch until the other index ships too
+		select {
+		case <-together:
+		case <-time.After(5 * time.Second):
+			mu.Lock()
+			alone = true
+			mu.Unlock()
+		}
+		return Ack{Seq: b.From - 1 + uint64(len(b.Ops))}, nil
+	}}
+	m := newManager(t, ModeDocument, topo, transport)
+	activate(t, m)
+	ctx := context.Background()
+
+	require.NoError(t, PrepareAll(ctx))
+	for _, name := range names {
+		// only an index with an in-sync replica behind is committed
+		p := m.primaries[name]
+		p.mu.Lock()
+		p.insync = []string{"node-b"}
+		p.mu.Unlock()
+		m.record(name, "0", []byte(testEntry))
+	}
+	require.NoError(t, CommitAll(ctx))
+	mu.Lock()
+	assert.False(t, alone, "an index waited for another one to finish")
+	mu.Unlock()
+	for _, name := range names {
+		p := m.primaries[name]
+		p.mu.Lock()
+		assert.Equal(t, uint64(1), p.acked["node-b"], name)
+		p.mu.Unlock()
+	}
+
+	for _, name := range names {
+		m.record(name, "0", []byte(testEntry))
+	}
+	mu.Lock()
+	down = true
+	mu.Unlock()
+	topo.insyncErr = errors.New("etcd down")
+	err := CommitAll(ctx)
+	topo.insyncErr = nil
+	for _, name := range names {
+		assert.ErrorContains(t, err, name)
+	}
 }
 
 // The exported entry points act on the running manager.
