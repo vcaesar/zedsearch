@@ -16,6 +16,7 @@
 package assoc
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -32,7 +33,7 @@ type entry struct {
 // suggestEntries runs one named suggestion and returns its entries.
 func suggestEntries(t *testing.T, body map[string]interface{}) []entry {
 	t.Helper()
-	rv, err := Suggest(testReaders(t), body, testMappings(), nil)
+	rv, err := Suggest(context.Background(), testReaders(t), body, testMappings(), nil)
 	require.NoError(t, err)
 	require.Contains(t, rv, "s")
 	var entries []entry
@@ -113,7 +114,7 @@ func TestSuggest_Term(t *testing.T) {
 	})
 
 	t.Run("several suggestions", func(t *testing.T) {
-		rv, err := Suggest(testReaders(t), map[string]interface{}{
+		rv, err := Suggest(context.Background(), testReaders(t), map[string]interface{}{
 			"text": "quikc",
 			"a":    map[string]interface{}{"term": map[string]interface{}{"field": "body"}},
 			"b":    map[string]interface{}{"text": "tehc", "term": map[string]interface{}{"field": "tag"}},
@@ -123,7 +124,7 @@ func TestSuggest_Term(t *testing.T) {
 	})
 
 	t.Run("nil mappings", func(t *testing.T) {
-		rv, err := Suggest(testReaders(t), term("quikc", map[string]interface{}{}), nil, nil)
+		rv, err := Suggest(context.Background(), testReaders(t), term("quikc", map[string]interface{}{}), nil, nil)
 		require.NoError(t, err)
 		assert.Len(t, rv["s"], 1)
 	})
@@ -313,7 +314,7 @@ func TestSuggest_Errors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := Suggest(readers, tt.body, testMappings(), nil)
+			_, err := Suggest(context.Background(), readers, tt.body, testMappings(), nil)
 			assert.Error(t, err)
 		})
 	}

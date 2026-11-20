@@ -22,6 +22,8 @@ import (
 	"strings"
 
 	"github.com/vcaesar/riot"
+	"github.com/vcaesar/riot/search"
+
 	"github.com/vcaesar/zedsearch/pkg/errors"
 	"github.com/vcaesar/zedsearch/pkg/meta"
 	"github.com/vcaesar/zedsearch/pkg/zutils"
@@ -64,6 +66,14 @@ func TermQuery(query map[string]interface{}, mappings *meta.Mappings) (riot.Quer
 	}
 
 	// TODO: case_insensitive support
+
+	if field == "_index" {
+		name, ok := value.Value.(string)
+		if !ok {
+			return nil, errors.New(errors.ErrorTypeXContentParseException, fmt.Sprintf("[term] _index doesn't support values of type: %T", value.Value))
+		}
+		return &indexQuery{name: name}, nil
+	}
 
 	prop, _ := mappings.GetProperty(field)
 	switch prop.Type {
@@ -110,4 +120,60 @@ func TermQueryText(field string, value *meta.TermQuery) (riot.Query, error) {
 		subq.SetBoost(value.Boost)
 	}
 	return subq, nil
+}
+
+// indexQuery matches the documents of the index name. _index is stored, not
+// indexed, and a reader holds the documents of one index: the first document
+// with an _index decides for all of them. Documents without _index match.
+type indexQuery struct {
+	name string
+}
+
+func (q *indexQuery) Searcher(i search.Reader, options search.SearcherOptions) (search.Searcher, error) {
+	s, err := riot.NewMatchAllQuery().Searcher(i, options)
+	if err != nil {
+		return nil, err
+	}
+	return &indexSearcher{Searcher: s, reader: i, name: q.name}, nil
+}
+
+type indexSearcher struct {
+	search.Searcher
+	reader  search.Reader
+	name    string
+	checked bool // a document told the index of the reader
+	other   bool // the reader is of another index
+}
+
+func (s *indexSearcher) filter(ctx *search.Context, dm *search.DocumentMatch, err error) (*search.DocumentMatch, error) {
+	if err != nil || dm == nil {
+		return nil, err
+	}
+	if !s.checked {
+		err := s.reader.VisitStoredFields(dm.Number, func(field string, value []byte) bool {
+			if field == "_index" {
+				s.checked, s.other = true, string(value) != s.name
+				return false
+			}
+			return true
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	if s.other {
+		ctx.DocumentMatchPool.Put(dm)
+		return nil, nil
+	}
+	return dm, nil
+}
+
+func (s *indexSearcher) Next(ctx *search.Context) (*search.DocumentMatch, error) {
+	dm, err := s.Searcher.Next(ctx)
+	return s.filter(ctx, dm, err)
+}
+
+func (s *indexSearcher) Advance(ctx *search.Context, number uint64) (*search.DocumentMatch, error) {
+	dm, err := s.Searcher.Advance(ctx, number)
+	return s.filter(ctx, dm, err)
 }

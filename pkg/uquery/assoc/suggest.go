@@ -25,6 +25,7 @@ The other parts of this work are licensed under the [Apache license](./LICENSE).
 package assoc
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"regexp"
@@ -52,6 +53,7 @@ func paramSize(kind, key string, v interface{}) (int, error) {
 }
 
 type suggester struct {
+	ctx       context.Context
 	readers   []*riot.Reader
 	mappings  *meta.Mappings
 	analyzers map[string]*analysis.Analyzer
@@ -69,7 +71,7 @@ type suggestion struct {
 // Elasticsearch "suggest" response: {"name": [{text, offset, length, options}]}.
 // It supports the term, phrase (simplified, see phraseSuggest) and
 // completion suggesters.
-func Suggest(readers []*riot.Reader, suggest map[string]interface{}, mappings *meta.Mappings, analyzers map[string]*analysis.Analyzer) (map[string]interface{}, error) {
+func Suggest(ctx context.Context, readers []*riot.Reader, suggest map[string]interface{}, mappings *meta.Mappings, analyzers map[string]*analysis.Analyzer) (map[string]interface{}, error) {
 	if mappings == nil {
 		mappings = meta.NewMappings()
 	}
@@ -77,7 +79,7 @@ func Suggest(readers []*riot.Reader, suggest map[string]interface{}, mappings *m
 	if err != nil {
 		return nil, err
 	}
-	s := &suggester{readers: readers, mappings: mappings, analyzers: analyzers, numDocs: numDocs}
+	s := &suggester{ctx: ctx, readers: readers, mappings: mappings, analyzers: analyzers, numDocs: numDocs}
 
 	var global string
 	if v, ok := suggest["text"]; ok {
@@ -266,7 +268,7 @@ func (s *suggester) termSuggest(text string, opts map[string]interface{}) ([]int
 // termCandidates returns the corrections of term, like Lucene
 // DirectSpellChecker, and the doc freq of term itself.
 func (s *suggester) termCandidates(o *termOpts, term string) ([]termOption, uint64, error) {
-	freq, err := docFreq(s.readers, o.field, term)
+	freq, err := docFreq(s.ctx, s.readers, o.field, term)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -279,7 +281,7 @@ func (s *suggester) termCandidates(o *termOpts, term string) ([]termOption, uint
 	}
 
 	prefix := string(runes[:min(max(o.prefixLength, 0), len(runes))])
-	terms, err := prefixTerms(s.readers, o.field, prefix)
+	terms, err := prefixTerms(s.ctx, s.readers, o.field, prefix)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -301,7 +303,7 @@ func (s *suggester) termCandidates(o *termOpts, term string) ([]termOption, uint
 		if score < o.accuracy {
 			continue
 		}
-		cfreq, err := docFreq(s.readers, o.field, candidate)
+		cfreq, err := docFreq(s.ctx, s.readers, o.field, candidate)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -638,7 +640,7 @@ func (s *suggester) completionSuggest(in suggestion, opts map[string]interface{}
 		if err != nil {
 			return nil, errors.New(errors.ErrorTypeIllegalArgumentException, fmt.Sprintf("[completion] invalid regex [%s]", input)).Cause(err)
 		}
-		terms, err := prefixTerms(s.readers, o.field, "")
+		terms, err := prefixTerms(s.ctx, s.readers, o.field, "")
 		if err != nil {
 			return nil, err
 		}
@@ -657,7 +659,7 @@ func (s *suggester) completionSuggest(in suggestion, opts map[string]interface{}
 		if edits > 0 {
 			prefix = string(runes[:min(max(o.prefixLength, 0), len(runes))])
 		}
-		terms, err := prefixTerms(s.readers, o.field, prefix)
+		terms, err := prefixTerms(s.ctx, s.readers, o.field, prefix)
 		if err != nil {
 			return nil, err
 		}
@@ -687,7 +689,7 @@ func (s *suggester) completionSuggest(in suggestion, opts map[string]interface{}
 		if o.skipDuplicates {
 			limit = 1
 		}
-		docs, err := searchDocs(s.readers, riot.NewTermQuery(m.term).SetField(o.field), limit)
+		docs, err := searchDocs(s.ctx, s.readers, riot.NewTermQuery(m.term).SetField(o.field), limit)
 		if err != nil {
 			return nil, err
 		}

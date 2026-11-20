@@ -16,6 +16,7 @@
 package assoc
 
 import (
+	"context"
 	"math"
 	"sort"
 	"strconv"
@@ -103,7 +104,7 @@ func searchIDs(t *testing.T, readers []*riot.Reader, dsl map[string]interface{})
 	t.Helper()
 	q, err := query.Query(dsl, testMappings(), nil)
 	require.NoError(t, err)
-	docs, err := searchDocs(readers, q, 100)
+	docs, err := searchDocs(context.Background(), readers, q, 100)
 	require.NoError(t, err)
 	ids := make([]string, 0, len(docs))
 	for _, d := range docs {
@@ -142,7 +143,7 @@ func TestHelpers(t *testing.T) {
 		}
 		for _, tt := range tests {
 			t.Run(tt.field+"/"+tt.term, func(t *testing.T) {
-				df, err := docFreq(readers, tt.field, tt.term)
+				df, err := docFreq(context.Background(), readers, tt.field, tt.term)
 				require.NoError(t, err)
 				assert.Equal(t, tt.want, df)
 			})
@@ -150,10 +151,10 @@ func TestHelpers(t *testing.T) {
 	})
 
 	t.Run("prefixTerms", func(t *testing.T) {
-		terms, err := prefixTerms(readers, "body", "fo")
+		terms, err := prefixTerms(context.Background(), readers, "body", "fo")
 		require.NoError(t, err)
 		assert.Equal(t, map[string]struct{}{"for": {}, "fox": {}, "foxes": {}}, terms)
-		all, err := prefixTerms(readers, "tag", "")
+		all, err := prefixTerms(context.Background(), readers, "tag", "")
 		require.NoError(t, err)
 		assert.Equal(t, map[string]struct{}{"animal": {}, "food": {}, "tech": {}}, all)
 	})
@@ -162,7 +163,7 @@ func TestHelpers(t *testing.T) {
 		// the second reader holds "animal" once, then "food" and "tech" twice:
 		// a multi-term ice iteration would count them once
 		for term, want := range map[string]uint64{"animal": 1, "food": 2, "tech": 2} {
-			df, err := docFreq(readers[1:], "tag", term)
+			df, err := docFreq(context.Background(), readers[1:], "tag", term)
 			require.NoError(t, err)
 			assert.Equal(t, want, df, term)
 		}
@@ -175,19 +176,19 @@ func TestHelpers(t *testing.T) {
 	})
 
 	t.Run("countMatches", func(t *testing.T) {
-		n, err := countMatches(readers, riot.NewTermQuery("tech").SetField("tag"))
+		n, err := countMatches(context.Background(), readers, riot.NewTermQuery("tech").SetField("tag"))
 		require.NoError(t, err)
 		assert.Equal(t, uint64(4), n)
 	})
 
 	t.Run("searchDocs", func(t *testing.T) {
-		docs, err := searchDocs(readers, riot.NewTermQuery("7").SetField("_id"), 1)
+		docs, err := searchDocs(context.Background(), readers, riot.NewTermQuery("7").SetField("_id"), 1)
 		require.NoError(t, err)
 		require.Len(t, docs, 1)
 		assert.Equal(t, "7", docs[0].ID)
 		assert.Equal(t, testIndex, docs[0].Index)
 		assert.Equal(t, "food", docs[0].Source["tag"])
-		docs, err = searchDocs(readers, riot.NewMatchAllQuery(), 3)
+		docs, err = searchDocs(context.Background(), readers, riot.NewMatchAllQuery(), 3)
 		require.NoError(t, err)
 		assert.Len(t, docs, 3)
 	})

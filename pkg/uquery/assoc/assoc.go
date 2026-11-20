@@ -51,13 +51,16 @@ func totalDocs(readers []*riot.Reader) (uint64, error) {
 
 // iterateDict calls fn with every term of field in [start, end) of every
 // reader and its doc freq in that reader. A nil end iterates to the last term.
-func iterateDict(readers []*riot.Reader, field string, start, end []byte, fn func(term string, count uint64)) error {
+func iterateDict(ctx context.Context, readers []*riot.Reader, field string, start, end []byte, fn func(term string, count uint64)) error {
 	for _, r := range readers {
 		it, err := r.DictionaryIterator(field, nil, start, end)
 		if err != nil {
 			return err
 		}
 		for e, err := it.Next(); e != nil || err != nil; e, err = it.Next() {
+			if err == nil {
+				err = ctx.Err()
+			}
 			if err != nil {
 				_ = it.Close()
 				return err
@@ -75,18 +78,18 @@ func iterateDict(readers []*riot.Reader, field string, start, end []byte, fn fun
 // returned: ice (v1.6.1) keeps the 1-hit state of the previous term while
 // iterating, so every count after a single-document term reads 1. Use
 // docFreq, whose single-term iteration is exact.
-func dictTerms(readers []*riot.Reader, field string, start, end []byte) (map[string]struct{}, error) {
+func dictTerms(ctx context.Context, readers []*riot.Reader, field string, start, end []byte) (map[string]struct{}, error) {
 	rv := make(map[string]struct{})
-	err := iterateDict(readers, field, start, end, func(term string, _ uint64) {
+	err := iterateDict(ctx, readers, field, start, end, func(term string, _ uint64) {
 		rv[term] = struct{}{}
 	})
 	return rv, err
 }
 
 // docFreq is the number of documents holding term in field.
-func docFreq(readers []*riot.Reader, field, term string) (uint64, error) {
+func docFreq(ctx context.Context, readers []*riot.Reader, field, term string) (uint64, error) {
 	var n uint64
-	err := iterateDict(readers, field, []byte(term), append([]byte(term), 0), func(t string, count uint64) {
+	err := iterateDict(ctx, readers, field, []byte(term), append([]byte(term), 0), func(t string, count uint64) {
 		if t == term {
 			n += count
 		}
@@ -95,11 +98,11 @@ func docFreq(readers []*riot.Reader, field, term string) (uint64, error) {
 }
 
 // prefixTerms returns the terms of field starting with prefix.
-func prefixTerms(readers []*riot.Reader, field, prefix string) (map[string]struct{}, error) {
+func prefixTerms(ctx context.Context, readers []*riot.Reader, field, prefix string) (map[string]struct{}, error) {
 	if prefix == "" {
-		return dictTerms(readers, field, nil, nil)
+		return dictTerms(ctx, readers, field, nil, nil)
 	}
-	return dictTerms(readers, field, []byte(prefix), prefixEnd([]byte(prefix)))
+	return dictTerms(ctx, readers, field, []byte(prefix), prefixEnd([]byte(prefix)))
 }
 
 // prefixEnd is the first key after all keys starting with prefix, nil if
@@ -116,12 +119,12 @@ func prefixEnd(prefix []byte) []byte {
 }
 
 // countMatches is the number of documents matching q in all readers.
-func countMatches(readers []*riot.Reader, q riot.Query) (uint64, error) {
+func countMatches(ctx context.Context, readers []*riot.Reader, q riot.Query) (uint64, error) {
 	var n uint64
 	for _, r := range readers {
 		req := riot.NewTopNSearch(0, q)
 		req.AddAggregation("count", aggregations.CountMatches())
-		dmi, err := r.Search(context.Background(), req)
+		dmi, err := r.Search(ctx, req)
 		if err != nil {
 			return 0, err
 		}
@@ -138,13 +141,13 @@ type storedDoc struct {
 }
 
 // searchDocs returns up to size documents matching q, in reader order.
-func searchDocs(readers []*riot.Reader, q riot.Query, size int) ([]storedDoc, error) {
+func searchDocs(ctx context.Context, readers []*riot.Reader, q riot.Query, size int) ([]storedDoc, error) {
 	var docs []storedDoc
 	for _, r := range readers {
 		if len(docs) >= size {
 			break
 		}
-		dmi, err := r.Search(context.Background(), riot.NewTopNSearch(size-len(docs), q))
+		dmi, err := r.Search(ctx, riot.NewTopNSearch(size-len(docs), q))
 		if err != nil {
 			return nil, err
 		}

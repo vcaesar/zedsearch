@@ -45,10 +45,10 @@ const MaxPinnedDocs = 100
 const pinnedBaseScore = 1e30
 
 // PinnedQuery promotes the listed documents above the organic query, in the
-// listed order. docs entries are {"_index", "_id"}; _index is accepted but
-// not checked, as an index only holds its own documents.
+// listed order. docs entries are {"_index", "_id"}: a document is pinned in
+// its index only, in any index without _index.
 func PinnedQuery(query map[string]interface{}, mappings *meta.Mappings, analyzers map[string]*analysis.Analyzer) (riot.Query, error) {
-	var ids []string
+	var docs []pinnedDoc
 	var organic riot.Query
 	hasIDs, hasDocs := false, false
 	for k, v := range query {
@@ -65,7 +65,7 @@ func PinnedQuery(query map[string]interface{}, mappings *meta.Mappings, analyzer
 				if !ok {
 					return nil, errors.New(errors.ErrorTypeXContentParseException, fmt.Sprintf("[pinned] ids doesn't support values of type: %T", item))
 				}
-				ids = append(ids, id)
+				docs = append(docs, pinnedDoc{id: id})
 			}
 		case "docs":
 			hasDocs = true
@@ -82,7 +82,11 @@ func PinnedQuery(query map[string]interface{}, mappings *meta.Mappings, analyzer
 				if !ok || id == "" {
 					return nil, errors.New(errors.ErrorTypeParsingException, "[pinned] docs entry requires [_id]")
 				}
-				ids = append(ids, id)
+				index, ok := doc["_index"].(string)
+				if !ok && doc["_index"] != nil {
+					return nil, errors.New(errors.ErrorTypeXContentParseException, fmt.Sprintf("[pinned] docs _index doesn't support values of type: %T", doc["_index"]))
+				}
+				docs = append(docs, pinnedDoc{index: index, id: id})
 			}
 		case "organic":
 			vv, ok := v.(map[string]interface{})
@@ -106,24 +110,44 @@ func PinnedQuery(query map[string]interface{}, mappings *meta.Mappings, analyzer
 	if organic == nil {
 		return nil, errors.New(errors.ErrorTypeParsingException, "[pinned] requires [organic] query")
 	}
-	if len(ids) > MaxPinnedDocs {
+	if len(docs) > MaxPinnedDocs {
 		return nil, errors.New(errors.ErrorTypeParsingException, fmt.Sprintf("[pinned] cannot pin more than %d documents", MaxPinnedDocs))
 	}
-	return NewPinnedQuery(ids, organic), nil
+	return newPinnedQuery(docs, organic), nil
+}
+
+// pinnedDoc is a pinned document, of any index when index is empty.
+type pinnedDoc struct {
+	index, id string
 }
 
 // NewPinnedQuery returns organic with the documents of ids promoted on top.
 func NewPinnedQuery(ids []string, organic riot.Query) riot.Query {
-	ids = uniqueStrings(ids)
-	if len(ids) == 0 {
-		return organic
+	docs := make([]pinnedDoc, len(ids))
+	for i, id := range ids {
+		docs[i].id = id
 	}
+	return newPinnedQuery(docs, organic)
+}
+
+func newPinnedQuery(docs []pinnedDoc, organic riot.Query) riot.Query {
 	q := &pinnedQuery{organic: organic}
 	pinned := riot.NewBooleanQuery()
-	for _, id := range ids {
-		term := riot.NewTermQuery(id).SetField("_id")
-		q.markers = append(q.markers, term)
-		pinned.AddShould(term)
+	seen := make(map[pinnedDoc]struct{}, len(docs))
+	for _, d := range docs {
+		if _, ok := seen[d]; ok || d.id == "" {
+			continue
+		}
+		seen[d] = struct{}{}
+		var marker riot.Query = riot.NewTermQuery(d.id).SetField("_id")
+		if d.index != "" {
+			marker = riot.NewBooleanQuery().AddMust(marker, &indexQuery{name: d.index})
+		}
+		q.markers = append(q.markers, marker)
+		pinned.AddShould(marker)
+	}
+	if len(q.markers) == 0 {
+		return organic
 	}
 	q.all = riot.NewBooleanQuery().AddShould(pinned, organic).SetMinShould(1)
 	return q
@@ -148,19 +172,6 @@ func (q *pinnedQuery) Searcher(i search.Reader, options search.SearcherOptions) 
 
 func (q *pinnedQuery) Validate() error {
 	return validateAll(q.organic)
-}
-
-func uniqueStrings(values []string) []string {
-	seen := make(map[string]struct{}, len(values))
-	out := make([]string, 0, len(values))
-	for _, v := range values {
-		if _, ok := seen[v]; ok || v == "" {
-			continue
-		}
-		seen[v] = struct{}{}
-		out = append(out, v)
-	}
-	return out
 }
 
 // idString returns a document id given as a string or a number.

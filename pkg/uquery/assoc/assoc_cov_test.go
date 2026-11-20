@@ -16,6 +16,7 @@
 package assoc
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -194,10 +195,10 @@ func isTerm(start, end []byte) bool {
 
 func TestFaultyReader_Passthrough(t *testing.T) {
 	readers := faultyReaders(t, &faults{})
-	n, err := docFreq(readers, "body", "quick")
+	n, err := docFreq(context.Background(), readers, "body", "quick")
 	require.NoError(t, err)
 	assert.Equal(t, uint64(4), n)
-	docs, err := searchDocs(readers, riot.NewTermQuery("7").SetField("_id"), 1)
+	docs, err := searchDocs(context.Background(), readers, riot.NewTermQuery("7").SetField("_id"), 1)
 	require.NoError(t, err)
 	require.Len(t, docs, 1)
 	assert.Equal(t, "food", docs[0].Source["tag"])
@@ -205,29 +206,29 @@ func TestFaultyReader_Passthrough(t *testing.T) {
 
 func TestHelpers_ReaderErrors(t *testing.T) {
 	t.Run("dictionary iterator fails at once", func(t *testing.T) {
-		_, err := docFreq(faultyReaders(t, &faults{next: failField("body", 0)}), "body", "quick")
+		_, err := docFreq(context.Background(), faultyReaders(t, &faults{next: failField("body", 0)}), "body", "quick")
 		assert.ErrorIs(t, err, errFault)
 	})
 	t.Run("dictionary iterator fails after a term", func(t *testing.T) {
-		_, err := prefixTerms(faultyReaders(t, &faults{next: failField("body", 1)}), "body", "")
+		_, err := prefixTerms(context.Background(), faultyReaders(t, &faults{next: failField("body", 1)}), "body", "")
 		assert.ErrorIs(t, err, errFault)
 	})
 	t.Run("countMatches search fails", func(t *testing.T) {
-		_, err := countMatches(searchFailReaders(t), riot.NewMatchAllQuery())
+		_, err := countMatches(context.Background(), searchFailReaders(t), riot.NewMatchAllQuery())
 		assert.ErrorIs(t, err, errFault)
 	})
 	t.Run("searchDocs search fails", func(t *testing.T) {
-		_, err := searchDocs(searchFailReaders(t), riot.NewMatchAllQuery(), 1)
+		_, err := searchDocs(context.Background(), searchFailReaders(t), riot.NewMatchAllQuery(), 1)
 		assert.ErrorIs(t, err, errFault)
 	})
 	t.Run("stored fields fail", func(t *testing.T) {
-		_, err := searchDocs(faultyReaders(t, &faults{stored: errFault}), riot.NewMatchAllQuery(), 1)
+		_, err := searchDocs(context.Background(), faultyReaders(t, &faults{stored: errFault}), riot.NewMatchAllQuery(), 1)
 		assert.ErrorIs(t, err, errFault)
 	})
 	t.Run("invalid _source", func(t *testing.T) {
 		doc := riot.NewDocument("1").AddField(riot.NewStoredOnlyField("_source", []byte("{not json")))
 		reader := openReader(t, riot.InMemoryOnlyConfig(), covIndex, []*riot.Document{doc})
-		_, err := searchDocs([]*riot.Reader{reader}, riot.NewMatchAllQuery(), 1)
+		_, err := searchDocs(context.Background(), []*riot.Reader{reader}, riot.NewMatchAllQuery(), 1)
 		assert.Error(t, err)
 	})
 }
@@ -278,7 +279,7 @@ func TestMoreLikeThis_ReaderErrors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := MoreLikeThis(tt.readers(t), tt.body, testMappings(), nil)
+			_, err := MoreLikeThis(context.Background(), tt.readers(t), tt.body, testMappings(), nil)
 			assert.ErrorIs(t, err, errFault)
 		})
 	}
@@ -290,7 +291,7 @@ func TestMoreLikeThis_FieldTieBreak(t *testing.T) {
 		{"1", "alpha", "alpha", 1},
 		{"2", "beta", "beta", 2},
 	})
-	q, err := MoreLikeThis([]*riot.Reader{reader}, map[string]interface{}{
+	q, err := MoreLikeThis(context.Background(), []*riot.Reader{reader}, map[string]interface{}{
 		"like": "alpha", "fields": []interface{}{"tag", "body"}, "min_term_freq": 1, "min_doc_freq": 1,
 	}, testMappings(), nil)
 	require.NoError(t, err)
@@ -302,12 +303,12 @@ func TestSignificantTerms_ReaderErrors(t *testing.T) {
 	t.Run("filtered freq search fails", func(t *testing.T) {
 		resp := map[string]meta.AggregationResponse{"sig": {Buckets: []map[string]interface{}{{"key": float64(1), "doc_count": uint64(1)}}}}
 		req := map[string]meta.Aggregations{"sig": {SignificantTerms: &meta.AggregationSignificantTerms{Field: "n", MinDocCount: intPtr(1)}}}
-		assert.ErrorIs(t, SignificantTerms(searchFailReaders(t), resp, req, 1, testMappings(), nil), errFault)
+		assert.ErrorIs(t, SignificantTerms(context.Background(), searchFailReaders(t), resp, req, 1, testMappings(), nil), errFault)
 	})
 	t.Run("non numeric key of numeric field", func(t *testing.T) {
 		resp := map[string]meta.AggregationResponse{"sig": {Buckets: []map[string]interface{}{{"key": "abc", "doc_count": uint64(1)}}}}
 		req := map[string]meta.Aggregations{"sig": {SignificantTerms: &meta.AggregationSignificantTerms{Field: "n", MinDocCount: intPtr(1)}}}
-		assert.Error(t, SignificantTerms(testReaders(t), resp, req, 1, testMappings(), nil))
+		assert.Error(t, SignificantTerms(context.Background(), testReaders(t), resp, req, 1, testMappings(), nil))
 	})
 	t.Run("include list of numbers", func(t *testing.T) {
 		f, err := parseTermFilter("significant_terms", "include", []interface{}{float64(1), true})
@@ -348,13 +349,13 @@ func TestSuggest_ReaderErrors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := Suggest(faultyReaders(t, tt.f), tt.body, testMappings(), nil)
+			_, err := Suggest(context.Background(), faultyReaders(t, tt.f), tt.body, testMappings(), nil)
 			assert.ErrorIs(t, err, errFault)
 		})
 	}
 
 	t.Run("completion docs search", func(t *testing.T) {
-		_, err := Suggest(searchFailReaders(t), completion("te", map[string]interface{}{}), testMappings(), nil)
+		_, err := Suggest(context.Background(), searchFailReaders(t), completion("te", map[string]interface{}{}), testMappings(), nil)
 		assert.ErrorIs(t, err, errFault)
 	})
 }
@@ -368,7 +369,7 @@ func TestSuggest_TermTieBreak(t *testing.T) {
 		{"3", "cuts", "a", 3},
 		{"4", "cots", "a", 4},
 	})
-	rv, err := Suggest([]*riot.Reader{reader}, term("cxts", map[string]interface{}{}), testMappings(), nil)
+	rv, err := Suggest(context.Background(), []*riot.Reader{reader}, term("cxts", map[string]interface{}{}), testMappings(), nil)
 	require.NoError(t, err)
 	entries := rv["s"].([]interface{})
 	require.Len(t, entries, 1)
@@ -395,6 +396,54 @@ func TestSuggest_CompletionOptions(t *testing.T) {
 			entries := suggestEntries(t, tt.input)
 			require.Len(t, entries, 1)
 			assert.Equal(t, tt.want, texts(entries[0].options))
+		})
+	}
+}
+
+// TestContext_Canceled pins that the dictionary walks and searches of the
+// package stop with the error of a done request context.
+func TestContext_Canceled(t *testing.T) {
+	readers := testReaders(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	tests := []struct {
+		name string
+		run  func() error
+	}{
+		{"docFreq", func() error {
+			_, err := docFreq(ctx, readers, "body", "quick")
+			return err
+		}},
+		{"prefixTerms", func() error {
+			_, err := prefixTerms(ctx, readers, "body", "")
+			return err
+		}},
+		{"countMatches", func() error {
+			_, err := countMatches(ctx, readers, riot.NewMatchAllQuery())
+			return err
+		}},
+		{"searchDocs", func() error {
+			_, err := searchDocs(ctx, readers, riot.NewMatchAllQuery(), 1)
+			return err
+		}},
+		{"Suggest", func() error {
+			_, err := Suggest(ctx, readers, term("quikc", map[string]interface{}{"prefix_length": 0}), testMappings(), nil)
+			return err
+		}},
+		{"MoreLikeThis", func() error {
+			_, err := MoreLikeThis(ctx, readers, map[string]interface{}{"like": "quick brown fox", "fields": []interface{}{"body"}, "min_term_freq": 1}, testMappings(), nil)
+			return err
+		}},
+		{"SignificantTerms", func() error {
+			resp := map[string]meta.AggregationResponse{"sig": textResponse()}
+			req := map[string]meta.Aggregations{"sig": {SignificantText: &meta.AggregationSignificantTerms{Field: "body", MinDocCount: intPtr(1)}}}
+			return SignificantTerms(ctx, readers, resp, req, 4, testMappings(), nil)
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.ErrorIs(t, tt.run(), context.Canceled)
 		})
 	}
 }

@@ -16,6 +16,7 @@
 package assoc
 
 import (
+	"context"
 	"math"
 	"sort"
 	"testing"
@@ -172,7 +173,7 @@ func TestMoreLikeThis(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			q, err := MoreLikeThis(readers, tt.body, testMappings(), nil)
+			q, err := MoreLikeThis(context.Background(), readers, tt.body, testMappings(), nil)
 			require.NoError(t, err)
 			terms, _ := mltTerms(t, q)
 			assert.Equal(t, tt.wantTerms, terms)
@@ -196,7 +197,7 @@ func TestMoreLikeThis(t *testing.T) {
 	}
 
 	t.Run("boost_terms normalizes to the top term", func(t *testing.T) {
-		q, err := MoreLikeThis(readers, loose(map[string]interface{}{"like": "quick quick fox fox", "boost_terms": 2}), testMappings(), nil)
+		q, err := MoreLikeThis(context.Background(), readers, loose(map[string]interface{}{"like": "quick quick fox fox", "boost_terms": 2}), testMappings(), nil)
 		require.NoError(t, err)
 		terms, boosts := mltTerms(t, q)
 		assert.Equal(t, []string{"body:fox", "body:quick"}, terms)
@@ -205,7 +206,7 @@ func TestMoreLikeThis(t *testing.T) {
 	})
 
 	t.Run("boost scales every term", func(t *testing.T) {
-		q, err := MoreLikeThis(readers, loose(map[string]interface{}{"like": "fox lazy", "boost": 3, "minimum_should_match": 2}), testMappings(), nil)
+		q, err := MoreLikeThis(context.Background(), readers, loose(map[string]interface{}{"like": "fox lazy", "boost": 3, "minimum_should_match": 2}), testMappings(), nil)
 		require.NoError(t, err)
 		_, boosts := mltTerms(t, q)
 		assert.Equal(t, []float64{3, 3}, boosts)
@@ -214,7 +215,7 @@ func TestMoreLikeThis(t *testing.T) {
 	})
 
 	t.Run("nil mappings", func(t *testing.T) {
-		q, err := MoreLikeThis(readers, loose(map[string]interface{}{"like": "lazy"}), nil, nil)
+		q, err := MoreLikeThis(context.Background(), readers, loose(map[string]interface{}{"like": "lazy"}), nil, nil)
 		require.NoError(t, err)
 		terms, _ := mltTerms(t, q)
 		assert.Equal(t, []string{"body:lazy"}, terms)
@@ -292,7 +293,7 @@ func TestMoreLikeThis_SameIDInTwoIndexes(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			q, err := MoreLikeThis(readers, tt.body, testMappings(), nil)
+			q, err := MoreLikeThis(context.Background(), readers, tt.body, testMappings(), nil)
 			require.NoError(t, err)
 			terms, _ := mltTerms(t, q)
 			sort.Strings(terms)
@@ -305,7 +306,7 @@ func TestMoreLikeThis_SameIDInTwoIndexes(t *testing.T) {
 			}
 			parsed, err := query.Query(q, testMappings(), nil)
 			require.NoError(t, err)
-			docs, err := searchDocs(readers, parsed, 100)
+			docs, err := searchDocs(context.Background(), readers, parsed, 100)
 			require.NoError(t, err)
 			hits := make([]string, 0, len(docs))
 			for _, d := range docs {
@@ -351,13 +352,13 @@ func TestMoreLikeThis_Errors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := MoreLikeThis(readers, tt.body, testMappings(), nil)
+			_, err := MoreLikeThis(context.Background(), readers, tt.body, testMappings(), nil)
 			assert.Error(t, err)
 		})
 	}
 
 	t.Run("accepted item keys", func(t *testing.T) {
-		_, err := MoreLikeThis(readers, map[string]interface{}{"_name": "n", "like": map[string]interface{}{"_id": "1", "routing": "r"}}, meta.NewMappings(), nil)
+		_, err := MoreLikeThis(context.Background(), readers, map[string]interface{}{"_name": "n", "like": map[string]interface{}{"_id": "1", "routing": "r"}}, meta.NewMappings(), nil)
 		assert.NoError(t, err)
 	})
 }

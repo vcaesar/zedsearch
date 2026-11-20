@@ -16,6 +16,7 @@
 package assoc
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"regexp"
@@ -35,6 +36,7 @@ import (
 type heuristic func(fg, fgSize, bg, bgSize float64) float64
 
 type significance struct {
+	ctx       context.Context
 	readers   []*riot.Reader
 	mappings  *meta.Mappings
 	analyzers map[string]*analysis.Analyzer
@@ -51,14 +53,14 @@ type significance struct {
 // documents matched by the search; nested aggregations use the doc_count of
 // their parent bucket as foreground size. The readers are those of the
 // search, so a time range query narrows the background to the shards in it.
-func SignificantTerms(readers []*riot.Reader, aggs map[string]meta.AggregationResponse, req map[string]meta.Aggregations, fgCount uint64, mappings *meta.Mappings, analyzers map[string]*analysis.Analyzer) error {
+func SignificantTerms(ctx context.Context, readers []*riot.Reader, aggs map[string]meta.AggregationResponse, req map[string]meta.Aggregations, fgCount uint64, mappings *meta.Mappings, analyzers map[string]*analysis.Analyzer) error {
 	if len(req) == 0 || len(aggs) == 0 {
 		return nil
 	}
 	if mappings == nil {
 		mappings = meta.NewMappings()
 	}
-	s := &significance{readers: readers, mappings: mappings, analyzers: analyzers, total: func() (uint64, error) {
+	s := &significance{ctx: ctx, readers: readers, mappings: mappings, analyzers: analyzers, total: func() (uint64, error) {
 		return totalDocs(readers)
 	}}
 	return s.walk(aggs, req, fgCount)
@@ -180,7 +182,7 @@ func (s *significance) rewrite(kind string, r *meta.AggregationResponse, sig *me
 		if bgFilter, err = query.Query(sig.BackgroundFilter, s.mappings, s.analyzers); err != nil {
 			return errors.New(errors.ErrorTypeParsingException, fmt.Sprintf("[%s] background_filter parse err", kind)).Cause(err)
 		}
-		bgSize, err = countMatches(s.readers, bgFilter)
+		bgSize, err = countMatches(s.ctx, s.readers, bgFilter)
 	} else {
 		bgSize, err = s.bgTotal()
 	}
@@ -206,7 +208,7 @@ func (s *significance) rewrite(kind string, r *meta.AggregationResponse, sig *me
 		}
 		var bg uint64
 		if useDict {
-			bg, err = docFreq(s.readers, sig.Field, key)
+			bg, err = docFreq(s.ctx, s.readers, sig.Field, key)
 		} else {
 			bg, err = s.filteredFreq(sig.Field, key, bgFilter)
 		}
@@ -262,7 +264,7 @@ func (s *significance) filteredFreq(field, value string, filter riot.Query) (uin
 	if filter != nil {
 		q.AddMust(filter)
 	}
-	return countMatches(s.readers, q)
+	return countMatches(s.ctx, s.readers, q)
 }
 
 // notSuperset reports foreground counts above the background ones, which

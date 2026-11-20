@@ -22,7 +22,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	segment "github.com/vcaesar/bluge_segment_api"
 	"github.com/vcaesar/riot"
+	"github.com/vcaesar/riot/search"
 )
 
 type obj = map[string]interface{}
@@ -144,6 +146,7 @@ func TestPinnedQuery_Errors(t *testing.T) {
 		{"bad docs", obj{"docs": "1", "organic": organic}, "doesn't support"},
 		{"bad doc", obj{"docs": []interface{}{"1"}, "organic": organic}, "doesn't support"},
 		{"doc without id", obj{"docs": []interface{}{obj{"_index": "i"}}, "organic": organic}, "requires [_id]"},
+		{"bad doc index", obj{"docs": []interface{}{obj{"_index": 1.0, "_id": "1"}}, "organic": organic}, "_index doesn't support"},
 		{"bad organic", obj{"ids": []interface{}{"1"}, "organic": "x"}, "doesn't support"},
 		{"bad organic query", obj{"ids": []interface{}{"1"}, "organic": obj{"nope": obj{}}}, "failed to parse"},
 		{"unknown", obj{"ids": []interface{}{"1"}, "organic": organic, "x": 1}, "unknown field"},
@@ -298,4 +301,133 @@ func TestMultiMatchFieldBoost(t *testing.T) {
 			assert.Equal(t, tt.boost, boost)
 		})
 	}
+}
+
+// indexReader returns a reader of the documents ids, stored as documents of
+// index.
+func indexReader(t *testing.T, index string, ids ...string) *riot.Reader {
+	t.Helper()
+	writer, err := riot.OpenWriter(riot.InMemoryOnlyConfig())
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, writer.Close()) })
+	batch := riot.NewBatch()
+	for _, id := range ids {
+		doc := riot.NewDocument(id).
+			AddField(riot.NewTextField("name", "apple")).
+			AddField(riot.NewStoredOnlyField("_index", []byte(index)))
+		batch.Update(riot.Identifier(id), doc)
+	}
+	require.NoError(t, writer.Batch(batch))
+	reader, err := writer.Reader()
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, reader.Close()) })
+	return reader
+}
+
+// searchOrder returns the ids of the documents of reader matching q, by rank.
+func searchOrder(t *testing.T, reader *riot.Reader, q riot.Query) []string {
+	t.Helper()
+	dmi, err := reader.Search(context.Background(), riot.NewTopNSearch(10, q))
+	require.NoError(t, err)
+	order := []string{}
+	match, err := dmi.Next()
+	for err == nil && match != nil {
+		require.NoError(t, match.VisitStoredFields(func(field string, value []byte) bool {
+			if field == "_id" {
+				order = append(order, string(value))
+				return false
+			}
+			return true
+		}))
+		match, err = dmi.Next()
+	}
+	require.NoError(t, err)
+	return order
+}
+
+func TestTermQuery_Index(t *testing.T) {
+	a := indexReader(t, "a", "1", "2")
+	parse := func(t *testing.T, index interface{}) riot.Query {
+		t.Helper()
+		q, err := Query(obj{"term": obj{"_index": index}}, testMappings(), nil)
+		require.NoError(t, err)
+		return q
+	}
+
+	tests := []struct {
+		name  string
+		index interface{}
+		want  []string
+	}{
+		{"index of the reader", "a", []string{"1", "2"}},
+		{"index of the reader as object", obj{"value": "a"}, []string{"1", "2"}},
+		{"another index", "b", []string{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			q := parse(t, tt.index)
+			assert.ElementsMatch(t, tt.want, searchOrder(t, a, q))
+			assert.ElementsMatch(t, tt.want, searchOrder(t, a, &advanceQuery{inner: q}))
+		})
+	}
+
+	t.Run("documents without _index match", func(t *testing.T) {
+		scores, _ := rankScores(t, obj{"term": obj{"_index": "a"}})
+		assert.Len(t, scores, len(functionScoreDocs))
+	})
+
+	t.Run("value that is not a string", func(t *testing.T) {
+		_, err := TermQuery(obj{"_index": 1.0}, testMappings())
+		assert.ErrorContains(t, err, "[term] _index doesn't support values of type: float64")
+	})
+
+	t.Run("reader errors", func(t *testing.T) {
+		withSearchReader(t, a, func(r search.Reader, options search.SearcherOptions) {
+			q := &indexQuery{name: "a"}
+			_, err := q.Searcher(postingsErrReader{r}, options)
+			assert.ErrorIs(t, err, errFake)
+
+			s, err := q.Searcher(storedErrReader{r}, options)
+			require.NoError(t, err)
+			defer func() { assert.NoError(t, s.Close()) }()
+			dm, err := s.Next(search.NewSearchContext(s.DocumentMatchPoolSize(), 0))
+			assert.Nil(t, dm)
+			assert.ErrorIs(t, err, errFake)
+		})
+	})
+}
+
+// postingsErrReader fails to open postings, storedErrReader to read stored
+// fields.
+type postingsErrReader struct{ search.Reader }
+
+func (postingsErrReader) PostingsIterator([]byte, string, bool, bool, bool) (segment.PostingsIterator, error) {
+	return nil, errFake
+}
+
+type storedErrReader struct{ search.Reader }
+
+func (storedErrReader) VisitStoredFields(uint64, segment.StoredFieldVisitor) error {
+	return errFake
+}
+
+func TestPinnedQuery_DocsIndex(t *testing.T) {
+	a, b := indexReader(t, "a", "1", "2", "3"), indexReader(t, "b", "1", "2", "3")
+	q, err := Query(obj{"pinned": obj{
+		"docs": []interface{}{
+			obj{"_index": "a", "_id": "3"}, obj{"_index": "a", "_id": "3"},
+			obj{"_index": "b", "_id": "2"}, obj{"_id": "1"},
+		},
+		"organic": obj{"match": obj{"name": "apple"}},
+	}}, testMappings(), nil)
+	require.NoError(t, err)
+	assert.Len(t, q.(*pinnedQuery).markers, 3)
+
+	// a document is pinned in its own index only, in all without _index
+	order := searchOrder(t, a, q)
+	require.Len(t, order, 3)
+	assert.Equal(t, []string{"3", "1"}, order[:2])
+	order = searchOrder(t, b, q)
+	require.Len(t, order, 3)
+	assert.Equal(t, []string{"2", "1"}, order[:2])
 }

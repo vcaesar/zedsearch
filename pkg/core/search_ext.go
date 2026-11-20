@@ -30,6 +30,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/rs/zerolog/log"
 	"github.com/vcaesar/riot"
 	"github.com/vcaesar/riot/analysis"
 
@@ -38,6 +39,7 @@ import (
 	"github.com/vcaesar/zedsearch/pkg/meta"
 	"github.com/vcaesar/zedsearch/pkg/metadata"
 	"github.com/vcaesar/zedsearch/pkg/uquery"
+	"github.com/vcaesar/zedsearch/pkg/uquery/aggregation"
 	"github.com/vcaesar/zedsearch/pkg/uquery/assoc"
 	uquerydsl "github.com/vcaesar/zedsearch/pkg/uquery/query"
 )
@@ -56,14 +58,14 @@ type searchExt struct {
 
 // prepareSearch rewrites the rule and more_like_this queries, which need the
 // stored rulesets and the readers, and widens the page to the rescore window.
-func prepareSearch(query *meta.ZedQuery, mappings *meta.Mappings, analyzers map[string]*analysis.Analyzer, readers []*riot.Reader) (*searchExt, error) {
+func prepareSearch(ctx context.Context, query *meta.ZedQuery, mappings *meta.Mappings, analyzers map[string]*analysis.Analyzer, readers []*riot.Reader) (*searchExt, error) {
 	ext := &searchExt{query: query, mappings: mappings, analyzers: analyzers, readers: readers}
 	rewritten, err := uquery.Transform(query.Query, map[string]uquery.TransformFunc{
 		"rule": func(body map[string]interface{}) (map[string]interface{}, error) {
 			return uquery.RuleQuery(body, metadata.QueryRules.Get)
 		},
 		"more_like_this": func(body map[string]interface{}) (map[string]interface{}, error) {
-			return assoc.MoreLikeThis(readers, body, mappings, analyzers)
+			return assoc.MoreLikeThis(ctx, readers, body, mappings, analyzers)
 		},
 	})
 	if err != nil {
@@ -133,8 +135,9 @@ func scoreSorted(v interface{}) bool {
 	return false
 }
 
-// finish rescores the hits of resp and adds suggestions and significant
-// terms. It runs before the readers are closed.
+// finish rescores the hits of resp, adds suggestions and significant terms
+// and evaluates the pipeline aggregations. It runs before the readers are
+// closed.
 func (ext *searchExt) finish(ctx context.Context, resp *meta.SearchResponse) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -148,7 +151,7 @@ func (ext *searchExt) finish(ctx context.Context, resp *meta.SearchResponse) err
 		return err
 	}
 	if len(ext.query.Suggest) > 0 {
-		suggest, err := assoc.Suggest(ext.readers, ext.query.Suggest, ext.mappings, ext.analyzers)
+		suggest, err := assoc.Suggest(ctx, ext.readers, ext.query.Suggest, ext.mappings, ext.analyzers)
 		if err != nil {
 			return err
 		}
@@ -160,16 +163,21 @@ func (ext *searchExt) finish(ctx context.Context, resp *meta.SearchResponse) err
 	if len(ext.query.Aggregations) > 0 && resp.Aggregations != nil {
 		// #nosec G115 -- hit counts are non-negative
 		fg := uint64(resp.Hits.Total.Value)
-		if err := assoc.SignificantTerms(ext.readers, resp.Aggregations, ext.query.Aggregations, fg, ext.mappings, ext.analyzers); err != nil {
+		if err := assoc.SignificantTerms(ctx, ext.readers, resp.Aggregations, ext.query.Aggregations, fg, ext.mappings, ext.analyzers); err != nil {
 			return err
 		}
+		// pipeline aggregations read the final buckets, so they run last
+		if err := aggregation.ApplyPipelines(resp.Aggregations, ext.query.Aggregations); err != nil {
+			log.Printf("core.SearchV2: error applying pipeline aggregations: %s", err.Error())
+		}
 	}
-	return nil
+	return ctx.Err()
 }
 
 // rescore applies each rescorer to its window of top hits, reorders all the
 // hits, as Elasticsearch weights the hits past the window by query_weight,
-// then cuts the requested page.
+// then cuts the requested page. The window is cut from the merged hits of
+// all shards, not from the hits of each shard as Elasticsearch does.
 func (ext *searchExt) rescore(ctx context.Context, resp *meta.SearchResponse) error {
 	hits := resp.Hits.Hits
 	for _, r := range ext.rescorers {

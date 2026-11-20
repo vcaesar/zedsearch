@@ -37,10 +37,8 @@ func FormatResponse(resp *meta.SearchResponse, q *meta.ZedQuery, buckets *search
 			delete(resp.Aggregations, "duration")
 			delete(resp.Aggregations, "max_score")
 		}
-		// pipeline aggregations read the rendered tree, they must run last
-		if err := aggregation.ApplyPipelines(resp.Aggregations, q.Aggregations); err != nil {
-			return err
-		}
+		// pipeline aggregations read the final tree: the caller applies them
+		// once the significance buckets are rewritten
 	}
 
 	return nil

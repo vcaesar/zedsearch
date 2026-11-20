@@ -36,9 +36,10 @@ import (
 var scriptDocField = regexp.MustCompile(`doc\s*\[\s*['"]([^'"]+)['"]\s*\]`)
 
 // scriptRewrite finds the doc['field'].empty checks and .size() calls of a
-// script, and its string literals, which are matched to be left unchanged:
-// a literal starts before any check it contains, so it is matched first.
-var scriptRewrite = regexp.MustCompile(`(doc\s*\[\s*['"][^'"]+['"]\s*\])\.empty\b|\.size\(\)|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'`)
+// script, and its comments and string literals, which are matched to be left
+// unchanged: they start before any check or quote they contain, so they are
+// matched first.
+var scriptRewrite = regexp.MustCompile(`(doc\s*\[\s*['"][^'"]+['"]\s*\])\.empty\b|\.size\(\)|/\*[\s\S]*?\*/|//[^\n]*|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'`)
 
 // scriptFunctions are the painless score functions and Math helpers a
 // script_score script may call; scripts are evaluated with expr, so the

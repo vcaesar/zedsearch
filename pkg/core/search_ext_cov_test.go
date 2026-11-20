@@ -69,26 +69,78 @@ func TestSearchFailed(t *testing.T) {
 	assert.ErrorIs(t, err, assert.AnError)
 }
 
-func TestSearch_BadRescore(t *testing.T) {
-	name := "TestSearch_BadRescore.index_1"
-	index := newRescoreIndex(t, name)
-	q := rescoreQuery("bad")
+// searchFunc is a search entrypoint over one index.
+type searchFunc func(*meta.ZedQuery) (*meta.SearchResponse, error)
 
-	_, err := index.Search(q)
-	assert.ErrorContains(t, err, "[rescore] must be an object")
-	_, err = MultiSearch([]string{name}, q)
-	assert.ErrorContains(t, err, "[rescore] must be an object")
+// searchEntrypoints returns Search and MultiSearch over index by name.
+func searchEntrypoints(index *Index) map[string]searchFunc {
+	return map[string]searchFunc{
+		"Search": index.Search,
+		"MultiSearch": func(q *meta.ZedQuery) (*meta.SearchResponse, error) {
+			return MultiSearch([]string{index.GetName()}, q)
+		},
+	}
+}
+
+func TestSearch_BadRescore(t *testing.T) {
+	index := newRescoreIndex(t, "TestSearch_BadRescore.index_1")
+	for name, search := range searchEntrypoints(index) {
+		t.Run(name, func(t *testing.T) {
+			_, err := search(rescoreQuery("bad"))
+			assert.ErrorContains(t, err, "[rescore] must be an object")
+		})
+	}
 }
 
 func TestSearch_FinishError(t *testing.T) {
-	name := "TestSearch_FinishError.index_1"
-	index := newRescoreIndex(t, name)
-	q := &meta.ZedQuery{Size: 10, Suggest: map[string]interface{}{"s": "bad"}}
+	index := newRescoreIndex(t, "TestSearch_FinishError.index_1")
+	for name, search := range searchEntrypoints(index) {
+		t.Run(name, func(t *testing.T) {
+			_, err := search(&meta.ZedQuery{Size: 10, Suggest: map[string]interface{}{"s": "bad"}})
+			assert.Error(t, err)
+		})
+	}
+}
 
-	_, err := index.Search(q)
-	assert.Error(t, err)
-	_, err = MultiSearch([]string{name}, q)
-	assert.Error(t, err)
+// TestSearch_PipelinesReadSignificantBuckets pins that pipeline aggregations
+// read the buckets significance kept, not the candidates it dropped.
+func TestSearch_PipelinesReadSignificantBuckets(t *testing.T) {
+	name := "TestSearch_PipelinesReadSignificantBuckets.index_1"
+	index, err := NewIndex(name, StorageTypeDisk, 1)
+	require.NoError(t, err)
+	require.NoError(t, StoreIndex(index))
+	t.Cleanup(func() { assert.NoError(t, DeleteIndex(name)) })
+	mappings := index.GetMappings()
+	mappings.SetProperty("tag", meta.NewProperty("keyword"))
+	require.NoError(t, index.SetMappings(mappings))
+	// x is significant for fox, y is as frequent in it as in the index
+	docs := map[string][2]string{
+		"a": {"fox", "x"}, "b": {"fox", "x"}, "c": {"fox", "y"},
+		"d": {"dog", "y"}, "e": {"dog", "z"}, "f": {"dog", "z"},
+	}
+	for id, doc := range docs {
+		require.NoError(t, index.CreateDocument(id, map[string]interface{}{"title": doc[0], "tag": doc[1]}, false))
+	}
+	waitForDocs(t, index, len(docs))
+
+	for name, search := range searchEntrypoints(index) {
+		t.Run(name, func(t *testing.T) {
+			minDocCount := 1
+			resp, err := search(&meta.ZedQuery{
+				Query: map[string]interface{}{"match": map[string]interface{}{"title": "fox"}},
+				Aggregations: map[string]meta.Aggregations{
+					"sig":   {SignificantTerms: &meta.AggregationSignificantTerms{Field: "tag", MinDocCount: &minDocCount}},
+					"total": {SumBucket: &meta.AggregationPipeline{BucketsPath: "sig>_count"}},
+				},
+			})
+			require.NoError(t, err)
+			buckets, _ := resp.Aggregations["sig"].Buckets.([]map[string]interface{})
+			require.Len(t, buckets, 1)
+			assert.Equal(t, "x", buckets[0]["key"])
+			assert.EqualValues(t, 2, buckets[0]["doc_count"])
+			assert.EqualValues(t, 2, resp.Aggregations["total"].Value)
+		})
+	}
 }
 
 func TestSearchExt_FinishErrors(t *testing.T) {
@@ -146,6 +198,13 @@ func TestSearchExt_FinishErrors(t *testing.T) {
 			resp: &meta.SearchResponse{},
 			err:  context.DeadlineExceeded,
 		},
+		{
+			name: "deadline after significant terms",
+			ctx:  &failingCtx{Context: context.Background(), ok: 3},
+			ext:  &searchExt{query: &meta.ZedQuery{}},
+			resp: &meta.SearchResponse{},
+			err:  context.DeadlineExceeded,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -157,6 +216,76 @@ func TestSearchExt_FinishErrors(t *testing.T) {
 			assert.Error(t, err)
 		})
 	}
+}
+
+// TestSearch_RuleDocsIndex pins that the docs of a rule action are pinned
+// and excluded in their own index only.
+func TestSearch_RuleDocsIndex(t *testing.T) {
+	a, b := "TestSearch_RuleDocsIndex.index_a", "TestSearch_RuleDocsIndex.index_b"
+	for _, name := range []string{a, b} {
+		index, err := NewIndex(name, StorageTypeDisk, 1)
+		require.NoError(t, err)
+		require.NoError(t, StoreIndex(index))
+		t.Cleanup(func() { assert.NoError(t, DeleteIndex(name)) })
+		for _, id := range []string{"1", "2"} {
+			require.NoError(t, index.CreateDocument(id, map[string]interface{}{"title": "fox"}, false))
+		}
+		waitForDocs(t, index, 2)
+	}
+	always := []meta.QueryRuleCriteria{{Type: "always"}}
+	set := "TestSearch_RuleDocsIndex.rules_1"
+	require.NoError(t, metadata.QueryRules.Set(set, meta.QueryRuleset{ID: set, Rules: []*meta.QueryRule{
+		{ID: "pin", Type: "pinned", Criteria: always, Actions: meta.QueryRuleActions{Docs: []meta.QueryRuleDocRef{{Index: b, ID: "2"}}}},
+		{ID: "drop", Type: "exclude", Criteria: always, Actions: meta.QueryRuleActions{Docs: []meta.QueryRuleDocRef{{Index: a, ID: "1"}}}},
+	}}))
+	t.Cleanup(func() { assert.NoError(t, metadata.QueryRules.Delete(set)) })
+
+	resp, err := MultiSearch([]string{a, b}, &meta.ZedQuery{Size: 10, Query: map[string]interface{}{"rule": map[string]interface{}{
+		"ruleset_ids":    []interface{}{set},
+		"match_criteria": map[string]interface{}{},
+		"organic":        map[string]interface{}{"match": map[string]interface{}{"title": "fox"}},
+	}}})
+	require.NoError(t, err)
+	hits := make([]string, len(resp.Hits.Hits))
+	for i, h := range resp.Hits.Hits {
+		hits[i] = h.Index + "/" + h.ID
+	}
+	require.Len(t, hits, 3)
+	assert.Equal(t, b+"/2", hits[0])
+	assert.ElementsMatch(t, []string{a + "/2", b + "/1"}, hits[1:])
+	assert.Less(t, resp.Hits.Hits[1].Score, resp.Hits.Hits[0].Score/2, "the same id of the other index is not pinned")
+}
+
+// TestPrepareSearch_HonorsDeadline pins that the more_like_this rewrite stops
+// with the search deadline.
+func TestPrepareSearch_HonorsDeadline(t *testing.T) {
+	index := newRescoreIndex(t, "TestPrepareSearch_HonorsDeadline.index_1")
+	readers, err := index.GetReaders(0, 0)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		for _, r := range readers {
+			assert.NoError(t, r.Close())
+		}
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	q := &meta.ZedQuery{Query: map[string]interface{}{"more_like_this": map[string]interface{}{
+		"like": "fox", "fields": []interface{}{"title"}, "min_term_freq": 1, "min_doc_freq": 1,
+	}}}
+	_, err = prepareSearch(ctx, q, index.GetMappings(), index.GetAnalyzers(), readers)
+	assert.ErrorIs(t, err, context.Canceled)
+}
+
+// TestSearchExt_FinishPipelineError pins that a failing pipeline aggregation
+// is logged and leaves the search answered, as before pipelines moved here.
+func TestSearchExt_FinishPipelineError(t *testing.T) {
+	ext := &searchExt{query: &meta.ZedQuery{Aggregations: map[string]meta.Aggregations{
+		"avg_sales": {AvgBucket: &meta.AggregationPipeline{BucketsPath: "missing>sales"}},
+	}}}
+	resp := &meta.SearchResponse{Aggregations: map[string]meta.AggregationResponse{}}
+	require.NoError(t, ext.finish(context.Background(), resp))
+	assert.Empty(t, resp.Aggregations)
 }
 
 func TestMultiSearch_SuggestWithoutShardReaders(t *testing.T) {

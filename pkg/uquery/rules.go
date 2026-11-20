@@ -274,14 +274,14 @@ func RuleQuery(body map[string]interface{}, lookup RulesetLookup) (map[string]in
 		return nil, errors.New(errors.ErrorTypeParsingException, "[rule] requires [match_criteria]")
 	}
 
-	var pinned, excluded []string
+	var pinned, excluded []ruleDoc
 	for _, id := range ids {
 		ruleset, err := lookup(id)
 		if err != nil {
 			return nil, errors.New(errors.ErrorTypeParsingException, fmt.Sprintf("[rule] ruleset [%s] not found", id))
 		}
 		for _, rule := range MatchQueryRules(ruleset, criteria) {
-			docs := ruleDocIDs(rule)
+			docs := ruleDocs(rule)
 			if strings.EqualFold(rule.Type, "exclude") {
 				excluded = append(excluded, docs...)
 			} else {
@@ -292,48 +292,94 @@ func RuleQuery(body map[string]interface{}, lookup RulesetLookup) (map[string]in
 	return ruleResult(organic, pinned, excluded), nil
 }
 
-func ruleDocIDs(rule *meta.QueryRule) []string {
-	ids := append([]string(nil), rule.Actions.IDs...)
-	for _, d := range rule.Actions.Docs {
-		ids = append(ids, d.ID)
-	}
-	return ids
+// ruleDoc is a document of a rule action, of any index when index is empty.
+type ruleDoc struct {
+	index, id string
 }
 
-// ruleResult builds pinned{ids, organic} with excluded ids removed from both.
-func ruleResult(organic interface{}, pinned, excluded []string) map[string]interface{} {
-	if len(excluded) > 0 {
-		drop := make(map[string]struct{}, len(excluded))
-		values := make([]interface{}, 0, len(excluded))
-		for _, id := range excluded {
-			drop[id] = struct{}{}
-			values = append(values, id)
+func ruleDocs(rule *meta.QueryRule) []ruleDoc {
+	docs := make([]ruleDoc, 0, len(rule.Actions.IDs)+len(rule.Actions.Docs))
+	for _, id := range rule.Actions.IDs {
+		docs = append(docs, ruleDoc{id: id})
+	}
+	for _, d := range rule.Actions.Docs {
+		docs = append(docs, ruleDoc{index: d.Index, id: d.ID})
+	}
+	return docs
+}
+
+// ruleResult builds pinned{ids or docs, organic} without the excluded
+// documents. A document with an index is pinned or excluded in it only.
+func ruleResult(organic interface{}, pinned, excluded []ruleDoc) map[string]interface{} {
+	// excluded, then also already pinned
+	skip := make(map[ruleDoc]struct{}, len(excluded)+len(pinned))
+	for _, d := range excluded {
+		skip[d] = struct{}{}
+	}
+	kept := make([]ruleDoc, 0, len(pinned))
+	for _, d := range pinned {
+		_, anyIndex := skip[ruleDoc{id: d.id}]
+		_, same := skip[d]
+		if d.id == "" || anyIndex || same || len(kept) == query.MaxPinnedDocs {
+			continue
 		}
-		kept := pinned[:0]
-		for _, id := range pinned {
-			if _, ok := drop[id]; !ok {
-				kept = append(kept, id)
-			}
+		skip[d] = struct{}{}
+		kept = append(kept, d)
+	}
+
+	q, ok := organic.(map[string]interface{})
+	if !ok {
+		q = map[string]interface{}{"bool": map[string]interface{}{"must": organic}}
+	}
+	if len(kept) > 0 {
+		q = map[string]interface{}{"pinned": pinnedBody(kept, organic)}
+	}
+	if len(excluded) == 0 {
+		return q
+	}
+	// outside of pinned: a document pinned in any index stays excluded in one
+	return map[string]interface{}{"bool": map[string]interface{}{"must": q, "must_not": excludeClauses(excluded)}}
+}
+
+// pinnedBody lists docs as ids, as docs when one of them names its index.
+func pinnedBody(docs []ruleDoc, organic interface{}) map[string]interface{} {
+	ids := make([]interface{}, len(docs))
+	refs := make([]interface{}, len(docs))
+	indexed := false
+	for i, d := range docs {
+		ids[i] = d.id
+		ref := map[string]interface{}{"_id": d.id}
+		if d.index != "" {
+			ref["_index"] = d.index
+			indexed = true
 		}
-		pinned = kept
-		organic = map[string]interface{}{"bool": map[string]interface{}{
-			"must":     organic,
-			"must_not": map[string]interface{}{"ids": map[string]interface{}{"values": values}},
-		}}
+		refs[i] = ref
 	}
-	pinned = unique(pinned)
-	if len(pinned) > query.MaxPinnedDocs {
-		pinned = pinned[:query.MaxPinnedDocs]
+	if indexed {
+		return map[string]interface{}{"docs": refs, "organic": organic}
 	}
-	if len(pinned) == 0 {
-		if m, ok := organic.(map[string]interface{}); ok {
-			return m
+	return map[string]interface{}{"ids": ids, "organic": organic}
+}
+
+// excludeClauses matches docs: one ids clause per index, in listed order.
+func excludeClauses(docs []ruleDoc) []interface{} {
+	var indexes []string
+	ids := make(map[string][]interface{})
+	for _, d := range docs {
+		if _, ok := ids[d.index]; !ok {
+			indexes = append(indexes, d.index)
 		}
-		return map[string]interface{}{"bool": map[string]interface{}{"must": organic}}
+		ids[d.index] = append(ids[d.index], d.id)
 	}
-	values := make([]interface{}, len(pinned))
-	for i, id := range pinned {
-		values[i] = id
+	clauses := make([]interface{}, len(indexes))
+	for i, index := range indexes {
+		clause := map[string]interface{}{"ids": map[string]interface{}{"values": ids[index]}}
+		if index != "" {
+			clause = map[string]interface{}{"bool": map[string]interface{}{"filter": []interface{}{
+				map[string]interface{}{"term": map[string]interface{}{"_index": index}}, clause,
+			}}}
+		}
+		clauses[i] = clause
 	}
-	return map[string]interface{}{"pinned": map[string]interface{}{"ids": values, "organic": organic}}
+	return clauses
 }

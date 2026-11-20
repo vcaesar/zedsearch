@@ -34,6 +34,8 @@ func TestScriptScoreQuery_Painless(t *testing.T) {
 		{"empty and", "doc['age'].empty && true ? 0 : 3", map[string]float64{"1": 3, "2": 3, "3": 3}},
 		{"space before bracket", "doc ['age'].value", map[string]float64{"1": 1, "2": 10, "3": 100}},
 		{"spaces everywhere", `doc [ "age" ].value + doc [ 'age' ].size()`, map[string]float64{"1": 2, "2": 11, "3": 101}},
+		{"quote in block comment", "/* user's note */ doc['age'].empty ? 0 : 1", map[string]float64{"1": 1, "2": 1, "3": 1}},
+		{"quote in line comment", "// user's note\ndoc['age'].empty ? 0 : 1", map[string]float64{"1": 1, "2": 1, "3": 1}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -55,6 +57,10 @@ func TestPainlessToExpr(t *testing.T) {
 		{`params.label == "doc['age'].empty" ? 1 : 0`, `params.label == "doc['age'].empty" ? 1 : 0`},
 		{`'x.size()' + doc['a'].empty`, `'x.size()' + (doc['a'].size == 0)`},
 		{`"a \"doc['b'].empty\"" + doc['c'].size()`, `"a \"doc['b'].empty\"" + doc['c'].size`},
+		{`/* user's note */ doc['age'].empty ? 0 : 1`, `/* user's note */ (doc['age'].size == 0) ? 0 : 1`},
+		{"// user's note\ndoc['age'].empty ? 0 : 1", "// user's note\n(doc['age'].size == 0) ? 0 : 1"},
+		{`/* doc['a'].empty */ doc['b'].size()`, `/* doc['a'].empty */ doc['b'].size`},
+		{`"a /* b" + doc['c'].size() + "*/"`, `"a /* b" + doc['c'].size + "*/"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.in, func(t *testing.T) {

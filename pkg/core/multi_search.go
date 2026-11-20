@@ -81,7 +81,7 @@ func MultiSearch(indexNames []string, query *meta.ZedQuery) (*meta.SearchRespons
 		resp := &meta.SearchResponse{}
 		if len(query.Suggest) > 0 {
 			mappings, analyzers := unionMappings(indexes)
-			suggest, err := assoc.Suggest(nil, query.Suggest, mappings, analyzers)
+			suggest, err := assoc.Suggest(context.Background(), nil, query.Suggest, mappings, analyzers)
 			if err != nil {
 				return nil, err
 			}
@@ -109,9 +109,9 @@ func MultiSearch(indexNames []string, query *meta.ZedQuery) (*meta.SearchRespons
 	// nested and join queries are resolved before query is parsed, and hidden
 	// nested documents are excluded from results.
 	// rule, more_like_this and rescore need the readers before query is parsed
-	ext, err := prepareSearch(query, mappings, analyzers, readers)
+	ext, err := prepareSearch(ctx, query, mappings, analyzers, readers)
 	if err != nil {
-		return nil, err
+		return searchFailed(err)
 	}
 	defer ext.restore()
 	if err := rewriteJoinQuery(query, mappings, analyzers, readers); err != nil {

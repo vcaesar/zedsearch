@@ -87,12 +87,12 @@ func TestFormatResponse(t *testing.T) {
 		assert.ErrorContains(t, err, "aggregation doesn't support")
 	})
 
-	t.Run("pipeline error", func(t *testing.T) {
+	t.Run("pipelines are left to the caller", func(t *testing.T) {
 		resp := &meta.SearchResponse{}
 		q := &meta.ZedQuery{Aggregations: map[string]meta.Aggregations{
 			"avg_sales": {AvgBucket: &meta.AggregationPipeline{BucketsPath: "missing>sales"}},
 		}}
-		err := FormatResponse(resp, q, stubBucket(map[string]search.Calculator{"count": valueCalc{v: 1}}))
-		assert.ErrorContains(t, err, "buckets_path [missing>sales] not found")
+		require.NoError(t, FormatResponse(resp, q, stubBucket(map[string]search.Calculator{"count": valueCalc{v: 1}})))
+		assert.Empty(t, resp.Aggregations)
 	})
 }

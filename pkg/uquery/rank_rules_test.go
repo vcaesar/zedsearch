@@ -140,13 +140,18 @@ func TestRuleQuery(t *testing.T) {
 
 	got, err := RuleQuery(m{"organic": organic, "ruleset_ids": []interface{}{"rs"}, "match_criteria": m{"q": "pugs"}}, lookup)
 	require.NoError(t, err)
-	pinned := got["pinned"].(m)
-	assert.Equal(t, []interface{}{"1"}, pinned["ids"])
-	assert.Equal(t, m{"bool": m{"must": organic, "must_not": m{"ids": m{"values": []interface{}{"2"}}}}}, pinned["organic"])
+	// i/2 is excluded, 2 stays pinned in the other indexes
+	dropped := []interface{}{m{"bool": m{"filter": []interface{}{
+		m{"term": m{"_index": "i"}}, m{"ids": m{"values": []interface{}{"2"}}},
+	}}}}
+	assert.Equal(t, m{"bool": m{
+		"must":     m{"pinned": m{"ids": []interface{}{"1", "2"}, "organic": organic}},
+		"must_not": dropped,
+	}}, got)
 
 	got, err = RuleQuery(m{"organic": organic, "ruleset_id": "rs", "match_criteria": m{"q": "cats"}}, lookup)
 	require.NoError(t, err)
-	assert.Contains(t, got, "bool")
+	assert.Equal(t, m{"bool": m{"must": organic, "must_not": dropped}}, got)
 
 	tests := []struct {
 		name string
@@ -171,9 +176,72 @@ func TestRuleQuery(t *testing.T) {
 }
 
 func TestRuleResult(t *testing.T) {
-	assert.Equal(t, m{"bool": m{"must": "x"}}, ruleResult("x", nil, nil))
-	got := ruleResult(m{"match_all": m{}}, []string{"1", "1", "2"}, nil)
-	assert.Equal(t, []interface{}{"1", "2"}, got["pinned"].(m)["ids"])
+	organic := m{"match_all": m{}}
+	ids := func(values ...interface{}) m { return m{"ids": m{"values": values}} }
+	inIndex := func(index string, values ...interface{}) m {
+		return m{"bool": m{"filter": []interface{}{m{"term": m{"_index": index}}, ids(values...)}}}
+	}
+	tests := []struct {
+		name             string
+		organic          interface{}
+		pinned, excluded []ruleDoc
+		want             m
+	}{
+		{name: "organic that is not an object", organic: "x", want: m{"bool": m{"must": "x"}}},
+		{name: "organic only", organic: organic, want: organic},
+		{
+			name:    "duplicate and empty ids",
+			organic: organic,
+			pinned:  []ruleDoc{{id: "1"}, {id: "1"}, {id: ""}, {id: "2"}},
+			want:    m{"pinned": m{"ids": []interface{}{"1", "2"}, "organic": organic}},
+		},
+		{
+			name:    "docs keep their index",
+			organic: organic,
+			pinned:  []ruleDoc{{index: "a", id: "1"}, {index: "b", id: "1"}, {index: "a", id: "1"}, {id: "2"}},
+			want: m{"pinned": m{"organic": organic, "docs": []interface{}{
+				m{"_index": "a", "_id": "1"}, m{"_index": "b", "_id": "1"}, m{"_id": "2"},
+			}}},
+		},
+		{
+			name:    "pinned in any index hides the same id of one index",
+			organic: organic,
+			pinned:  []ruleDoc{{id: "1"}, {index: "a", id: "1"}},
+			want:    m{"pinned": m{"ids": []interface{}{"1"}, "organic": organic}},
+		},
+		{
+			name:     "excluded in any index",
+			organic:  organic,
+			pinned:   []ruleDoc{{id: "1"}, {index: "a", id: "2"}, {id: "3"}},
+			excluded: []ruleDoc{{id: "1"}, {id: "2"}},
+			want: m{"bool": m{
+				"must":     m{"pinned": m{"ids": []interface{}{"3"}, "organic": organic}},
+				"must_not": []interface{}{ids("1", "2")},
+			}},
+		},
+		{
+			name:     "excluded in one index",
+			organic:  organic,
+			pinned:   []ruleDoc{{index: "a", id: "1"}, {index: "b", id: "1"}},
+			excluded: []ruleDoc{{index: "a", id: "1"}, {index: "a", id: "2"}, {id: "3"}, {index: "b", id: "4"}},
+			want: m{"bool": m{
+				"must":     m{"pinned": m{"docs": []interface{}{m{"_index": "b", "_id": "1"}}, "organic": organic}},
+				"must_not": []interface{}{inIndex("a", "1", "2"), ids("3"), inIndex("b", "4")},
+			}},
+		},
+		{
+			name:     "all pinned excluded",
+			organic:  organic,
+			pinned:   []ruleDoc{{id: "1"}},
+			excluded: []ruleDoc{{id: "1"}},
+			want:     m{"bool": m{"must": organic, "must_not": []interface{}{ids("1")}}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, ruleResult(tt.organic, tt.pinned, tt.excluded))
+		})
+	}
 }
 
 func TestRescore(t *testing.T) {

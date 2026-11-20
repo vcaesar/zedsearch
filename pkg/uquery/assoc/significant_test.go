@@ -60,7 +60,7 @@ func TestSignificantTerms_Search(t *testing.T) {
 		require.NoError(t, err)
 		resp, err := aggregation.Response(dmi.Aggregations())
 		require.NoError(t, err)
-		require.NoError(t, SignificantTerms(readers, resp, aggs, dmi.Aggregations().Count(), testMappings(), nil))
+		require.NoError(t, SignificantTerms(context.Background(), readers, resp, aggs, dmi.Aggregations().Count(), testMappings(), nil))
 		return resp
 	}
 
@@ -158,7 +158,7 @@ func TestSignificantTerms_Rewrite(t *testing.T) {
 			sig := tt.sig
 			resp := map[string]meta.AggregationResponse{"sig": textResponse()}
 			req := map[string]meta.Aggregations{"sig": {SignificantText: &sig}}
-			require.NoError(t, SignificantTerms(readers, resp, req, 4, testMappings(), nil))
+			require.NoError(t, SignificantTerms(context.Background(), readers, resp, req, 4, testMappings(), nil))
 			keys, _ := bucketScores(t, resp["sig"])
 			assert.Equal(t, tt.wantKeys, keys)
 			assert.Equal(t, uint64(4), *resp["sig"].DocCount)
@@ -169,7 +169,7 @@ func TestSignificantTerms_Rewrite(t *testing.T) {
 	t.Run("scores and sub aggregations", func(t *testing.T) {
 		resp := map[string]meta.AggregationResponse{"sig": textResponse()}
 		req := map[string]meta.Aggregations{"sig": {SignificantText: &meta.AggregationSignificantTerms{Field: "body", MinDocCount: intPtr(1)}}}
-		require.NoError(t, SignificantTerms(readers, resp, req, 4, testMappings(), nil))
+		require.NoError(t, SignificantTerms(context.Background(), readers, resp, req, 4, testMappings(), nil))
 		_, scores := bucketScores(t, resp["sig"])
 		assert.Equal(t, [2]float64{3, 3}, [2]float64{scores["dog"][0], scores["dog"][1]})
 		assert.InDelta(t, 1.125, scores["dog"][2], 1e-12)
@@ -184,7 +184,7 @@ func TestSignificantTerms_Rewrite(t *testing.T) {
 		resp := map[string]meta.AggregationResponse{"sig": textResponse()}
 		req := map[string]meta.Aggregations{"sig": {SignificantText: &meta.AggregationSignificantTerms{Field: "body", MinDocCount: intPtr(1),
 			BackgroundFilter: map[string]interface{}{"term": map[string]interface{}{"tag": "animal"}}}}}
-		require.NoError(t, SignificantTerms(readers, resp, req, 4, testMappings(), nil))
+		require.NoError(t, SignificantTerms(context.Background(), readers, resp, req, 4, testMappings(), nil))
 		_, scores := bucketScores(t, resp["sig"])
 		// the foreground is the background: nothing is significant
 		assert.Empty(t, scores)
@@ -207,7 +207,7 @@ func TestSignificantTerms_Rewrite(t *testing.T) {
 			"plain":   {Max: &meta.AggregationMetric{Field: "n"}},
 			"missing": {Max: &meta.AggregationMetric{Field: "n"}},
 		}
-		require.NoError(t, SignificantTerms(readers, resp, req, 10, testMappings(), nil))
+		require.NoError(t, SignificantTerms(context.Background(), readers, resp, req, 10, testMappings(), nil))
 
 		sig := resp["terms"].Buckets.([]map[string]interface{})[0]["sig"].(meta.AggregationResponse)
 		keys, _ := bucketScores(t, sig)
@@ -235,14 +235,14 @@ func TestSignificantTerms_Rewrite(t *testing.T) {
 			"filter": {Filter: map[string]interface{}{}, Aggregations: sub},
 		}
 		assert.NotPanics(t, func() {
-			assert.NoError(t, SignificantTerms(nilReaders, resp, req, 10, testMappings(), nil))
+			assert.NoError(t, SignificantTerms(context.Background(), nilReaders, resp, req, 10, testMappings(), nil))
 		})
 		assert.Equal(t, meta.AggregationResponse{Value: 1.0}, resp["plain"])
 	})
 
 	t.Run("background_filter alone reads no total", func(t *testing.T) {
 		calls := 0
-		s := &significance{readers: readers, mappings: testMappings(), total: func() (uint64, error) {
+		s := &significance{ctx: context.Background(), readers: readers, mappings: testMappings(), total: func() (uint64, error) {
 			calls++
 			return totalDocs(readers)
 		}}
@@ -255,7 +255,7 @@ func TestSignificantTerms_Rewrite(t *testing.T) {
 
 	t.Run("background total is loaded once", func(t *testing.T) {
 		calls := 0
-		s := &significance{readers: readers, mappings: testMappings(), total: func() (uint64, error) {
+		s := &significance{ctx: context.Background(), readers: readers, mappings: testMappings(), total: func() (uint64, error) {
 			calls++
 			return totalDocs(readers)
 		}}
@@ -273,7 +273,7 @@ func TestSignificantTerms_Rewrite(t *testing.T) {
 	})
 
 	t.Run("background total error", func(t *testing.T) {
-		s := &significance{readers: readers, mappings: testMappings(), total: func() (uint64, error) {
+		s := &significance{ctx: context.Background(), readers: readers, mappings: testMappings(), total: func() (uint64, error) {
 			return 0, assert.AnError
 		}}
 		resp := map[string]meta.AggregationResponse{"sig": textResponse()}
@@ -310,7 +310,7 @@ func TestSignificantTerms_Rewrite(t *testing.T) {
 			sig := tt.sig
 			resp := map[string]meta.AggregationResponse{"sig": textResponse()}
 			req := map[string]meta.Aggregations{"sig": {SignificantText: &sig}}
-			err := SignificantTerms(readers, resp, req, tt.fgSize, testMappings(), nil)
+			err := SignificantTerms(context.Background(), readers, resp, req, tt.fgSize, testMappings(), nil)
 			if tt.wantErr == "" {
 				assert.NoError(t, err)
 				return
@@ -321,10 +321,10 @@ func TestSignificantTerms_Rewrite(t *testing.T) {
 	}
 
 	t.Run("empty inputs", func(t *testing.T) {
-		assert.NoError(t, SignificantTerms(readers, nil, nil, 0, nil, nil))
+		assert.NoError(t, SignificantTerms(context.Background(), readers, nil, nil, 0, nil, nil))
 		resp := map[string]meta.AggregationResponse{"sig": {}}
 		req := map[string]meta.Aggregations{"sig": {SignificantTerms: &meta.AggregationSignificantTerms{Field: "body"}}}
-		require.NoError(t, SignificantTerms(readers, resp, req, 0, nil, nil))
+		require.NoError(t, SignificantTerms(context.Background(), readers, resp, req, 0, nil, nil))
 		assert.Equal(t, []map[string]interface{}{}, resp["sig"].Buckets)
 	})
 
@@ -343,7 +343,7 @@ func TestSignificantTerms_Rewrite(t *testing.T) {
 			sig := tt.sig
 			resp := map[string]meta.AggregationResponse{"sig": textResponse()}
 			req := map[string]meta.Aggregations{"sig": {SignificantTerms: &sig}}
-			assert.Error(t, SignificantTerms(readers, resp, req, 4, testMappings(), nil))
+			assert.Error(t, SignificantTerms(context.Background(), readers, resp, req, 4, testMappings(), nil))
 		})
 	}
 
@@ -357,7 +357,7 @@ func TestSignificantTerms_Rewrite(t *testing.T) {
 		} {
 			resp := map[string]meta.AggregationResponse{name: r}
 			req := map[string]meta.Aggregations{name: {Aggregations: inner}}
-			assert.Error(t, SignificantTerms(readers, resp, req, 4, testMappings(), nil), name)
+			assert.Error(t, SignificantTerms(context.Background(), readers, resp, req, 4, testMappings(), nil), name)
 		}
 	})
 }

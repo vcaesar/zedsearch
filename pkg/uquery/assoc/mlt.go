@@ -25,6 +25,7 @@ The other parts of this work are licensed under the [Apache license](./LICENSE).
 package assoc
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"slices"
@@ -78,7 +79,7 @@ type mltTerm struct {
 // plain bool query of the most interesting terms of the liked texts and
 // documents, scored by tf*idf as Lucene MoreLikeThis does. It returns
 // {"match_none": {}} when no term qualifies.
-func MoreLikeThis(readers []*riot.Reader, body map[string]interface{}, mappings *meta.Mappings, analyzers map[string]*analysis.Analyzer) (map[string]interface{}, error) {
+func MoreLikeThis(ctx context.Context, readers []*riot.Reader, body map[string]interface{}, mappings *meta.Mappings, analyzers map[string]*analysis.Analyzer) (map[string]interface{}, error) {
 	if mappings == nil {
 		mappings = meta.NewMappings()
 	}
@@ -92,11 +93,11 @@ func MoreLikeThis(readers []*riot.Reader, body map[string]interface{}, mappings 
 	}
 
 	var likeIDs []interface{}
-	like, err := resolveItems(readers, p.like, &likeIDs)
+	like, err := resolveItems(ctx, readers, p.like, &likeIDs)
 	if err != nil {
 		return nil, err
 	}
-	unlike, err := resolveItems(readers, p.unlike, nil)
+	unlike, err := resolveItems(ctx, readers, p.unlike, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +121,7 @@ func MoreLikeThis(readers []*riot.Reader, body map[string]interface{}, mappings 
 			if p.minTermFreq > 0 && tf < p.minTermFreq {
 				continue
 			}
-			df, err := docFreq(readers, field, term)
+			df, err := docFreq(ctx, readers, field, term)
 			if err != nil {
 				return nil, err
 			}
@@ -316,14 +317,14 @@ func mltFields(p *mltParams, mappings *meta.Mappings) ([]string, error) {
 // not nil, it gets the liked ids to exclude: the rewritten query can only
 // exclude by _id, so an id is left out when it is also the id of a document
 // of another index that is not liked.
-func resolveItems(readers []*riot.Reader, items []mltItem, ids *[]interface{}) ([]mltItem, error) {
+func resolveItems(ctx context.Context, readers []*riot.Reader, items []mltItem, ids *[]interface{}) ([]mltItem, error) {
 	// the documents with an id, at most one per reader
 	byID := make(map[string][]storedDoc)
 	docsByID := func(id string) ([]storedDoc, error) {
 		if docs, ok := byID[id]; ok {
 			return docs, nil
 		}
-		docs, err := searchDocs(readers, riot.NewTermQuery(id).SetField("_id"), len(readers))
+		docs, err := searchDocs(ctx, readers, riot.NewTermQuery(id).SetField("_id"), len(readers))
 		byID[id] = docs
 		return docs, err
 	}
