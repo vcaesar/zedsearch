@@ -16,6 +16,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -23,6 +24,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"net"
 	"os"
@@ -35,21 +37,76 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/vcaesar/zedsearch/pkg/cluster"
 	"github.com/vcaesar/zedsearch/pkg/config"
 	"github.com/vcaesar/zedsearch/pkg/meta"
 	"github.com/vcaesar/zedsearch/pkg/zhttp"
 )
 
-// helperEnv makes the test binary run main() with its value as arguments.
-const helperEnv = "ZED_TEST_MAIN_ARGS"
+const (
+	// helperEnv makes the test binary run main() with its value as arguments.
+	helperEnv = "ZED_TEST_MAIN_ARGS"
+	// setupEnv picks a failure for setupMain to inject before main() runs.
+	setupEnv = "ZED_TEST_MAIN_SETUP"
+)
 
 func TestMain(m *testing.M) {
 	if args, ok := os.LookupEnv(helperEnv); ok {
 		os.Args = append([]string{"zedsearch"}, strings.Fields(args)...)
+		setupMain(os.Getenv(setupEnv))
 		main()
 		return
 	}
 	os.Exit(m.Run())
+}
+
+// faultyListener fails Accept or Close of a real listener.
+type faultyListener struct {
+	net.Listener
+	acceptErr, closeErr error
+}
+
+func (l faultyListener) Accept() (net.Conn, error) {
+	if l.acceptErr != nil {
+		return nil, l.acceptErr
+	}
+	return l.Listener.Accept()
+}
+
+func (l faultyListener) Close() error {
+	return errors.Join(l.Listener.Close(), l.closeErr)
+}
+
+func faultyListen(acceptErr, closeErr error) func(string) (net.Listener, error) {
+	return func(addr string) (net.Listener, error) {
+		ln, err := listen(addr)
+		if err != nil {
+			return nil, err
+		}
+		return faultyListener{ln, acceptErr, closeErr}, nil
+	}
+}
+
+// setupMain injects failures that env config alone cannot reach: env
+// cluster mode would also move metadata to etcd.
+func setupMain(mode string) {
+	switch mode {
+	case "":
+	case "cluster":
+		config.Global.Cluster.Enable = true
+		config.Global.Etcd.Endpoints = nil
+	case "replication":
+		if err := cluster.StartWith(context.Background(), cluster.NewMemoryStore()); err != nil {
+			panic(err)
+		}
+		config.Global.Cluster.Replication = "bogus"
+	case "accept":
+		listener = faultyListen(errors.New("accept failed"), nil)
+	case "close":
+		listener = faultyListen(nil, errors.New("close failed"))
+	default:
+		panic("unknown " + setupEnv + ": " + mode)
+	}
 }
 
 // mainCommand returns the test binary set up to run main() with args
@@ -83,6 +140,27 @@ func TestMainVersion(t *testing.T) {
 	out, err := mainCommand(t, "version").Output()
 	require.NoError(t, err)
 	assert.Equal(t, "zedsearch version "+meta.Version+"\n", string(out))
+}
+
+func TestMainStartupErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		env  []string
+		want string
+	}{
+		{"invalid tracing endpoint", []string{"ZED_TRACING_ENABLE=true", "ZED_TRACING_ENDPOINT=ftp://127.0.0.1"}, "Tracing start"},
+		{"cluster without etcd", []string{setupEnv + "=cluster"}, "Cluster start"},
+		{"invalid replication mode", []string{setupEnv + "=replication"}, "Replication start"},
+		{"accept fails", []string{setupEnv + "=accept"}, "Server closed unexpect"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := append([]string{"ZED_SERVER_ADDRESS=127.0.0.1", "ZED_SERVER_PORT=0"}, tt.env...)
+			out, err := mainCommand(t, "", env...).CombinedOutput()
+			assert.Error(t, err, string(out))
+			assert.Contains(t, string(out), tt.want)
+		})
+	}
 }
 
 // restore resets each config.Global field after the test; copying the whole
@@ -269,13 +347,17 @@ func TestProfiling(t *testing.T) {
 	}{
 		{"disabled", false, "http://127.0.0.1:1"},
 		{"enabled without server", true, ""},
+		// the invalid tag in the app name fails Start before any profiler runs
+		{"invalid profile id", true, "http://127.0.0.1:1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			restore(t, &config.Global.ProfilerEnable)
 			restore(t, &config.Global.ProfilerServer)
+			restore(t, &config.Global.ProfilerFriendlyProfileID)
 			config.Global.ProfilerEnable = tt.enable
 			config.Global.ProfilerServer = tt.server
+			config.Global.ProfilerFriendlyProfileID = "x{bad-key=v}"
 			assert.NotPanics(t, profiling)
 		})
 	}

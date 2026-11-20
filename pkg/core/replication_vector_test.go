@@ -88,18 +88,23 @@ func TestSnapshotCarriesVectorGraphs(t *testing.T) {
 	ZED_INDEX_LIST.Add(source)
 	t.Cleanup(func() { assert.NoError(t, DeleteIndex(name)) })
 
-	const docs = 50
-	for i := range docs {
+	// consume by hand, in one batch: several segments are merged in the
+	// background, which replaces their graphs while they are counted
+	shard := anyShard(source)
+	require.NoError(t, shard.OpenWAL())
+	ZED_INDEX_SHARD_WAL_LIST.Remove(shard.GetShardName())
+	for i := range 50 {
 		v := float64(i)
 		require.NoError(t, source.CreateDocument(strconv.Itoa(i), map[string]interface{}{"emb": []interface{}{v, v / 10, 0}}, false))
 	}
-	waitDocs(t, source, docs)
-	require.NoError(t, source.Flush()) // persist the segments
+	require.True(t, shard.ConsumeWAL())
+	require.NoError(t, source.Flush()) // persist the segment
 
 	live := filepath.Join(config.Global.DataPath, name)
 	assert.ElementsMatch(t, []string{"0", "1", "2"}, annSearch(t, source))
 	require.Eventually(t, func() bool { return countGraphs(t, live) > 0 },
 		10*time.Second, 20*time.Millisecond, "the owner persists the graphs it built")
+	require.NoError(t, source.Flush()) // wait until they are written
 
 	staged := filepath.Join(config.Global.DataPath, "_replication_test", "TestSnapshotCarriesVectorGraphs")
 	require.NoError(t, os.RemoveAll(staged))

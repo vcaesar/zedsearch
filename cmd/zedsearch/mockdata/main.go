@@ -16,14 +16,15 @@
 // Command mockdata writes deterministic mock documents straight into the
 // configured data path (zed_data_path), without going through the HTTP API.
 // Each dataset exercises a different index feature: mapped text/keyword,
-// vectors, the logs profile, geo_point, nested and join.
+// vectors, the logs profile, geo_point, nested and join; events is a large
+// (1M docs by default) index for aggregation, paging and ingest at scale.
 //
 //	cd cmd/zedsearch && go run ./mockdata -reset
 //
 // -end pins the last document timestamp, so the same data can be regenerated
 // into another data path (e.g. for a new on-disk index version):
 //
-//	ZED_DATA_PATH=./data-v2 go run ./mockdata -end 2026-10-30T19:39:00Z
+//	ZED_DATA_PATH=./data-v3 go run ./mockdata -end 2026-10-30T19:39:00Z
 package main
 
 import (
@@ -62,9 +63,12 @@ var (
 		{"Palo Alto", 37.4419, -122.1430},
 		{"Berkeley", 37.8715, -122.2730},
 	}
-	topics   = []string{"indexing", "mappings", "aggregations", "vectors", "geo search", "cluster"}
-	users    = []string{"alice", "bob", "carol", "dave", "erin"}
-	comments = []string{"thanks, that helped", "same issue here", "works on v1.0", "please add an example", "fixed by reindexing"}
+	topics    = []string{"indexing", "mappings", "aggregations", "vectors", "geo search", "cluster"}
+	users     = []string{"alice", "bob", "carol", "dave", "erin"}
+	comments  = []string{"thanks, that helped", "same issue here", "works on v1.0", "please add an example", "fixed by reindexing"}
+	actions   = []string{"view", "view", "view", "click", "click", "add_to_cart", "purchase", "refund"}
+	countries = []string{"US", "US", "CA", "GB", "DE", "FR", "JP", "IN", "BR", "AU"}
+	devices   = []string{"desktop", "mobile", "mobile", "tablet"}
 )
 
 // dataset is one mock index: creation body (as for POST /api/index) and a
@@ -109,6 +113,15 @@ var datasets = []dataset{
 		}},
 		"qa": {"type": "join", "relations": {"question": ["answer"]}}
 	}}}`, forum},
+	{"events", `{"mappings": {"properties": {
+		"action":     {"type": "keyword"},
+		"user_id":    {"type": "keyword"},
+		"country":    {"type": "keyword"},
+		"device":     {"type": "keyword"},
+		"category":   {"type": "keyword"},
+		"amount":     {"type": "float"},
+		"latency_ms": {"type": "integer"}
+	}}}`, events},
 }
 
 // stamp spaces doc i of n by step so the last one lands on end, keeping mock
@@ -241,6 +254,31 @@ func forum(name string, n int, end time.Time) []map[string]any {
 	return docs
 }
 
+// events generates user activity, one per second; only purchases and refunds
+// carry an amount.
+func events(_ string, n int, end time.Time) []map[string]any {
+	r := rand.New(rand.NewPCG(9, 10))
+	docs := make([]map[string]any, n)
+	for i := range docs {
+		action := actions[r.IntN(len(actions))]
+		amount := 0.0
+		if action == "purchase" || action == "refund" {
+			amount = float64(100+r.IntN(99900)) / 100
+		}
+		docs[i] = map[string]any{
+			"action":     action,
+			"user_id":    fmt.Sprintf("user-%05d", r.IntN(10000)),
+			"country":    countries[r.IntN(len(countries))],
+			"device":     devices[r.IntN(len(devices))],
+			"category":   categories[r.IntN(len(categories))],
+			"amount":     amount,
+			"latency_ms": r.IntN(1500),
+			"@timestamp": stamp(end, n, i, time.Second),
+		}
+	}
+	return docs
+}
+
 // create creates index name from d unless it already exists.
 func create(name string, d dataset) error {
 	if _, ok := core.GetIndex(name); ok {
@@ -259,6 +297,9 @@ func create(name string, d dataset) error {
 
 const batch = 1000
 
+// stall is how long seed waits for indexing progress before giving up.
+var stall = time.Minute
+
 // seed upserts docs into index name with stable ids, so reruns don't duplicate,
 // and waits until the WAL is consumed into the index.
 func seed(name string, docs []map[string]any) error {
@@ -274,7 +315,8 @@ func seed(name string, docs []map[string]any) error {
 		}
 	}
 
-	deadline := time.Now().Add(time.Minute)
+	// large datasets take minutes to consume, so only time out on a stall
+	deadline, last := time.Now().Add(stall), 0
 	for {
 		done, err := indexed(index, name, stamps)
 		if err != nil {
@@ -282,6 +324,9 @@ func seed(name string, docs []map[string]any) error {
 		}
 		if done == len(docs) {
 			return nil
+		}
+		if done > last {
+			deadline, last = time.Now().Add(stall), done
 		}
 		if time.Now().After(deadline) {
 			return fmt.Errorf("index %s: %d/%d docs indexed before timeout", name, done, len(docs))
@@ -331,6 +376,11 @@ func parseEnd(s string, now time.Time) (time.Time, error) {
 // existing indexes first so mapping changes take effect.
 func run(prefix string, counts map[string]int, end time.Time, reset bool) error {
 	for _, d := range datasets {
+		if counts[d.name] < 0 {
+			return fmt.Errorf("-%s: negative count %d", d.name, counts[d.name])
+		}
+	}
+	for _, d := range datasets {
 		name := prefix + d.name
 		if _, ok := core.GetIndex(name); ok && reset {
 			if err := core.DeleteIndex(name); err != nil {
@@ -356,6 +406,7 @@ func main() {
 		"logs":     flag.Int("logs", 1000, "number of log documents"),
 		"stores":   flag.Int("stores", 50, "number of store documents"),
 		"forum":    flag.Int("forum", 120, "number of forum documents"),
+		"events":   flag.Int("events", 1_000_000, "number of event documents"),
 	}
 	flag.Parse()
 

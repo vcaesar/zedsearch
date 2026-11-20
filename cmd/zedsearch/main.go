@@ -172,7 +172,7 @@ func main() {
 		done <- struct{}{}
 	})
 
-	ln, err := listen(addr)
+	ln, err := listener(addr)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Listen on " + addr)
 	}
@@ -186,6 +186,9 @@ func main() {
 
 	log.Info().Msg("Server shutdown ok")
 }
+
+// listener opens the server socket; tests replace it to inject socket failures.
+var listener = listen
 
 // listen opens the server socket, TLS when a certificate is configured.
 func listen(addr string) (net.Listener, error) {
