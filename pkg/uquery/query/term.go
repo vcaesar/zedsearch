@@ -23,6 +23,8 @@ import (
 
 	"github.com/vcaesar/riot"
 	"github.com/vcaesar/riot/search"
+	"github.com/vcaesar/riot/search/searcher"
+	"github.com/vcaesar/riot/search/similarity"
 
 	"github.com/vcaesar/zedsearch/pkg/errors"
 	"github.com/vcaesar/zedsearch/pkg/meta"
@@ -72,7 +74,11 @@ func TermQuery(query map[string]interface{}, mappings *meta.Mappings) (riot.Quer
 		if !ok {
 			return nil, errors.New(errors.ErrorTypeXContentParseException, fmt.Sprintf("[term] _index doesn't support values of type: %T", value.Value))
 		}
-		return &indexQuery{name: name}, nil
+		q := &indexQuery{name: name}
+		if value.Boost >= 0 {
+			q.boost = &value.Boost
+		}
+		return q, nil
 	}
 
 	prop, _ := mappings.GetProperty(field)
@@ -126,11 +132,17 @@ func TermQueryText(field string, value *meta.TermQuery) (riot.Query, error) {
 // indexed, and a reader holds the documents of one index: the first document
 // with an _index decides for all of them. Documents without _index match.
 type indexQuery struct {
-	name string
+	name  string
+	boost *float64 // nil scores neutrally
 }
 
 func (q *indexQuery) Searcher(i search.Reader, options search.SearcherOptions) (search.Searcher, error) {
-	s, err := riot.NewMatchAllQuery().Searcher(i, options)
+	// the match_all searcher ignores its boost, so the scorer carries it
+	score := 1.0
+	if q.boost != nil {
+		score = *q.boost
+	}
+	s, err := searcher.NewMatchAllSearcher(i, score, similarity.ConstantScorer(score), options)
 	if err != nil {
 		return nil, err
 	}

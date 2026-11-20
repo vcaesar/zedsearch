@@ -53,6 +53,9 @@ func totalDocs(readers []*riot.Reader) (uint64, error) {
 // reader and its doc freq in that reader. A nil end iterates to the last term.
 func iterateDict(ctx context.Context, readers []*riot.Reader, field string, start, end []byte, fn func(term string, count uint64)) error {
 	for _, r := range readers {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		it, err := r.DictionaryIterator(field, nil, start, end)
 		if err != nil {
 			return err
@@ -71,7 +74,7 @@ func iterateDict(ctx context.Context, readers []*riot.Reader, field string, star
 			return err
 		}
 	}
-	return nil
+	return ctx.Err()
 }
 
 // dictTerms returns the terms of field in [start, end). Their counts are not

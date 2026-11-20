@@ -288,6 +288,9 @@ func (s *suggester) termCandidates(o *termOpts, term string) ([]termOption, uint
 	minFreq := s.threshold(o.minDocFreq)
 	var rv []termOption
 	for candidate := range terms {
+		if err := s.ctx.Err(); err != nil {
+			return nil, 0, err
+		}
 		if candidate == term {
 			continue
 		}
@@ -645,6 +648,9 @@ func (s *suggester) completionSuggest(in suggestion, opts map[string]interface{}
 			return nil, err
 		}
 		for term := range terms {
+			if err := s.ctx.Err(); err != nil {
+				return nil, err
+			}
 			if re.MatchString(term) {
 				matches = append(matches, completionMatch{term: term, score: 1})
 			}

@@ -415,6 +415,14 @@ func TestContext_Canceled(t *testing.T) {
 			_, err := docFreq(ctx, readers, "body", "quick")
 			return err
 		}},
+		{"docFreq of an absent term", func() error {
+			_, err := docFreq(ctx, readers, "body", "absent")
+			return err
+		}},
+		{"docFreq without readers", func() error {
+			_, err := docFreq(ctx, nil, "body", "quick")
+			return err
+		}},
 		{"prefixTerms", func() error {
 			_, err := prefixTerms(ctx, readers, "body", "")
 			return err
@@ -444,6 +452,46 @@ func TestContext_Canceled(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.ErrorIs(t, tt.run(), context.Canceled)
+		})
+	}
+}
+
+// countdownCtx is canceled once Err has been asked n times.
+type countdownCtx struct {
+	context.Context
+	n int
+}
+
+func (c *countdownCtx) Err() error {
+	if c.n <= 0 {
+		return context.Canceled
+	}
+	c.n--
+	return nil
+}
+
+// TestSuggest_CanceledMidScan pins that every cancellation point of the term
+// and completion scans, including the loops over the collected terms, stops
+// the suggest with the context error.
+func TestSuggest_CanceledMidScan(t *testing.T) {
+	readers := testReaders(t)
+	tests := []struct {
+		name    string
+		suggest map[string]interface{}
+	}{
+		{"term", term("quikc", map[string]interface{}{"prefix_length": 0})},
+		{"completion regex", map[string]interface{}{"s": map[string]interface{}{"regex": ".*", "completion": map[string]interface{}{"field": "tag"}}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for n := 0; ; n++ {
+				_, err := Suggest(&countdownCtx{Context: context.Background(), n: n}, readers, tt.suggest, testMappings(), nil)
+				if err == nil {
+					assert.Positive(t, n)
+					return
+				}
+				require.ErrorIs(t, err, context.Canceled, "n=%d", n)
+			}
 		})
 	}
 }

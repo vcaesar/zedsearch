@@ -277,6 +277,30 @@ func TestPrepareSearch_HonorsDeadline(t *testing.T) {
 	assert.ErrorIs(t, err, context.Canceled)
 }
 
+// TestSearch_RescoreTransforms pins that rule and more_like_this clauses of a
+// rescore query are rewritten like the main query.
+func TestSearch_RescoreTransforms(t *testing.T) {
+	index := newRescoreIndex(t, "TestSearch_RescoreTransforms.index_1")
+	mlt := map[string]interface{}{"more_like_this": map[string]interface{}{
+		"like": "fox", "fields": []interface{}{"title"}, "min_term_freq": 1, "min_doc_freq": 1,
+	}}
+
+	resp, err := index.Search(rescoreQuery(map[string]interface{}{
+		"query": map[string]interface{}{"rescore_query": mlt},
+	}))
+	require.NoError(t, err)
+	assert.Len(t, resp.Hits.Hits, 2)
+
+	_, err = index.Search(rescoreQuery(map[string]interface{}{
+		"query": map[string]interface{}{"rescore_query": map[string]interface{}{"rule": map[string]interface{}{
+			"ruleset_ids":    []interface{}{"TestSearch_RescoreTransforms.missing"},
+			"match_criteria": map[string]interface{}{},
+			"organic":        mlt,
+		}}},
+	}))
+	assert.ErrorContains(t, err, "[rule] ruleset [TestSearch_RescoreTransforms.missing] not found")
+}
+
 // TestSearchExt_FinishPipelineError pins that a failing pipeline aggregation
 // is logged and leaves the search answered, as before pipelines moved here.
 func TestSearchExt_FinishPipelineError(t *testing.T) {

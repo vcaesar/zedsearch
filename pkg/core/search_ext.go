@@ -60,14 +60,15 @@ type searchExt struct {
 // stored rulesets and the readers, and widens the page to the rescore window.
 func prepareSearch(ctx context.Context, query *meta.ZedQuery, mappings *meta.Mappings, analyzers map[string]*analysis.Analyzer, readers []*riot.Reader) (*searchExt, error) {
 	ext := &searchExt{query: query, mappings: mappings, analyzers: analyzers, readers: readers}
-	rewritten, err := uquery.Transform(query.Query, map[string]uquery.TransformFunc{
+	fns := map[string]uquery.TransformFunc{
 		"rule": func(body map[string]interface{}) (map[string]interface{}, error) {
 			return uquery.RuleQuery(body, metadata.QueryRules.Get)
 		},
 		"more_like_this": func(body map[string]interface{}) (map[string]interface{}, error) {
 			return assoc.MoreLikeThis(ctx, readers, body, mappings, analyzers)
 		},
-	})
+	}
+	rewritten, err := uquery.Transform(query.Query, fns)
 	if err != nil {
 		return nil, err
 	}
@@ -75,6 +76,13 @@ func prepareSearch(ctx context.Context, query *meta.ZedQuery, mappings *meta.Map
 
 	if ext.rescorers, err = uquery.ParseRescore(query.Rescore); err != nil {
 		return nil, err
+	}
+	for _, r := range ext.rescorers {
+		q, err := uquery.Transform(r.Query, fns)
+		if err != nil {
+			return nil, err
+		}
+		r.Query, _ = q.(map[string]interface{})
 	}
 	if len(ext.rescorers) > 0 {
 		if !scoreSorted(query.Sort) {

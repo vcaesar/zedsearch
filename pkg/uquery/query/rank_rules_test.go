@@ -376,6 +376,18 @@ func TestTermQuery_Index(t *testing.T) {
 		assert.Len(t, scores, len(functionScoreDocs))
 	})
 
+	t.Run("boost weights the match", func(t *testing.T) {
+		plain, _ := rankScores(t, obj{"term": obj{"_index": "a"}})
+		boosted, _ := rankScores(t, obj{"term": obj{"_index": obj{"value": "a", "boost": 3.0}}})
+		zero, _ := rankScores(t, obj{"term": obj{"_index": obj{"value": "a", "boost": 0.0}}})
+		require.Len(t, boosted, len(plain))
+		for id, s := range plain {
+			assert.Positive(t, s, id)
+			assert.InDelta(t, 3*s, boosted[id], 1e-9, id)
+			assert.Zero(t, zero[id], id)
+		}
+	})
+
 	t.Run("value that is not a string", func(t *testing.T) {
 		_, err := TermQuery(obj{"_index": 1.0}, testMappings())
 		assert.ErrorContains(t, err, "[term] _index doesn't support values of type: float64")
