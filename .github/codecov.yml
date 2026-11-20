@@ -5,13 +5,12 @@ coverage:
         target: auto
         threshold: 0.5%
 
-# Markdown, generated swagger and non-Go sources are not counted as code.
+# Markdown, CI config and license are not counted as code.
 ignore:
   - "*.md"
   - "**/*.md"
-  - "docs/"
-  - "frontend/"
-  - "web/"
+  - ".github"
+  - "LICENSE"
 
 # Only comment on PRs when coverage actually changes (skips docs/non-code PRs).
 comment:
