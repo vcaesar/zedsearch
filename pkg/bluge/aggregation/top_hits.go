@@ -40,7 +40,7 @@ type TopHit struct {
 	// Stored holds copies of the stored fields named by SetStoredFields.
 	Stored map[string][]byte
 
-	sortKey []byte // doc value of the sort field, nil when sorting by _score
+	SortKey []byte // doc value of the sort field, nil when sorting by _score
 }
 
 // TopHitsAggregation implements the elasticsearch [top_hits] aggregation:
@@ -57,6 +57,8 @@ type TopHitsAggregation struct {
 	sourceEnable bool
 	sourceFields []string
 	storedFields map[string]struct{}
+
+	includeSortKey bool
 }
 
 // NewTopHitsAggregation returns the aggregation backing [top_hits].
@@ -79,6 +81,12 @@ func (a *TopHitsAggregation) SetStoredFields(fields []string) {
 	}
 }
 
+// SetIncludeSortKey asks the response layer to render the sort key of each
+// hit, for the node that merges the hits of several nodes.
+func (a *TopHitsAggregation) SetIncludeSortKey(include bool) {
+	a.includeSortKey = include
+}
+
 func (a *TopHitsAggregation) Fields() []string {
 	if a.sortField == "" {
 		return nil
@@ -95,6 +103,8 @@ func (a *TopHitsAggregation) Calculator() search.Calculator {
 		sourceEnable: a.sourceEnable,
 		sourceFields: a.sourceFields,
 		storedFields: a.storedFields,
+
+		includeSortKey: a.includeSortKey,
 	}
 }
 
@@ -111,6 +121,8 @@ type TopHitsCalculator struct {
 	sourceFields []string
 	storedFields map[string]struct{}
 
+	includeSortKey bool
+
 	hits  []TopHit
 	total uint64
 	err   error
@@ -121,11 +133,14 @@ func (c *TopHitsCalculator) Source() (enable bool, fields []string) {
 	return c.sourceEnable, c.sourceFields
 }
 
+// IncludeSortKey reports whether the hits are rendered with their sort key.
+func (c *TopHitsCalculator) IncludeSortKey() bool { return c.includeSortKey }
+
 func (c *TopHitsCalculator) Consume(d *search.DocumentMatch) {
 	c.total++
 	hit := TopHit{Score: d.Score}
 	if c.sortField != "" {
-		hit.sortKey = append([]byte(nil), search.Field(c.sortField).Value(d)...)
+		hit.SortKey = append([]byte(nil), search.Field(c.sortField).Value(d)...)
 	}
 	err := d.VisitStoredFields(func(field string, value []byte) bool {
 		switch field {
@@ -181,11 +196,11 @@ func (c *TopHitsCalculator) less(i, j int) bool {
 		return c.hits[i].Score > c.hits[j].Score // best score first
 	}
 	// Documents without the sort field go last in both directions, as in elasticsearch.
-	if mi, mj := len(c.hits[i].sortKey) == 0, len(c.hits[j].sortKey) == 0; mi != mj {
+	if mi, mj := len(c.hits[i].SortKey) == 0, len(c.hits[j].SortKey) == 0; mi != mj {
 		return mj
 	}
 	// Doc value terms of both text and numeric fields sort in byte order.
-	cmp := bytes.Compare(c.hits[i].sortKey, c.hits[j].sortKey)
+	cmp := bytes.Compare(c.hits[i].SortKey, c.hits[j].SortKey)
 	if c.sortDesc {
 		return cmp > 0
 	}

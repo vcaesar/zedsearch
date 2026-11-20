@@ -17,6 +17,7 @@
 package aggregation
 
 import (
+	"encoding/hex"
 	"fmt"
 	"math"
 	"regexp"
@@ -640,6 +641,7 @@ func topHitsAggregation(agg *meta.AggregationTopHits, mappings *meta.Mappings) (
 	}
 
 	rv := zedaggregation.NewTopHitsAggregation(size, agg.From, sortField, sortDesc)
+	rv.SetIncludeSortKey(agg.IncludeSortKey && sortField != "")
 	rv.SetSource(src.Enable, src.Fields)
 	// the stored vectors are only copied for hits whose _source they are restored into
 	if src.Enable && mappings != nil {
@@ -894,6 +896,10 @@ func topHitsResponse(name string, c *zedaggregation.TopHitsCalculator) (*meta.Ag
 			Type:  "_doc",
 			ID:    hits[i].ID,
 			Score: hits[i].Score,
+		}
+		if c.IncludeSortKey() {
+			key := hex.EncodeToString(hits[i].SortKey) // preserves byte order across JSON
+			hit.SortKey = &key
 		}
 		if len(hits[i].Source) > 0 {
 			// each hit names its own excluded vectors, so hits merged from

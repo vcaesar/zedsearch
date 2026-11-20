@@ -56,7 +56,7 @@ func (index *Index) Search(query *meta.ZedQuery) (*meta.SearchResponse, error) {
 	readers, err := index.GetReaders(timeMin, timeMax)
 	if err != nil {
 		log.Printf("index.SearchV2: error accessing reader: %s", err.Error())
-		return nil, err
+		return nil, &ReaderError{Err: err}
 	}
 	defer func() {
 		for _, reader := range readers {
@@ -111,6 +111,13 @@ func (index *Index) Search(query *meta.ZedQuery) (*meta.SearchResponse, error) {
 	}
 	return resp, nil
 }
+
+// ReaderError is a search that failed opening the index readers: the
+// storage failed, not the query.
+type ReaderError struct{ Err error }
+
+func (e *ReaderError) Error() string { return e.Err.Error() }
+func (e *ReaderError) Unwrap() error { return e.Err }
 
 // searchFailed answers a search past its deadline with an empty timed out
 // response and fails it otherwise.

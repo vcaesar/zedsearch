@@ -44,6 +44,8 @@ type AggregationTopHits struct {
 	From   int         `json:"from"`
 	Sort   interface{} `json:"sort"`
 	Source interface{} `json:"_source"`
+
+	IncludeSortKey bool `json:"-"` // enabled by the internal search handler
 }
 
 // AggregationPercentileRanks

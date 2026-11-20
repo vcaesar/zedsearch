@@ -493,3 +493,12 @@ func Ready(index string) bool {
 	m.mu.Unlock()
 	return r != nil && r.isReady()
 }
+
+// Readable reports whether this node may serve reads of an index it
+// replicates: a cold index is read-only on object storage, so every node
+// sees the same data; a disk index qualifies once its replicated copy is
+// installed.
+func Readable(name string) bool {
+	index, ok := core.GetIndex(name)
+	return ok && (index.IsCold() || Ready(name))
+}

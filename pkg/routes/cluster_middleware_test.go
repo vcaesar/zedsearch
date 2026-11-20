@@ -16,7 +16,10 @@
 package routes
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -202,6 +205,36 @@ func TestClusterRouteForwardKeepsTrace(t *testing.T) {
 		assert.Equal(t, traceID, tracing.TraceID(tracing.Extract(context.Background(), forwarded.Header.Get)))
 	case <-time.After(3 * time.Second):
 		t.Fatal("the owner never received the request")
+	}
+}
+
+// closedAtEOF is a request body that is closed once its bytes are read, as
+// net/http closes it when the response starts: reading on fails.
+type closedAtEOF struct{ r io.Reader }
+
+func (b *closedAtEOF) Read(p []byte) (int, error) {
+	n, err := b.r.Read(p)
+	if errors.Is(err, io.EOF) {
+		return n, http.ErrBodyReadAfterClose
+	}
+	return n, err
+}
+
+func TestClusterRouteForwardStopsAtContentLength(t *testing.T) {
+	if zhttp.Backend == "fiber" {
+		t.Skip("fiber buffers the request body, the adaptor reads it before the proxy")
+	}
+	env := setupClusterEnv(t)
+	body := []byte(`{"query":{"match_all":{}}}`)
+
+	for range 20 {
+		req := httptest.NewRequest(http.MethodPost, "/api/"+remoteIndex+"/_doc", &closedAtEOF{r: bytes.NewReader(body)})
+		req.ContentLength = int64(len(body))
+		w := env.do(req)
+
+		require.Equal(t, http.StatusOK, w.Code)
+		assert.JSONEq(t, `{"served_by":"node-b"}`, w.Body.String())
+		<-env.requests
 	}
 }
 
@@ -404,14 +437,17 @@ func TestClusterRouteFallsBackToReplica(t *testing.T) {
 func TestGroupByOwnerUsesLocalReplica(t *testing.T) {
 	env := setupClusterEnv(t)
 	env.setReplicas(t, remoteIndex, "node-a")
+	indexes := []string{localIndex, remoteIndex}
 
 	stubReplicaReadable(t, false)
-	assert.Equal(t, map[string][]string{"node-a": {localIndex}, "node-b": {remoteIndex}},
-		groupByOwner([]string{localIndex, remoteIndex}))
+	groups, replicas := groupByOwner(indexes)
+	assert.Equal(t, map[string][]string{"node-a": {localIndex}, "node-b": {remoteIndex}}, groups)
+	assert.Empty(t, replicas)
 
 	stubReplicaReadable(t, true)
-	assert.Equal(t, map[string][]string{"node-a": {localIndex, remoteIndex}},
-		groupByOwner([]string{localIndex, remoteIndex}))
+	groups, replicas = groupByOwner(indexes)
+	assert.Equal(t, map[string][]string{"node-a": {localIndex, remoteIndex}}, groups)
+	assert.Empty(t, replicas)
 }
 
 func TestIsMultiTarget(t *testing.T) {

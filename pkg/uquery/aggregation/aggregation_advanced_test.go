@@ -485,6 +485,68 @@ func TestResponseBucketAggregations(t *testing.T) {
 	})
 }
 
+// A node merging the hits of several nodes asks for the sort key of each
+// hit: the doc value in hex, which orders like its bytes.
+func TestTopHitsSortKeys(t *testing.T) {
+	docs := cityDocs(t,
+		[]string{"1", "2", "3"},
+		[]string{"sf", "la", ""},
+		[]float64{10, 20, 30},
+	)
+	key := func(s string) *string { return &s }
+
+	tests := []struct {
+		name    string
+		def     meta.AggregationTopHits
+		wantIDs []string
+		want    []*string
+	}{
+		{
+			name:    "ascending",
+			def:     meta.AggregationTopHits{Size: 3, Sort: "city", IncludeSortKey: true},
+			wantIDs: []string{"2", "1", "3"},
+			want:    []*string{key("6c61"), key("7366"), key("")},
+		},
+		{
+			name:    "descending, a missing value is still last",
+			def:     meta.AggregationTopHits{Size: 3, Sort: "-city", IncludeSortKey: true},
+			wantIDs: []string{"1", "2", "3"},
+			want:    []*string{key("7366"), key("6c61"), key("")},
+		},
+		{
+			name:    "the window is cut first",
+			def:     meta.AggregationTopHits{From: 1, Size: 1, Sort: "city", IncludeSortKey: true},
+			wantIDs: []string{"1"},
+			want:    []*string{key("7366")},
+		},
+		{
+			name:    "not asked for",
+			def:     meta.AggregationTopHits{Size: 3, Sort: "city"},
+			wantIDs: []string{"2", "1", "3"},
+			want:    []*string{nil, nil, nil},
+		},
+		{
+			name:    "score order has no key",
+			def:     meta.AggregationTopHits{Size: 3, IncludeSortKey: true},
+			wantIDs: []string{"1", "2", "3"},
+			want:    []*string{nil, nil, nil},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := advancedResponse(t, map[string]meta.Aggregations{"best": {TopHits: &tt.def}}, docs)
+			hits := resp["best"].Hits
+			require.NotNil(t, hits)
+			ids, keys := []string{}, []*string{}
+			for _, hit := range hits.Hits {
+				ids, keys = append(ids, hit.ID), append(keys, hit.SortKey)
+			}
+			assert.Equal(t, tt.wantIDs, ids)
+			assert.Equal(t, tt.want, keys)
+		})
+	}
+}
+
 func TestFilterPredicateQueries(t *testing.T) {
 	docs := cityDocs(t,
 		[]string{"1", "2", "3"},

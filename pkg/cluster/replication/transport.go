@@ -122,7 +122,7 @@ type HTTPTransport struct {
 
 // NewHTTPTransport builds a transport authenticating with secret.
 func NewHTTPTransport(secret string) *HTTPTransport {
-	return &HTTPTransport{secret: secret, client: &http.Client{Transport: cluster.Transport()}}
+	return &HTTPTransport{secret: secret, client: &http.Client{Transport: cluster.Transport(), CheckRedirect: cluster.NoRedirect}}
 }
 
 // CheckSecret reports whether a request carries the cluster secret.
