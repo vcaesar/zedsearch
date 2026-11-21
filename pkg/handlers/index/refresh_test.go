@@ -17,10 +17,14 @@ package index
 
 import (
 	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
+	"github.com/vcaesar/zedsearch/pkg/config"
 	"github.com/vcaesar/zedsearch/pkg/core"
 	"github.com/vcaesar/zedsearch/pkg/zutils/json"
 	"github.com/vcaesar/zedsearch/test/utils"
@@ -79,4 +83,18 @@ func TestRefresh(t *testing.T) {
 			assert.NoError(t, err)
 		})
 	}
+}
+
+func TestRefresh_WALOpenError(t *testing.T) {
+	indexName := "TestRefresh_WALOpenError.index_1"
+	prepareIndex(t, indexName, "disk")
+	t.Cleanup(func() { assert.NoError(t, core.DeleteIndex(indexName)) })
+	// a file where the index data directory belongs makes the WAL fail to open
+	require.NoError(t, os.WriteFile(filepath.Join(config.Global.DataPath, indexName), nil, 0o600))
+
+	c, w := utils.NewContext()
+	utils.SetRequestParams(c, map[string]string{"target": indexName})
+	Refresh(c)
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Contains(t, w.Body.String(), "open wal error")
 }

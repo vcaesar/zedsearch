@@ -251,3 +251,108 @@ func TestSetMapping_RejectedUpdateKeepsMappings(t *testing.T) {
 		assert.True(t, ok)
 	})
 }
+
+func TestSetMapping_Branches(t *testing.T) {
+	prefix := "TestSetMapping_Branches.index_"
+	t.Cleanup(func() {
+		for i := 1; i <= 3; i++ {
+			if _, exists := core.GetIndex(fmt.Sprintf("%s%d", prefix, i)); exists {
+				assert.NoError(t, core.DeleteIndex(fmt.Sprintf("%s%d", prefix, i)))
+			}
+		}
+	})
+
+	subFields := `{"_source":{"enabled":true},"properties":{"title":{"type":"text","fields":{"raw":{"type":"keyword"}}}}}`
+	ensureIndex2 := func(t *testing.T) {
+		if _, exists := core.GetIndex(prefix + "2"); exists {
+			return
+		}
+		c, w := utils.NewContext()
+		utils.SetRequestData(c, subFields)
+		utils.SetRequestParams(c, map[string]string{"target": prefix + "2"})
+		SetMapping(c)
+		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	}
+
+	tests := []struct {
+		name   string
+		setup  func(t *testing.T)
+		target string
+		data   string
+		code   int
+		result string
+	}{
+		{name: "invalid mapping", target: prefix + "1", data: `{"properties":{"f":{"type":"TestSetMapping_Branches"}}}`, code: http.StatusBadRequest, result: `doesn't support type [testsetmapping_branches]`},
+		{name: "invalid index name", target: "_" + prefix + "1", data: `{"properties":{"f":{"type":"keyword"}}}`, code: http.StatusInternalServerError, result: `index name cannot start with _`},
+		{name: "create with sub fields", target: prefix + "2", data: subFields, code: http.StatusOK, result: `{"message":"ok"}`},
+		{name: "change _source", setup: ensureIndex2, target: prefix + "2", data: `{"_source":{"enabled":false}}`, code: http.StatusBadRequest, result: `cannot change [_source] of an existing index`},
+		{name: "existing field", setup: ensureIndex2, target: prefix + "2", data: `{"properties":{"title":{"type":"text"}}}`, code: http.StatusBadRequest, result: `already exists mapping of field [title]`},
+		{name: "nested without _source", target: prefix + "3", data: `{"_source":{"enabled":false},"properties":{"items":{"type":"nested"}}}`, code: http.StatusBadRequest, result: `nested field [items] requires _source`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.setup != nil {
+				tt.setup(t)
+			}
+			c, w := utils.NewContext()
+			utils.SetRequestData(c, tt.data)
+			utils.SetRequestParams(c, map[string]string{"target": tt.target})
+			SetMapping(c)
+			assert.Equal(t, tt.code, w.Code)
+			assert.Contains(t, w.Body.String(), tt.result)
+		})
+	}
+
+	t.Run("change _all", func(t *testing.T) {
+		ensureIndex2(t)
+		index, exists := core.GetIndex(prefix + "2")
+		require.True(t, exists)
+		c, w := utils.NewContext()
+		utils.SetRequestData(c, map[string]interface{}{"_all": map[string]interface{}{"enabled": !index.GetMappings().AllEnabled()}})
+		utils.SetRequestParams(c, map[string]string{"target": prefix + "2"})
+		SetMapping(c)
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+		assert.Contains(t, w.Body.String(), `cannot change [_all] of an existing index`)
+	})
+
+	t.Run("state", func(t *testing.T) {
+		ensureIndex2(t)
+		index, exists := core.GetIndex(prefix + "2")
+		require.True(t, exists)
+		mappings := index.GetMappings()
+		assert.True(t, mappings.SourceEnabled())
+		title, ok := mappings.GetProperty("title")
+		require.True(t, ok)
+		assert.Equal(t, "text", title.Type)
+		assert.Equal(t, "keyword", title.Fields["raw"].Type)
+		assert.Empty(t, title.Fields["raw"].Fields)
+	})
+}
+
+func TestSetMapping_NormalizesSubFields(t *testing.T) {
+	name := "TestSetMapping_NormalizesSubFields.index_1"
+	index, err := core.NewIndex(name, "disk", 1)
+	require.NoError(t, err)
+	title := meta.NewProperty("text")
+	title.Fields["raw"] = meta.NewProperty("keyword")
+	mappings := meta.NewMappings()
+	mappings.SetProperty("title", title)
+	require.NoError(t, index.SetMappings(mappings))
+	require.NoError(t, core.StoreIndex(index))
+	t.Cleanup(func() { assert.NoError(t, core.DeleteIndex(name)) })
+	require.NotNil(t, index.GetMappings().Properties["title"].Fields["raw"].Fields)
+
+	c, w := utils.NewContext()
+	utils.SetRequestData(c, map[string]interface{}{"properties": map[string]interface{}{"tag": map[string]interface{}{"type": "keyword"}}})
+	utils.SetRequestParams(c, map[string]string{"target": name})
+	SetMapping(c)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, `{"message":"ok"}`, w.Body.String())
+
+	got := index.GetMappings()
+	_, ok := got.GetProperty("tag")
+	assert.True(t, ok)
+	raw := got.Properties["title"].Fields["raw"]
+	assert.Equal(t, "keyword", raw.Type)
+	assert.Nil(t, raw.Fields, "sub fields can't have sub fields")
+}

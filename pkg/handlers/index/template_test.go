@@ -289,3 +289,29 @@ func TestTemplate(t *testing.T) {
 		}
 	})
 }
+
+func TestCreateTemplate_NameInBody(t *testing.T) {
+	name := "TestCreateTemplate_NameInBody.template_1"
+	t.Cleanup(func() {
+		c, w := utils.NewContext()
+		utils.SetRequestParams(c, map[string]string{"target": name})
+		DeleteTemplate(c)
+		assert.Equal(t, http.StatusOK, w.Code)
+	})
+
+	c, w := utils.NewContext()
+	utils.SetRequestData(c, map[string]interface{}{
+		"name":           name,
+		"index_patterns": []interface{}{"TestCreateTemplate_NameInBody-*"},
+		"template":       map[string]interface{}{"settings": map[string]interface{}{"number_of_shards": 1}},
+	})
+	CreateTemplate(c)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, `{"message":"ok","template":"`+name+`"}`, w.Body.String())
+
+	c, w = utils.NewContext()
+	utils.SetRequestParams(c, map[string]string{"target": name})
+	GetTemplate(c)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), `"index_patterns":["TestCreateTemplate_NameInBody-*"]`)
+}
