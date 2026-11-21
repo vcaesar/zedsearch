@@ -41,9 +41,11 @@ Images liegen auf [Docker Hub](https://hub.docker.com/r/riotgo/zedsearch) als `r
 Setzen Sie vor dem Ausführen `ZED_FIRST_ADMIN_PASSWORD` in Ihrer Umgebung auf Ihr gewähltes Passwort:
 
 ```sh
-docker run -d --name zedsearch -p 4080:4080 \
+docker run -d --name zedsearch \
+    -p 4080:4080 \
     -v zedsearch-data:/data -e ZED_DATA_PATH=/data \
-    -e ZED_FIRST_ADMIN_USER=admin -e "ZED_FIRST_ADMIN_PASSWORD=${ZED_FIRST_ADMIN_PASSWORD:?Set ZED_FIRST_ADMIN_PASSWORD}" \
+    -e ZED_FIRST_ADMIN_USER="admin" \
+    -e ZED_FIRST_ADMIN_PASSWORD="your_password_zed#123" \
     riotgo/zedsearch:latest
 ```
 
@@ -79,46 +81,46 @@ go + gin (oder fiber v3 mit `-tags fiber`) + react
 
 Sieben Suchanwendungs-Abfragen über 50.000 Dokumente (Top 10 plus exakte Gesamtzahl) auf einem MacBook Pro M1, jeder Server in Docker: eine gefilterte Term-Abfrage, ein OR über zwei Felder, eine Sortierung aller Dokumente nach Preis, Seite 101, eine Terms- und eine Histogram-Aggregation sowie Hervorhebung. Niedriger ist besser, außer bei QPS; „—“ heißt, dass die Engine die Abfrage nicht ausdrücken kann (Meilisearch hat kein numerisches Histogramm, OpenObserve keine Hervorhebung).
 
-| Abfrage | ZedSearch | ZincSearch 0.4.10 | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 | OpenObserve 1.1 |
-|---|---:|---:|---:|---:|---:|---:|
-| `filtered` (1 Client) | **0.89 ms** | 3.43 ms | 1.38 ms | 1.44 ms | 1.87 ms | 9.44 ms |
-| `filtered` (8 Clients) | **3,216 QPS** | 471 QPS | 2,742 QPS | 3,066 QPS | 1,924 QPS | 321 QPS |
-| `sort_price` (50k Dokumente) | **0.74 ms** | 76.0 ms | 2.52 ms | 1.58 ms | 1.09 ms | 4.40 ms |
-| `multi_field` title + body | **0.63 ms** | 2.04 ms | 1.44 ms | 1.51 ms | 1.19 ms | 21.0 ms |
-| `deep_page` from 1000 | **1.24 ms** | 3.40 ms | 1.42 ms | 1.47 ms | 12.7 ms | 18.1 ms |
-| `agg_terms` `category` | **1.48 ms** | 5.55 ms | 1.66 ms | 2.12 ms | 1.63 ms | 18.6 ms |
-| `agg_histogram` `price` | **1.00 ms** | 20.1 ms | 1.67 ms | 1.72 ms | — | 18.7 ms |
-| `highlight` `body` | **0.81 ms** | 2.27 ms | 1.96 ms | 1.97 ms | 1.92 ms | — |
+| Abfrage                      |     ZedSearch | ZincSearch 0.4.10 | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 | OpenObserve 1.1 |
+| ---------------------------- | ------------: | ----------------: | ----------------: | -------------: | ---------------: | --------------: |
+| `filtered` (1 Client)        |   **0.89 ms** |           3.43 ms |           1.38 ms |        1.44 ms |          1.87 ms |         9.44 ms |
+| `filtered` (8 Clients)       | **3,216 QPS** |           471 QPS |         2,742 QPS |      3,066 QPS |        1,924 QPS |         321 QPS |
+| `sort_price` (50k Dokumente) |   **0.74 ms** |           76.0 ms |           2.52 ms |        1.58 ms |          1.09 ms |         4.40 ms |
+| `multi_field` title + body   |   **0.63 ms** |           2.04 ms |           1.44 ms |        1.51 ms |          1.19 ms |         21.0 ms |
+| `deep_page` from 1000        |   **1.24 ms** |           3.40 ms |           1.42 ms |        1.47 ms |          12.7 ms |         18.1 ms |
+| `agg_terms` `category`       |   **1.48 ms** |           5.55 ms |           1.66 ms |        2.12 ms |          1.63 ms |         18.6 ms |
+| `agg_histogram` `price`      |   **1.00 ms** |           20.1 ms |           1.67 ms |        1.72 ms |                — |         18.7 ms |
+| `highlight` `body`           |   **0.81 ms** |           2.27 ms |           1.96 ms |        1.97 ms |          1.92 ms |               — |
 
 ### Einzelne Abfragen (v2)
 
 Die v2-Abfragen aus denselben Sitzungen, jeweils nur ein Abfragetyp. Meilisearch kann weder OR noch exakte Phrasen ausdrücken.
 
-| Abfrage | ZedSearch | ZincSearch 0.4.10 | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 | OpenObserve 1.1 |
-|---|---:|---:|---:|---:|---:|---:|
-| `term` rare | **0.50 ms** | 1.03 ms | 1.43 ms | 1.16 ms | 1.14 ms | 15.7 ms |
-| `term` mid | **0.58 ms** | 1.82 ms | 1.28 ms | 1.27 ms | 1.16 ms | 17.6 ms |
-| `term` keyword | **0.57 ms** | 0.82 ms | 1.75 ms | 2.32 ms | 1.03 ms | 5.59 ms |
-| `bool` should | **0.63 ms** | 1.12 ms | 1.61 ms | 1.75 ms | — | 26.7 ms |
-| `bool` must | **1.01 ms** | 1.79 ms | 2.36 ms | 3.30 ms | 1.28 ms | 24.1 ms |
-| `range` | **0.64 ms** | 2.56 ms | 1.32 ms | 1.28 ms | 1.32 ms | 5.31 ms |
-| `match_all` | **0.66 ms** | 4.12 ms | 1.48 ms | 1.38 ms | 1.03 ms | 4.68 ms |
-| `prefix` `w1*` | **0.71 ms** | 214.5 ms | 1.87 ms | 2.66 ms | 1.32 ms | 11.9 ms |
-| `match_phrase` | **10.3 ms** | 55.6 ms | 12.7 ms | 12.6 ms | — | 16.3 ms |
-| `bool` should (8 Clients) | **5,179 QPS** | 1,292 QPS | 2,707 QPS | 2,616 QPS | — | 131 QPS |
+| Abfrage                   |     ZedSearch | ZincSearch 0.4.10 | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 | OpenObserve 1.1 |
+| ------------------------- | ------------: | ----------------: | ----------------: | -------------: | ---------------: | --------------: |
+| `term` rare               |   **0.50 ms** |           1.03 ms |           1.43 ms |        1.16 ms |          1.14 ms |         15.7 ms |
+| `term` mid                |   **0.58 ms** |           1.82 ms |           1.28 ms |        1.27 ms |          1.16 ms |         17.6 ms |
+| `term` keyword            |   **0.57 ms** |           0.82 ms |           1.75 ms |        2.32 ms |          1.03 ms |         5.59 ms |
+| `bool` should             |   **0.63 ms** |           1.12 ms |           1.61 ms |        1.75 ms |                — |         26.7 ms |
+| `bool` must               |   **1.01 ms** |           1.79 ms |           2.36 ms |        3.30 ms |          1.28 ms |         24.1 ms |
+| `range`                   |   **0.64 ms** |           2.56 ms |           1.32 ms |        1.28 ms |          1.32 ms |         5.31 ms |
+| `match_all`               |   **0.66 ms** |           4.12 ms |           1.48 ms |        1.38 ms |          1.03 ms |         4.68 ms |
+| `prefix` `w1*`            |   **0.71 ms** |          214.5 ms |           1.87 ms |        2.66 ms |          1.32 ms |         11.9 ms |
+| `match_phrase`            |   **10.3 ms** |           55.6 ms |           12.7 ms |        12.6 ms |                — |         16.3 ms |
+| `bool` should (8 Clients) | **5,179 QPS** |         1,292 QPS |         2,707 QPS |      2,616 QPS |                — |         131 QPS |
 
 ### Ressourcenbedarf
 
 Docker-Image (unkomprimiert), Textindex derselben 50.000 Dokumente (nach `_flush` rund 25 MB für ZedSearch, Elasticsearch und OpenSearch) sowie Speicher / CPU über den gesamten Lauf (100 % = 1 vCPU), die Werte sind der Median aus drei Läufen.
 
-| Ressource | ZedSearch | ZincSearch 0.4.10 | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 | OpenObserve 1.1 |
-|---|---:|---:|---:|---:|---:|---:|
-| Docker-Image | **56.4 MB** | 72.4 MB | 1,195 MB | 1,311 MB | 370 MB | 434 MB |
-| Textindex, 50k Dokumente | 25.9 MB | 133.3 MB | 25.8 MB | 25.7 MB | 454 MB | 14.2 MB (nicht indexiert) |
-| Speicher im Leerlauf | **14 MiB** | 64 MiB | 2,674 MiB | 2,699 MiB | 179 MiB | 387 MiB |
-| Speicher-Spitze | **388 MiB** | 858 MiB | 3,185 MiB | 3,191 MiB | 1,014 MiB | 919 MiB |
-| CPU Mittel | **134%** | 366% | 157% | 156% | 230% | 140% |
-| CPU Spitze | 553% | 710% | 620% | 529% | 545% | **519%** |
+| Ressource                |   ZedSearch | ZincSearch 0.4.10 | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 |           OpenObserve 1.1 |
+| ------------------------ | ----------: | ----------------: | ----------------: | -------------: | ---------------: | ------------------------: |
+| Docker-Image             | **56.4 MB** |           72.4 MB |          1,195 MB |       1,311 MB |           370 MB |                    434 MB |
+| Textindex, 50k Dokumente |     25.9 MB |          133.3 MB |           25.8 MB |        25.7 MB |           454 MB | 14.2 MB (nicht indexiert) |
+| Speicher im Leerlauf     |  **14 MiB** |            64 MiB |         2,674 MiB |      2,699 MiB |          179 MiB |                   387 MiB |
+| Speicher-Spitze          | **388 MiB** |           858 MiB |         3,185 MiB |      3,191 MiB |        1,014 MiB |                   919 MiB |
+| CPU Mittel               |    **134%** |              366% |              157% |           156% |             230% |                      140% |
+| CPU Spitze               |        553% |              710% |              620% |           529% |             545% |                  **519%** |
 
 # Dokumentation
 

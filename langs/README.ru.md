@@ -41,9 +41,11 @@ brew install vcaesar/tap/zedsearch
 Перед запуском задайте выбранный пароль в переменной окружения `ZED_FIRST_ADMIN_PASSWORD`:
 
 ```sh
-docker run -d --name zedsearch -p 4080:4080 \
+docker run -d --name zedsearch \
+    -p 4080:4080 \
     -v zedsearch-data:/data -e ZED_DATA_PATH=/data \
-    -e ZED_FIRST_ADMIN_USER=admin -e "ZED_FIRST_ADMIN_PASSWORD=${ZED_FIRST_ADMIN_PASSWORD:?Set ZED_FIRST_ADMIN_PASSWORD}" \
+    -e ZED_FIRST_ADMIN_USER="admin" \
+    -e ZED_FIRST_ADMIN_PASSWORD="your_password_zed#123" \
     riotgo/zedsearch:latest
 ```
 
@@ -79,46 +81,46 @@ go + gin (или fiber v3 с `-tags fiber`) + react
 
 Семь запросов поискового приложения по 50 000 документов (топ-10 и точное общее число), MacBook Pro M1, каждый сервер в Docker: term-запрос с фильтрами, OR по двум полям, сортировка всех документов по цене, 101-я страница, агрегации terms и histogram, подсветка. Меньше — лучше, кроме QPS; «—» означает, что движок не может выразить запрос (у Meilisearch нет числовой гистограммы, OpenObserve не подсвечивает).
 
-| Запрос | ZedSearch | ZincSearch 0.4.10 | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 | OpenObserve 1.1 |
-|---|---:|---:|---:|---:|---:|---:|
-| `filtered` (1 клиент) | **0.89 ms** | 3.43 ms | 1.38 ms | 1.44 ms | 1.87 ms | 9.44 ms |
-| `filtered` (8 клиентов) | **3,216 QPS** | 471 QPS | 2,742 QPS | 3,066 QPS | 1,924 QPS | 321 QPS |
-| `sort_price` (50 тыс. документов) | **0.74 ms** | 76.0 ms | 2.52 ms | 1.58 ms | 1.09 ms | 4.40 ms |
-| `multi_field` title + body | **0.63 ms** | 2.04 ms | 1.44 ms | 1.51 ms | 1.19 ms | 21.0 ms |
-| `deep_page` from 1000 | **1.24 ms** | 3.40 ms | 1.42 ms | 1.47 ms | 12.7 ms | 18.1 ms |
-| `agg_terms` `category` | **1.48 ms** | 5.55 ms | 1.66 ms | 2.12 ms | 1.63 ms | 18.6 ms |
-| `agg_histogram` `price` | **1.00 ms** | 20.1 ms | 1.67 ms | 1.72 ms | — | 18.7 ms |
-| `highlight` `body` | **0.81 ms** | 2.27 ms | 1.96 ms | 1.97 ms | 1.92 ms | — |
+| Запрос                            |     ZedSearch | ZincSearch 0.4.10 | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 | OpenObserve 1.1 |
+| --------------------------------- | ------------: | ----------------: | ----------------: | -------------: | ---------------: | --------------: |
+| `filtered` (1 клиент)             |   **0.89 ms** |           3.43 ms |           1.38 ms |        1.44 ms |          1.87 ms |         9.44 ms |
+| `filtered` (8 клиентов)           | **3,216 QPS** |           471 QPS |         2,742 QPS |      3,066 QPS |        1,924 QPS |         321 QPS |
+| `sort_price` (50 тыс. документов) |   **0.74 ms** |           76.0 ms |           2.52 ms |        1.58 ms |          1.09 ms |         4.40 ms |
+| `multi_field` title + body        |   **0.63 ms** |           2.04 ms |           1.44 ms |        1.51 ms |          1.19 ms |         21.0 ms |
+| `deep_page` from 1000             |   **1.24 ms** |           3.40 ms |           1.42 ms |        1.47 ms |          12.7 ms |         18.1 ms |
+| `agg_terms` `category`            |   **1.48 ms** |           5.55 ms |           1.66 ms |        2.12 ms |          1.63 ms |         18.6 ms |
+| `agg_histogram` `price`           |   **1.00 ms** |           20.1 ms |           1.67 ms |        1.72 ms |                — |         18.7 ms |
+| `highlight` `body`                |   **0.81 ms** |           2.27 ms |           1.96 ms |        1.97 ms |          1.92 ms |               — |
 
 ### Отдельные запросы (v2)
 
 Запросы v2 из тех же сессий, по одному типу запроса. Meilisearch не умеет выражать OR и точные фразы.
 
-| Запрос | ZedSearch | ZincSearch 0.4.10 | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 | OpenObserve 1.1 |
-|---|---:|---:|---:|---:|---:|---:|
-| `term` rare | **0.50 ms** | 1.03 ms | 1.43 ms | 1.16 ms | 1.14 ms | 15.7 ms |
-| `term` mid | **0.58 ms** | 1.82 ms | 1.28 ms | 1.27 ms | 1.16 ms | 17.6 ms |
-| `term` keyword | **0.57 ms** | 0.82 ms | 1.75 ms | 2.32 ms | 1.03 ms | 5.59 ms |
-| `bool` should | **0.63 ms** | 1.12 ms | 1.61 ms | 1.75 ms | — | 26.7 ms |
-| `bool` must | **1.01 ms** | 1.79 ms | 2.36 ms | 3.30 ms | 1.28 ms | 24.1 ms |
-| `range` | **0.64 ms** | 2.56 ms | 1.32 ms | 1.28 ms | 1.32 ms | 5.31 ms |
-| `match_all` | **0.66 ms** | 4.12 ms | 1.48 ms | 1.38 ms | 1.03 ms | 4.68 ms |
-| `prefix` `w1*` | **0.71 ms** | 214.5 ms | 1.87 ms | 2.66 ms | 1.32 ms | 11.9 ms |
-| `match_phrase` | **10.3 ms** | 55.6 ms | 12.7 ms | 12.6 ms | — | 16.3 ms |
-| `bool` should (8 клиентов) | **5,179 QPS** | 1,292 QPS | 2,707 QPS | 2,616 QPS | — | 131 QPS |
+| Запрос                     |     ZedSearch | ZincSearch 0.4.10 | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 | OpenObserve 1.1 |
+| -------------------------- | ------------: | ----------------: | ----------------: | -------------: | ---------------: | --------------: |
+| `term` rare                |   **0.50 ms** |           1.03 ms |           1.43 ms |        1.16 ms |          1.14 ms |         15.7 ms |
+| `term` mid                 |   **0.58 ms** |           1.82 ms |           1.28 ms |        1.27 ms |          1.16 ms |         17.6 ms |
+| `term` keyword             |   **0.57 ms** |           0.82 ms |           1.75 ms |        2.32 ms |          1.03 ms |         5.59 ms |
+| `bool` should              |   **0.63 ms** |           1.12 ms |           1.61 ms |        1.75 ms |                — |         26.7 ms |
+| `bool` must                |   **1.01 ms** |           1.79 ms |           2.36 ms |        3.30 ms |          1.28 ms |         24.1 ms |
+| `range`                    |   **0.64 ms** |           2.56 ms |           1.32 ms |        1.28 ms |          1.32 ms |         5.31 ms |
+| `match_all`                |   **0.66 ms** |           4.12 ms |           1.48 ms |        1.38 ms |          1.03 ms |         4.68 ms |
+| `prefix` `w1*`             |   **0.71 ms** |          214.5 ms |           1.87 ms |        2.66 ms |          1.32 ms |         11.9 ms |
+| `match_phrase`             |   **10.3 ms** |           55.6 ms |           12.7 ms |        12.6 ms |                — |         16.3 ms |
+| `bool` should (8 клиентов) | **5,179 QPS** |         1,292 QPS |         2,707 QPS |      2,616 QPS |                — |         131 QPS |
 
 ### Потребление ресурсов
 
 Docker-образ (без сжатия), текстовый индекс тех же 50 000 документов (после `_flush` около 25 МБ у ZedSearch, Elasticsearch и OpenSearch), память / CPU за весь прогон (100% = 1 vCPU), данные — медиана трёх прогонов.
 
-| Ресурс | ZedSearch | ZincSearch 0.4.10 | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 | OpenObserve 1.1 |
-|---|---:|---:|---:|---:|---:|---:|
-| Docker-образ | **56.4 MB** | 72.4 MB | 1,195 MB | 1,311 MB | 370 MB | 434 MB |
-| Текстовый индекс, 50 тыс. документов | 25.9 MB | 133.3 MB | 25.8 MB | 25.7 MB | 454 MB | 14.2 MB (без индексации) |
-| Память в простое | **14 MiB** | 64 MiB | 2,674 MiB | 2,699 MiB | 179 MiB | 387 MiB |
-| Пиковая память | **388 MiB** | 858 MiB | 3,185 MiB | 3,191 MiB | 1,014 MiB | 919 MiB |
-| CPU в среднем | **134%** | 366% | 157% | 156% | 230% | 140% |
-| Пиковый CPU | 553% | 710% | 620% | 529% | 545% | **519%** |
+| Ресурс                               |   ZedSearch | ZincSearch 0.4.10 | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 |          OpenObserve 1.1 |
+| ------------------------------------ | ----------: | ----------------: | ----------------: | -------------: | ---------------: | -----------------------: |
+| Docker-образ                         | **56.4 MB** |           72.4 MB |          1,195 MB |       1,311 MB |           370 MB |                   434 MB |
+| Текстовый индекс, 50 тыс. документов |     25.9 MB |          133.3 MB |           25.8 MB |        25.7 MB |           454 MB | 14.2 MB (без индексации) |
+| Память в простое                     |  **14 MiB** |            64 MiB |         2,674 MiB |      2,699 MiB |          179 MiB |                  387 MiB |
+| Пиковая память                       | **388 MiB** |           858 MiB |         3,185 MiB |      3,191 MiB |        1,014 MiB |                  919 MiB |
+| CPU в среднем                        |    **134%** |              366% |              157% |           156% |             230% |                     140% |
+| Пиковый CPU                          |        553% |              710% |              620% |           529% |             545% |                 **519%** |
 
 # Документация
 

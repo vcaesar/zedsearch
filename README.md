@@ -41,9 +41,11 @@ Images are on [Docker Hub](https://hub.docker.com/r/riotgo/zedsearch) as `riotgo
 Set `ZED_FIRST_ADMIN_PASSWORD` in your environment to your chosen password before running:
 
 ```sh
-docker run -d --name zedsearch -p 4080:4080 \
+docker run -d --name zedsearch \
+    -p 4080:4080 \
     -v zedsearch-data:/data -e ZED_DATA_PATH=/data \
-    -e ZED_FIRST_ADMIN_USER=admin -e "ZED_FIRST_ADMIN_PASSWORD=${ZED_FIRST_ADMIN_PASSWORD:?Set ZED_FIRST_ADMIN_PASSWORD}" \
+    -e ZED_FIRST_ADMIN_USER="admin" \
+    -e ZED_FIRST_ADMIN_PASSWORD="your_password_zed#123" \
     riotgo/zedsearch:latest
 ```
 
