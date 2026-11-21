@@ -20,6 +20,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"vitess.io/vitess/go/vt/sqlparser"
 
 	"github.com/vcaesar/zedsearch/pkg/zutils/json"
 )
@@ -397,7 +398,7 @@ func TestParseStatement(t *testing.T) {
 	})
 
 	t.Run("limit must be an integer", func(t *testing.T) {
-		for _, sql := range []string{`SELECT * FROM logs LIMIT 1.5`, `SELECT * FROM logs LIMIT 1e30`, `SELECT * FROM logs LIMIT 1 OFFSET 2.5`} {
+		for _, sql := range []string{`SELECT * FROM logs LIMIT 1.5`, `SELECT * FROM logs LIMIT 1e30`, `SELECT * FROM logs LIMIT 1 OFFSET 2.5`, `SELECT * FROM logs LIMIT ?`} {
 			_, err := Parse(sql)
 			assert.Error(t, err, sql)
 		}
@@ -408,6 +409,65 @@ func TestParseStatement(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, []Condition{{Label: "p", Op: ">", Value: 1.5}}, stmt.Having)
 	})
+
+	t.Run("having on field of aliased aggregate", func(t *testing.T) {
+		stmt, err := Parse(`SELECT level, AVG(price) AS p FROM logs GROUP BY level HAVING price < 2`)
+		require.NoError(t, err)
+		assert.Equal(t, []Condition{{Label: "p", Op: "<", Value: 2}}, stmt.Having)
+	})
+
+	t.Run("having operators", func(t *testing.T) {
+		stmt, err := Parse(`SELECT level, COUNT(*) FROM logs GROUP BY level
+			HAVING COUNT(*) = 1 AND COUNT(*) != 2 AND COUNT(*) < 3 AND COUNT(*) <= 4 AND COUNT(*) > 5`)
+		require.NoError(t, err)
+		assert.Equal(t, []Condition{
+			{Label: "COUNT(*)", Op: "=", Value: 1},
+			{Label: "COUNT(*)", Op: "!=", Value: 2},
+			{Label: "COUNT(*)", Op: "<", Value: 3},
+			{Label: "COUNT(*)", Op: "<=", Value: 4},
+			{Label: "COUNT(*)", Op: ">", Value: 5},
+		}, stmt.Having)
+	})
+}
+
+func TestParseFrom(t *testing.T) {
+	tests := []struct {
+		name string
+		from []sqlparser.TableExpr
+	}{
+		{name: "no table"},
+		{name: "unnamed table", from: []sqlparser.TableExpr{&sqlparser.AliasedTableExpr{Expr: sqlparser.TableName{}}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			indexes, err := parseFrom(tt.from)
+			assert.Nil(t, indexes)
+			assert.EqualError(t, err, "FROM is required")
+		})
+	}
+}
+
+func TestParseColumnsRequiresColumn(t *testing.T) {
+	assert.EqualError(t, parseColumns(&Statement{}, nil), "SELECT requires at least one column")
+	assert.EqualError(t, parseColumns(&Statement{}, &sqlparser.SelectExprs{}), "SELECT requires at least one column")
+}
+
+func TestLiteralValueInvalidNumber(t *testing.T) {
+	tests := []struct {
+		name string
+		expr sqlparser.Expr
+		want string
+	}{
+		{name: "integer", expr: sqlparser.NewIntLiteral("1x"), want: "invalid integer literal [1x]"},
+		{name: "float", expr: sqlparser.NewFloatLiteral("1.x"), want: "invalid number literal [1.x]"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			value, err := literalValue(tt.expr)
+			assert.Nil(t, value)
+			assert.EqualError(t, err, tt.want)
+		})
+	}
 }
 
 func TestParseErrors(t *testing.T) {
@@ -491,6 +551,111 @@ func TestParseErrors(t *testing.T) {
 			sql:  `SELECT COUNT(*) FROM logs GROUP BY level WITH ROLLUP`,
 			want: "unsupported construct: WITH ROLLUP",
 		},
+		{
+			name: "with",
+			sql:  `WITH x AS (SELECT level FROM logs) SELECT level FROM x`,
+			want: "unsupported construct: WITH",
+		},
+		{
+			name: "window",
+			sql:  `SELECT level FROM logs WINDOW w AS (PARTITION BY level)`,
+			want: "unsupported construct: WINDOW",
+		},
+		{
+			name: "into",
+			sql:  `SELECT level FROM logs INTO OUTFILE 'x'`,
+			want: "unsupported construct: INTO",
+		},
+		{
+			name: "next value",
+			sql:  `SELECT NEXT VALUE FROM logs`,
+			want: "unsupported construct",
+		},
+		{
+			name: "select expression",
+			sql:  `SELECT count + 1 FROM logs`,
+			want: "unsupported construct: `count` + 1",
+		},
+		{
+			name: "count of several columns",
+			sql:  `SELECT COUNT(DISTINCT level, ok) FROM logs`,
+			want: "unsupported construct",
+		},
+		{
+			name: "count of expression",
+			sql:  `SELECT COUNT(count + 1) FROM logs`,
+			want: "unsupported construct: `count` + 1",
+		},
+		{
+			name: "sum of expression",
+			sql:  `SELECT SUM(count + 1) FROM logs`,
+			want: "unsupported construct: `count` + 1",
+		},
+		{
+			name: "histogram without group by",
+			sql:  `SELECT HISTOGRAM(price, 10) FROM logs`,
+			want: "column [HISTOGRAM(price, 10)] must appear in GROUP BY or be an aggregate",
+		},
+		{
+			name: "group by expression",
+			sql:  `SELECT COUNT(*) FROM logs GROUP BY count + 1`,
+			want: "unsupported construct: GROUP BY `count` + 1",
+		},
+		{
+			name: "histogram arity",
+			sql:  `SELECT COUNT(*) FROM logs GROUP BY HISTOGRAM(price)`,
+			want: "HISTOGRAM requires (field, interval)",
+		},
+		{
+			name: "histogram of expression",
+			sql:  `SELECT COUNT(*) FROM logs GROUP BY HISTOGRAM(price + 1, 10)`,
+			want: "unsupported construct: price + 1",
+		},
+		{
+			name: "histogram interval column",
+			sql:  `SELECT COUNT(*) FROM logs GROUP BY HISTOGRAM(price, count)`,
+			want: "unsupported expression [`count`]",
+		},
+		{
+			name: "histogram interval not a number",
+			sql:  `SELECT COUNT(*) FROM logs GROUP BY HISTOGRAM(price, 'wide')`,
+			want: "HISTOGRAM interval must be a number",
+		},
+		{
+			name: "date histogram interval not a string",
+			sql:  `SELECT COUNT(*) FROM logs GROUP BY DATE_HISTOGRAM(ts, 1)`,
+			want: "DATE_HISTOGRAM interval must be a string",
+		},
+		{
+			name: "having between",
+			sql:  `SELECT level, COUNT(*) FROM logs GROUP BY level HAVING COUNT(*) BETWEEN 1 AND 2`,
+			want: "unsupported construct: HAVING",
+		},
+		{
+			name: "having like",
+			sql:  `SELECT level, COUNT(*) FROM logs GROUP BY level HAVING COUNT(*) LIKE '1'`,
+			want: "unsupported construct: HAVING",
+		},
+		{
+			name: "having expression",
+			sql:  `SELECT level, COUNT(*) FROM logs GROUP BY level HAVING count + 1 > 2`,
+			want: "unsupported construct: `count` + 1",
+		},
+		{
+			name: "having against column",
+			sql:  `SELECT level, COUNT(*) FROM logs GROUP BY level HAVING COUNT(*) > count`,
+			want: "unsupported expression [`count`]",
+		},
+		{
+			name: "having against text",
+			sql:  `SELECT level, COUNT(*) FROM logs GROUP BY level HAVING COUNT(*) > 'many'`,
+			want: "must compare against a number",
+		},
+		{
+			name: "order by expression when aggregated",
+			sql:  `SELECT level, COUNT(*) FROM logs GROUP BY level ORDER BY count + 1`,
+			want: "unsupported construct: `count` + 1",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -539,6 +704,111 @@ func TestTranslateErrors(t *testing.T) {
 			sql:  `SELECT * FROM logs WHERE level REGEXP 'err.*'`,
 			want: "unsupported operator",
 		},
+		{
+			name: "bare column",
+			sql:  `SELECT * FROM logs WHERE level`,
+			want: "unsupported WHERE expression [`level`]",
+		},
+		{
+			name: "unsupported and operand",
+			sql:  `SELECT * FROM logs WHERE level = 'error' AND count + 1 = 2`,
+			want: "unsupported WHERE expression [`count` + 1 = 2]",
+		},
+		{
+			name: "unsupported or operand",
+			sql:  `SELECT * FROM logs WHERE level = 'error' OR count + 1 = 2`,
+			want: "unsupported WHERE expression [`count` + 1 = 2]",
+		},
+		{
+			name: "unsupported not operand",
+			sql:  `SELECT * FROM logs WHERE NOT (count + 1 = 2)`,
+			want: "unsupported WHERE expression [`count` + 1 = 2]",
+		},
+		{
+			name: "in subquery",
+			sql:  `SELECT * FROM logs WHERE level IN (SELECT level FROM logs)`,
+			want: "IN requires a list of literals",
+		},
+		{
+			name: "in column",
+			sql:  `SELECT * FROM logs WHERE level IN (message)`,
+			want: "IN requires a list of literals",
+		},
+		{
+			name: "like number",
+			sql:  `SELECT * FROM logs WHERE level LIKE 5`,
+			want: "LIKE pattern must be a string",
+		},
+		{
+			name: "between on expression",
+			sql:  `SELECT * FROM logs WHERE count + 1 BETWEEN 1 AND 2`,
+			want: "unsupported WHERE expression",
+		},
+		{
+			name: "between from column",
+			sql:  `SELECT * FROM logs WHERE count BETWEEN price AND 2`,
+			want: "unsupported expression [price]",
+		},
+		{
+			name: "between to column",
+			sql:  `SELECT * FROM logs WHERE count BETWEEN 1 AND price`,
+			want: "unsupported expression [price]",
+		},
+		{
+			name: "is null on expression",
+			sql:  `SELECT * FROM logs WHERE count + 1 IS NULL`,
+			want: "unsupported WHERE expression",
+		},
+		{
+			name: "is true",
+			sql:  `SELECT * FROM logs WHERE ok IS TRUE`,
+			want: "unsupported WHERE expression",
+		},
+		{
+			name: "match on literal",
+			sql:  `SELECT * FROM logs WHERE MATCH('message', 'hello')`,
+			want: "MATCH requires (field, 'text')",
+		},
+		{
+			name: "match number",
+			sql:  `SELECT * FROM logs WHERE MATCH(message, 5)`,
+			want: "MATCH requires (field, 'text')",
+		},
+		{
+			name: "match column",
+			sql:  `SELECT * FROM logs WHERE MATCH(message, level)`,
+			want: "MATCH requires (field, 'text')",
+		},
+		{
+			name: "query number",
+			sql:  `SELECT * FROM logs WHERE QUERY(5)`,
+			want: "QUERY requires ('lucene query')",
+		},
+		{
+			name: "hex literal",
+			sql:  `SELECT * FROM logs WHERE count = 0x1F`,
+			want: "unsupported WHERE expression",
+		},
+		{
+			name: "bitwise not",
+			sql:  `SELECT * FROM logs WHERE count = ~1`,
+			want: "unsupported WHERE expression",
+		},
+		{
+			name: "negated column",
+			sql:  `SELECT * FROM logs WHERE count = -price`,
+			want: "unsupported WHERE expression",
+		},
+		{
+			name: "negated text",
+			sql:  `SELECT * FROM logs WHERE count = -'abc'`,
+			want: "unsupported WHERE expression",
+		},
+		{
+			name: "negated boolean",
+			sql:  `SELECT * FROM logs WHERE count = -true`,
+			want: "unsupported WHERE expression",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -561,6 +831,36 @@ func TestBuildQuery(t *testing.T) {
 	assert.True(t, query.TrackTotalHits)
 	assert.Equal(t, []interface{}{"level"}, query.Source)
 	assert.NotNil(t, query.Query)
+
+	query, err = BuildQuery(map[string]interface{}{"query": make(chan int)})
+	assert.Nil(t, query)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "marshal query DSL")
+
+	query, err = BuildQuery(map[string]interface{}{"size": "three"})
+	assert.Nil(t, query)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unmarshal query DSL")
+}
+
+func TestLikePatterns(t *testing.T) {
+	tests := []struct {
+		name     string
+		pattern  string
+		wildcard string
+		regexp   string
+	}{
+		{name: "wildcards", pattern: `a%b_`, wildcard: `a*b?`, regexp: `a.*b.`},
+		{name: "escaped wildcards", pattern: `a\%b\_`, wildcard: `a%b_`, regexp: `a%b_`},
+		{name: "escaped regexp character", pattern: `a\.b`, wildcard: `a.b`, regexp: `a\.b`},
+		{name: "trailing backslash", pattern: `a\`, wildcard: `a\`, regexp: `a\\`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.wildcard, likePattern(tt.pattern))
+			assert.Equal(t, tt.regexp, likeRegexp(tt.pattern))
+		})
+	}
 }
 
 func TestPreprocess(t *testing.T) {
@@ -593,6 +893,36 @@ func TestPreprocess(t *testing.T) {
 			name: "match column is kept",
 			sql:  `SELECT match FROM t`,
 			want: `SELECT match FROM t`,
+		},
+		{
+			name: "trailing match is kept",
+			sql:  `SELECT match`,
+			want: `SELECT match`,
+		},
+		{
+			name: "escaped quote stays inside the string",
+			sql:  `SELECT a FROM t WHERE a = 'it\'s "x"' AND "b" = 1`,
+			want: "SELECT a FROM t WHERE a = 'it\\'s \"x\"' AND `b` = 1",
+		},
+		{
+			name: "doubled quote stays inside the string",
+			sql:  `SELECT a FROM t WHERE a = 'it''s "x"' AND "b" = 1`,
+			want: "SELECT a FROM t WHERE a = 'it''s \"x\"' AND `b` = 1",
+		},
+		{
+			name: "unterminated string is kept",
+			sql:  `SELECT a FROM t WHERE a = 'x "y`,
+			want: `SELECT a FROM t WHERE a = 'x "y`,
+		},
+		{
+			name: "doubled double quote is one quote",
+			sql:  `SELECT "a""b" FROM t`,
+			want: "SELECT `a\"b` FROM t",
+		},
+		{
+			name: "unterminated identifier is closed",
+			sql:  `SELECT "a b`,
+			want: "SELECT `a b`",
 		},
 	}
 	for _, tt := range tests {
