@@ -1,12 +1,51 @@
 package zutils
 
 import (
+	"errors"
+	"io"
 	"net/http"
 	"testing"
+	"testing/iotest"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/vcaesar/zedsearch/test/utils"
 )
+
+func TestBindJSON(t *testing.T) {
+	type Request struct {
+		Name string `json:"name"`
+	}
+
+	t.Run("decodes the body", func(t *testing.T) {
+		c, _ := utils.NewContext()
+		utils.SetRequestData(c, `{"name":"zed"}`)
+		var req Request
+		assert.NoError(t, BindJSON(c, &req))
+		assert.Equal(t, Request{Name: "zed"}, req)
+	})
+
+	t.Run("invalid json", func(t *testing.T) {
+		c, _ := utils.NewContext()
+		utils.SetRequestData(c, `{"name":`)
+		var req Request
+		assert.Error(t, BindJSON(c, &req))
+		assert.Empty(t, req.Name)
+	})
+
+	t.Run("missing body", func(t *testing.T) {
+		c, _ := utils.NewContext()
+		var req Request
+		assert.Error(t, BindJSON(c, &req))
+	})
+
+	t.Run("body read error", func(t *testing.T) {
+		errRead := errors.New("connection reset")
+		c, _ := utils.NewContext()
+		c.Request.Body = io.NopCloser(iotest.ErrReader(errRead))
+		var req Request
+		assert.ErrorIs(t, BindJSON(c, &req), errRead)
+	})
+}
 
 func TestGetRenderer(t *testing.T) {
 	type args struct {

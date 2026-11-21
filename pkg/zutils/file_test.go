@@ -88,6 +88,14 @@ func TestIsExist(t *testing.T) {
 			want:    false,
 			wantErr: false,
 		},
+		{
+			name: "invalid path",
+			args: args{
+				path: "file\x00.go",
+			},
+			want:    false,
+			wantErr: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
