@@ -17,7 +17,59 @@ package zutils
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
+
+func TestConvert_OtherTypes(t *testing.T) {
+	t.Run("ToString formats any other value", func(t *testing.T) {
+		got, err := ToString([]int{1, 2})
+		assert.NoError(t, err)
+		assert.Equal(t, "[1 2]", got)
+	})
+
+	t.Run("false is zero", func(t *testing.T) {
+		f, err := ToFloat64(false)
+		assert.NoError(t, err)
+		assert.Equal(t, 0.0, f)
+		u, err := ToUint64(false)
+		assert.NoError(t, err)
+		assert.Equal(t, uint64(0), u)
+		i, err := ToInt(false)
+		assert.NoError(t, err)
+		assert.Equal(t, 0, i)
+	})
+
+	t.Run("zero is false", func(t *testing.T) {
+		for _, v := range []interface{}{0.0, uint64(0), int64(0), 0, "false"} {
+			got, err := ToBool(v)
+			assert.NoError(t, err)
+			assert.False(t, got, "%T", v)
+		}
+	})
+
+	t.Run("unsupported type", func(t *testing.T) {
+		_, err := ToFloat64(nil)
+		assert.EqualError(t, err, "ToFloat64: unknown supported type <nil>")
+		_, err = ToUint64([]int{1})
+		assert.EqualError(t, err, "ToInt: unknown supported type []int")
+		_, err = ToInt(int32(1))
+		assert.EqualError(t, err, "ToInt: unknown supported type int32")
+		_, err = ToBool(nil)
+		assert.EqualError(t, err, "ToInt: unknown supported type <nil>")
+	})
+
+	t.Run("string that is not a number", func(t *testing.T) {
+		_, err := ToFloat64("x")
+		assert.Error(t, err)
+		_, err = ToUint64("-1")
+		assert.Error(t, err)
+		_, err = ToInt("1.5")
+		assert.Error(t, err)
+		_, err = ToBool("maybe")
+		assert.Error(t, err)
+	})
+}
 
 func TestToString(t *testing.T) {
 	type args struct {

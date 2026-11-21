@@ -62,3 +62,42 @@ func TestUnflatten(t *testing.T) {
 	assert.Equal(t, 2, len(undata["foo"].(map[string]interface{})["bar"].(map[string]interface{})))
 	assert.Equal(t, "abc", undata["foo"].(map[string]interface{})["bar"].(map[string]interface{})["coo"])
 }
+
+// A key that is both a value and an object is rejected; which of the two keys
+// is reported depends on the order the map is walked in. Go does not guarantee
+// that order varies, so the loop only gives both branches a chance to run.
+func TestUnflatten_Conflict(t *testing.T) {
+	data := map[string]interface{}{
+		"foo":     "abc",
+		"foo.bar": "cbd",
+	}
+	want := []string{"key=foo is not an object", "key=foo already exists"}
+	seen := map[string]bool{}
+	for i := 0; i < 200 && len(seen) < len(want); i++ {
+		undata, err := Unflatten(data)
+		assert.Nil(t, undata)
+		if assert.Error(t, err) {
+			assert.Contains(t, want, err.Error())
+			seen[err.Error()] = true
+		}
+	}
+}
+
+func TestFlatten_Prefix(t *testing.T) {
+	fdata, err := Flatten(map[string]interface{}{
+		"foo": map[string]interface{}{"bar": 1},
+		"arr": []interface{}{[]interface{}{"a"}, map[string]interface{}{"b": 2}},
+	}, "doc.")
+	assert.NoError(t, err)
+	assert.Equal(t, map[string]interface{}{
+		"doc.foo.bar": 1,
+		"doc.arr.0":   []interface{}{"a"},
+		"doc.arr.1.b": 2,
+	}, fdata)
+}
+
+func TestFlatten_NotValidInput(t *testing.T) {
+	flat := map[string]interface{}{}
+	assert.ErrorIs(t, flatten(true, flat, "scalar", ""), ErrNotValidInput)
+	assert.Empty(t, flat)
+}

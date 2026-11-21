@@ -42,7 +42,7 @@ func Test_fnv64a_Sum64(t *testing.T) {
 		},
 	}
 
-	f := fnv64a{}
+	f := NewDefaultHasher()
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := f.Sum64(tt.args.key); got != tt.want {
