@@ -41,9 +41,11 @@ brew install vcaesar/tap/zedsearch
 运行前，请将环境变量 `ZED_FIRST_ADMIN_PASSWORD` 设置为所选密码：
 
 ```sh
-docker run -d --name zedsearch -p 4080:4080 \
+docker run -d --name zedsearch \
+    -p 4080:4080 \
     -v zedsearch-data:/data -e ZED_DATA_PATH=/data \
-    -e ZED_FIRST_ADMIN_USER=admin -e "ZED_FIRST_ADMIN_PASSWORD=${ZED_FIRST_ADMIN_PASSWORD:?Set ZED_FIRST_ADMIN_PASSWORD}" \
+    -e ZED_FIRST_ADMIN_USER="admin" \
+    -e ZED_FIRST_ADMIN_PASSWORD="your_password_zed#123" \
     riotgo/zedsearch:latest
 ```
 
@@ -79,46 +81,46 @@ go + gin（或使用 `-tags fiber` 切换为 fiber v3）+ react
 
 七个搜索应用查询，50,000 篇文档，返回前 10 条并统计精确总数，在 MacBook Pro M1 上测试，所有服务均运行在 Docker 中：带过滤的词项查询、两个字段的 OR、对全部文档按价格排序、第 101 页、terms 和 histogram 聚合，以及高亮。除 QPS 外数值越低越好；“—”表示该引擎无法表达此查询（Meilisearch 没有数值直方图，OpenObserve 不支持高亮）。
 
-| 查询 | ZedSearch | ZincSearch 0.4.10 | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 | OpenObserve 1.1 |
-|---|---:|---:|---:|---:|---:|---:|
-| `filtered` (1 个客户端) | **0.89 ms** | 3.43 ms | 1.38 ms | 1.44 ms | 1.87 ms | 9.44 ms |
-| `filtered` (8 个客户端) | **3,216 QPS** | 471 QPS | 2,742 QPS | 3,066 QPS | 1,924 QPS | 321 QPS |
-| `sort_price` (5 万篇文档) | **0.74 ms** | 76.0 ms | 2.52 ms | 1.58 ms | 1.09 ms | 4.40 ms |
-| `multi_field` title + body | **0.63 ms** | 2.04 ms | 1.44 ms | 1.51 ms | 1.19 ms | 21.0 ms |
-| `deep_page` from 1000 | **1.24 ms** | 3.40 ms | 1.42 ms | 1.47 ms | 12.7 ms | 18.1 ms |
-| `agg_terms` `category` | **1.48 ms** | 5.55 ms | 1.66 ms | 2.12 ms | 1.63 ms | 18.6 ms |
-| `agg_histogram` `price` | **1.00 ms** | 20.1 ms | 1.67 ms | 1.72 ms | — | 18.7 ms |
-| `highlight` `body` | **0.81 ms** | 2.27 ms | 1.96 ms | 1.97 ms | 1.92 ms | — |
+| 查询                       |     ZedSearch | ZincSearch 0.4.10 | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 | OpenObserve 1.1 |
+| -------------------------- | ------------: | ----------------: | ----------------: | -------------: | ---------------: | --------------: |
+| `filtered` (1 个客户端)    |   **0.89 ms** |           3.43 ms |           1.38 ms |        1.44 ms |          1.87 ms |         9.44 ms |
+| `filtered` (8 个客户端)    | **3,216 QPS** |           471 QPS |         2,742 QPS |      3,066 QPS |        1,924 QPS |         321 QPS |
+| `sort_price` (5 万篇文档)  |   **0.74 ms** |           76.0 ms |           2.52 ms |        1.58 ms |          1.09 ms |         4.40 ms |
+| `multi_field` title + body |   **0.63 ms** |           2.04 ms |           1.44 ms |        1.51 ms |          1.19 ms |         21.0 ms |
+| `deep_page` from 1000      |   **1.24 ms** |           3.40 ms |           1.42 ms |        1.47 ms |          12.7 ms |         18.1 ms |
+| `agg_terms` `category`     |   **1.48 ms** |           5.55 ms |           1.66 ms |        2.12 ms |          1.63 ms |         18.6 ms |
+| `agg_histogram` `price`    |   **1.00 ms** |           20.1 ms |           1.67 ms |        1.72 ms |                — |         18.7 ms |
+| `highlight` `body`         |   **0.81 ms** |           2.27 ms |           1.96 ms |        1.97 ms |          1.92 ms |               — |
 
 ### 单一查询（v2）
 
 同一批测试中的 v2 查询，每种只测一种查询类型。Meilisearch 无法表达 OR 和精确短语。
 
-| 查询 | ZedSearch | ZincSearch 0.4.10 | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 | OpenObserve 1.1 |
-|---|---:|---:|---:|---:|---:|---:|
-| `term` rare | **0.50 ms** | 1.03 ms | 1.43 ms | 1.16 ms | 1.14 ms | 15.7 ms |
-| `term` mid | **0.58 ms** | 1.82 ms | 1.28 ms | 1.27 ms | 1.16 ms | 17.6 ms |
-| `term` keyword | **0.57 ms** | 0.82 ms | 1.75 ms | 2.32 ms | 1.03 ms | 5.59 ms |
-| `bool` should | **0.63 ms** | 1.12 ms | 1.61 ms | 1.75 ms | — | 26.7 ms |
-| `bool` must | **1.01 ms** | 1.79 ms | 2.36 ms | 3.30 ms | 1.28 ms | 24.1 ms |
-| `range` | **0.64 ms** | 2.56 ms | 1.32 ms | 1.28 ms | 1.32 ms | 5.31 ms |
-| `match_all` | **0.66 ms** | 4.12 ms | 1.48 ms | 1.38 ms | 1.03 ms | 4.68 ms |
-| `prefix` `w1*` | **0.71 ms** | 214.5 ms | 1.87 ms | 2.66 ms | 1.32 ms | 11.9 ms |
-| `match_phrase` | **10.3 ms** | 55.6 ms | 12.7 ms | 12.6 ms | — | 16.3 ms |
-| `bool` should (8 个客户端) | **5,179 QPS** | 1,292 QPS | 2,707 QPS | 2,616 QPS | — | 131 QPS |
+| 查询                       |     ZedSearch | ZincSearch 0.4.10 | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 | OpenObserve 1.1 |
+| -------------------------- | ------------: | ----------------: | ----------------: | -------------: | ---------------: | --------------: |
+| `term` rare                |   **0.50 ms** |           1.03 ms |           1.43 ms |        1.16 ms |          1.14 ms |         15.7 ms |
+| `term` mid                 |   **0.58 ms** |           1.82 ms |           1.28 ms |        1.27 ms |          1.16 ms |         17.6 ms |
+| `term` keyword             |   **0.57 ms** |           0.82 ms |           1.75 ms |        2.32 ms |          1.03 ms |         5.59 ms |
+| `bool` should              |   **0.63 ms** |           1.12 ms |           1.61 ms |        1.75 ms |                — |         26.7 ms |
+| `bool` must                |   **1.01 ms** |           1.79 ms |           2.36 ms |        3.30 ms |          1.28 ms |         24.1 ms |
+| `range`                    |   **0.64 ms** |           2.56 ms |           1.32 ms |        1.28 ms |          1.32 ms |         5.31 ms |
+| `match_all`                |   **0.66 ms** |           4.12 ms |           1.48 ms |        1.38 ms |          1.03 ms |         4.68 ms |
+| `prefix` `w1*`             |   **0.71 ms** |          214.5 ms |           1.87 ms |        2.66 ms |          1.32 ms |         11.9 ms |
+| `match_phrase`             |   **10.3 ms** |           55.6 ms |           12.7 ms |        12.6 ms |                — |         16.3 ms |
+| `bool` should (8 个客户端) | **5,179 QPS** |         1,292 QPS |         2,707 QPS |      2,616 QPS |                — |         131 QPS |
 
 ### 资源占用
 
 Docker 镜像（未压缩）、同样 50,000 篇文档的文本索引（`_flush` 后 ZedSearch、Elasticsearch 与 OpenSearch 均约 25 MB），以及整个测试期间的内存 / CPU（100% = 1 个 vCPU），数据为三次运行的中位数。
 
-| 资源 | ZedSearch | ZincSearch 0.4.10 | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 | OpenObserve 1.1 |
-|---|---:|---:|---:|---:|---:|---:|
-| Docker 镜像 | **56.4 MB** | 72.4 MB | 1,195 MB | 1,311 MB | 370 MB | 434 MB |
-| 文本索引，5 万篇文档 | 25.9 MB | 133.3 MB | 25.8 MB | 25.7 MB | 454 MB | 14.2 MB（未建索引） |
-| 空闲内存 | **14 MiB** | 64 MiB | 2,674 MiB | 2,699 MiB | 179 MiB | 387 MiB |
-| 峰值内存 | **388 MiB** | 858 MiB | 3,185 MiB | 3,191 MiB | 1,014 MiB | 919 MiB |
-| 平均 CPU | **134%** | 366% | 157% | 156% | 230% | 140% |
-| 峰值 CPU | 553% | 710% | 620% | 529% | 545% | **519%** |
+| 资源                 |   ZedSearch | ZincSearch 0.4.10 | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 |     OpenObserve 1.1 |
+| -------------------- | ----------: | ----------------: | ----------------: | -------------: | ---------------: | ------------------: |
+| Docker 镜像          | **56.4 MB** |           72.4 MB |          1,195 MB |       1,311 MB |           370 MB |              434 MB |
+| 文本索引，5 万篇文档 |     25.9 MB |          133.3 MB |           25.8 MB |        25.7 MB |           454 MB | 14.2 MB（未建索引） |
+| 空闲内存             |  **14 MiB** |            64 MiB |         2,674 MiB |      2,699 MiB |          179 MiB |             387 MiB |
+| 峰值内存             | **388 MiB** |           858 MiB |         3,185 MiB |      3,191 MiB |        1,014 MiB |             919 MiB |
+| 平均 CPU             |    **134%** |              366% |              157% |           156% |             230% |                140% |
+| 峰值 CPU             |        553% |              710% |              620% |           529% |             545% |            **519%** |
 
 # 文档
 
