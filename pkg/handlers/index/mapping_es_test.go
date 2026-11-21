@@ -215,3 +215,30 @@ func TestMapping_VectorOptions(t *testing.T) {
 		})
 	}
 }
+
+func TestConvertToESMapping_Nested(t *testing.T) {
+	orig := meta.NewMappings()
+	orig.Source = &meta.SourceMapping{Enabled: false}
+	orig.All = &meta.SourceMapping{Enabled: true}
+	orig.SetProperty("a.b.c", meta.NewProperty("keyword"))
+	orig.SetProperty("a.b.d", meta.NewProperty("text"))
+	orig.SetProperty("e.f.g.h", meta.NewProperty("numeric"))
+
+	m := convertToESMapping(orig)
+	require.NotNil(t, m.Source)
+	assert.False(t, m.Source.Enabled)
+	require.NotNil(t, m.All)
+	assert.True(t, m.All.Enabled)
+
+	a, ok := m.GetProperty("a")
+	require.True(t, ok)
+	assert.Empty(t, a.Type)
+	b := a.Properties["b"]
+	assert.Empty(t, b.Type)
+	assert.Equal(t, "keyword", b.Properties["c"].Type)
+	assert.Equal(t, "text", b.Properties["d"].Type)
+
+	e, ok := m.GetProperty("e")
+	require.True(t, ok)
+	assert.Equal(t, "numeric", e.Properties["f"].Properties["g"].Properties["h"].Type)
+}

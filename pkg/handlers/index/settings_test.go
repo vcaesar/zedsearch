@@ -180,3 +180,51 @@ func TestSettings(t *testing.T) {
 		}
 	})
 }
+
+func TestSetSettings_Branches(t *testing.T) {
+	prefix := "TestSetSettings_Branches.index_"
+	t.Cleanup(func() {
+		for i := 1; i <= 5; i++ {
+			if _, exists := core.GetIndex(fmt.Sprintf("%s%d", prefix, i)); exists {
+				assert.NoError(t, core.DeleteIndex(fmt.Sprintf("%s%d", prefix, i)))
+			}
+		}
+	})
+
+	tests := []struct {
+		name   string
+		target string
+		data   string
+		code   int
+		result string
+	}{
+		{name: "null settings", target: prefix + "1", data: `null`, code: http.StatusOK, result: `{"message":"ok"}`},
+		{name: "invalid analyzer", target: prefix + "2", data: `{"analysis":{"analyzer":{"broken":{}}}}`, code: http.StatusBadRequest, result: `[analyzer] [broken] is missing tokenizer`},
+		{name: "invalid index name", target: "_" + prefix + "1", data: `{"number_of_shards":2}`, code: http.StatusInternalServerError, result: `index name cannot start with _`},
+		{name: "create with shards", target: prefix + "3", data: `{"number_of_shards":3}`, code: http.StatusOK, result: `{"message":"ok"}`},
+		{name: "update replicas", target: prefix + "3", data: `{"number_of_replicas":2}`, code: http.StatusOK, result: `{"message":"ok"}`},
+		{name: "update analyzer", target: prefix + "3", data: `{"analysis":{"analyzer":{"std":{"tokenizer":"standard"}}}}`, code: http.StatusBadRequest, result: `can't update analyzer for existing index`},
+		{name: "tier on creation", target: prefix + "4", data: `{"tier":"warm"}`, code: http.StatusBadRequest, result: `index tier can't be set to [warm] on creation`},
+		{name: "missing synonyms set", target: prefix + "5", data: `{"analysis":{"token_filter":{"syn":{"type":"synonym","synonyms_set":"TestSetSettings_Branches.missing"}}}}`, code: http.StatusInternalServerError, result: `synonyms set [TestSetSettings_Branches.missing] not found`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, w := utils.NewContext()
+			utils.SetRequestData(c, tt.data)
+			utils.SetRequestParams(c, map[string]string{"target": tt.target})
+			SetSettings(c)
+			assert.Equal(t, tt.code, w.Code)
+			assert.Contains(t, w.Body.String(), tt.result)
+		})
+	}
+
+	t.Run("state", func(t *testing.T) {
+		_, exists := core.GetIndex(prefix + "1")
+		assert.False(t, exists, "null settings must not create the index")
+		index, exists := core.GetIndex(prefix + "3")
+		assert.True(t, exists)
+		assert.Equal(t, int64(3), index.GetShardNum())
+		assert.Equal(t, int64(2), index.GetSettings().NumberOfReplicas)
+		assert.Empty(t, index.GetSettings().Analysis)
+	})
+}

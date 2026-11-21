@@ -206,3 +206,25 @@ func TestExplainILM(t *testing.T) {
 		assert.Equal(t, http.StatusBadRequest, w.Code)
 	})
 }
+
+func TestExplainILM_MissingPolicy(t *testing.T) {
+	name := "TestExplainILM_MissingPolicy.index_1"
+	index, err := core.NewIndex(name, "disk", 1)
+	require.NoError(t, err)
+	require.NoError(t, core.StoreIndex(index))
+	t.Cleanup(func() { assert.NoError(t, core.DeleteIndex(name)) })
+
+	c, w := utils.NewContext()
+	utils.SetRequestData(c, map[string]interface{}{
+		"lifecycle": map[string]interface{}{"policy": "TestExplainILM_MissingPolicy.policy_1"},
+	})
+	utils.SetRequestParams(c, map[string]string{"target": name})
+	SetSettings(c)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	c, w = utils.NewContext()
+	utils.SetRequestParams(c, map[string]string{"target": name})
+	ExplainILM(c)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "ilm policy [TestExplainILM_MissingPolicy.policy_1]")
+}

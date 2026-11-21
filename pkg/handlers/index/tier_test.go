@@ -25,6 +25,7 @@ import (
 	"github.com/vcaesar/zedsearch/pkg/bluge/directory"
 	"github.com/vcaesar/zedsearch/pkg/config"
 	"github.com/vcaesar/zedsearch/pkg/core"
+	"github.com/vcaesar/zedsearch/pkg/zhttp"
 	"github.com/vcaesar/zedsearch/test/utils"
 )
 
@@ -176,4 +177,37 @@ func TestSetSettingsInvalidTier(t *testing.T) {
 	SetSettings(c)
 	assert.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
 	assert.Equal(t, core.TierHot, index.GetTier())
+}
+
+func TestTier_MoveError(t *testing.T) {
+	oldCold := config.Global.Tier.ColdStorageType
+	config.Global.Tier.ColdStorageType = "disk"
+	t.Cleanup(func() { config.Global.Tier.ColdStorageType = oldCold })
+
+	name := "TestTier_MoveError.index_1"
+	index, err := core.NewIndex(name, "disk", 1)
+	require.NoError(t, err)
+	require.NoError(t, core.StoreIndex(index))
+	t.Cleanup(func() { assert.NoError(t, core.DeleteIndex(name)) })
+
+	tests := []struct {
+		name    string
+		handler func(c zhttp.Context)
+		tier    string
+	}{
+		{name: "set tier", handler: SetTier, tier: "cold"},
+		{name: "set settings", handler: SetSettings, tier: "warm"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, w := utils.NewContext()
+			utils.SetRequestData(c, map[string]interface{}{"tier": tt.tier})
+			utils.SetRequestParams(c, map[string]string{"target": name})
+			tt.handler(c)
+			assert.Equal(t, http.StatusInternalServerError, w.Code)
+			assert.Contains(t, w.Body.String(), "tier ["+tt.tier+"] requires an object storage")
+			assert.Equal(t, core.TierHot, index.GetTier())
+			assert.False(t, index.IsReadOnly())
+		})
+	}
 }

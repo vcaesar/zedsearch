@@ -16,8 +16,11 @@
 package index
 
 import (
+	"errors"
+	"io"
 	"net/http"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -226,4 +229,94 @@ func TestReindex_Timestamp(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestReindex_Branches(t *testing.T) {
+	prefix := "TestReindex_Branches.index_"
+	disabled, empty, source, dest := prefix+"disabled", prefix+"empty", prefix+"source", prefix+"dest"
+	t.Cleanup(func() {
+		for _, name := range []string{disabled, empty, source, dest, prefix + "empty_dest"} {
+			if _, exists := core.GetIndex(name); exists {
+				assert.NoError(t, core.DeleteIndex(name))
+			}
+		}
+	})
+
+	index, err := core.NewIndex(disabled, "disk", 1)
+	require.NoError(t, err)
+	mappings := meta.NewMappings()
+	mappings.Source = &meta.SourceMapping{Enabled: false}
+	require.NoError(t, index.SetMappings(mappings))
+	require.NoError(t, core.StoreIndex(index))
+
+	index, err = core.NewIndex(empty, "disk", 1)
+	require.NoError(t, err)
+	require.NoError(t, core.StoreIndex(index))
+
+	index, err = core.NewIndex(source, "disk", 1)
+	require.NoError(t, err)
+	require.NoError(t, core.StoreIndex(index))
+	require.NoError(t, index.CreateDocument("1", map[string]interface{}{"num": "TestReindex_Branches"}, false))
+	require.Eventually(t, func() bool {
+		res, err := index.Search(&meta.ZedQuery{Size: 10})
+		return err == nil && res.Hits.Total.Value == 1
+	}, 10*time.Second, 100*time.Millisecond, "documents not indexed")
+
+	index, err = core.NewIndex(dest, "disk", 1)
+	require.NoError(t, err)
+	mappings = meta.NewMappings()
+	mappings.SetProperty("num", meta.NewProperty("numeric"))
+	require.NoError(t, index.SetMappings(mappings))
+	require.NoError(t, core.StoreIndex(index))
+
+	t.Run("body read error", func(t *testing.T) {
+		c, w := utils.NewContext()
+		c.Request.Body = io.NopCloser(iotest.ErrReader(errors.New("TestReindex_Branches read error")))
+		Reindex(c)
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+		assert.Equal(t, `{"error":"TestReindex_Branches read error"}`, w.Body.String())
+	})
+
+	tests := []struct {
+		name   string
+		data   string
+		code   int
+		result string
+	}{
+		{name: "source disabled", data: `{"source":{"index":"` + disabled + `"},"dest":{"index":"` + dest + `"}}`, code: http.StatusBadRequest, result: `has _source disabled, it cannot be reindexed`},
+		{name: "invalid query", data: `{"source":{"index":"` + empty + `","query":{"TestReindex_Branches":{}}},"dest":{"index":"` + prefix + `empty_dest"}}`, code: http.StatusBadRequest, result: `testreindex_branches`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, w := utils.NewContext()
+			utils.SetRequestData(c, tt.data)
+			Reindex(c)
+			assert.Equal(t, tt.code, w.Code)
+			assert.Contains(t, w.Body.String(), tt.result)
+		})
+	}
+
+	reindex := func(t *testing.T, from, to string) *elastic.ReindexResponse {
+		c, w := utils.NewContext()
+		utils.SetRequestData(c, `{"source":{"index":"`+from+`"},"dest":{"index":"`+to+`"}}`)
+		Reindex(c)
+		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+		resp := new(elastic.ReindexResponse)
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), resp))
+		return resp
+	}
+
+	t.Run("empty source", func(t *testing.T) {
+		resp := reindex(t, empty, prefix+"empty_dest")
+		assert.Equal(t, 0, resp.Total)
+		assert.Equal(t, 0, resp.Batches)
+		assert.Empty(t, resp.Failures)
+	})
+
+	t.Run("dest rejects documents", func(t *testing.T) {
+		resp := reindex(t, source, dest)
+		assert.Equal(t, 1, resp.Total)
+		assert.Equal(t, 0, resp.Created)
+		assert.Equal(t, []string{"1"}, resp.Failures)
+	})
 }
