@@ -66,6 +66,17 @@ func TestCreateUpdateRole(t *testing.T) {
 				result: "error",
 			},
 		},
+		{
+			name: "reserved admin id",
+			args: args{
+				code: http.StatusInternalServerError,
+				data: map[string]interface{}{
+					"_id":  "Admin",
+					"name": "admin",
+				},
+				result: "role id admin not allowed",
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -79,6 +79,17 @@ func TestGet(t *testing.T) {
 				result: "id not found",
 			},
 		},
+		{
+			name: "invalid index name",
+			args: args{
+				code: http.StatusInternalServerError,
+				params: map[string]string{
+					"target": "_TestDocumentGet.index_3",
+					"id":     "1",
+				},
+				result: `{"error":"index name cannot start with _"}`,
+			},
+		},
 	}
 
 	// create a document

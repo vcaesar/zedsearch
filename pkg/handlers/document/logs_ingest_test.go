@@ -18,11 +18,13 @@ package document
 import (
 	"bytes"
 	"compress/gzip"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"sync"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -308,4 +310,92 @@ func TestReadLogsBodyLimit(t *testing.T) {
 			assert.Equal(t, "1234", string(data))
 		})
 	}
+}
+
+func TestLogsIngestErrors(t *testing.T) {
+	name := "TestLogsIngestErrors.index_1"
+	cleanupIndex(t, name)
+
+	t.Run("hec unsupported encoding", func(t *testing.T) {
+		c, body := logsRequest(t, name, `{"event":"a"}`)
+		c.Request.Header.Set("Content-Encoding", "zstd")
+		LogsHEC(c)
+		assert.Equal(t, http.StatusBadRequest, c.ResponseStatus())
+		assert.JSONEq(t, `{"text":"unsupported Content-Encoding [zstd]","code":6}`, body.String())
+	})
+
+	t.Run("otlp invalid body", func(t *testing.T) {
+		c, body := logsRequest(t, name, `not json`)
+		OTLPLogs(c)
+		assert.Equal(t, http.StatusBadRequest, c.ResponseStatus())
+		assert.Contains(t, body.String(), `"error":`)
+	})
+
+	t.Run("loki rejected record", func(t *testing.T) {
+		upto := config.Global.Logs.IngestAllowedUpto
+		config.Global.Logs.IngestAllowedUpto = time.Hour
+		t.Cleanup(func() { config.Global.Logs.IngestAllowedUpto = upto })
+		c, body := logsRequest(t, name, `{"streams":[{"stream":{},"values":[["1704067200000000000","old"]]}]}`)
+		LokiPush(c)
+		require.Equal(t, http.StatusBadRequest, c.ResponseStatus(), body.String())
+		var resp logs.IngestResponse
+		require.NoError(t, json.Unmarshal(body.Bytes(), &resp))
+		assert.Equal(t, http.StatusBadRequest, resp.Code)
+		require.Len(t, resp.Status, 1)
+		assert.Equal(t, 0, resp.Status[0].Successful)
+		assert.Equal(t, 1, resp.Status[0].Failed)
+		assert.Contains(t, resp.Status[0].Error, "older")
+	})
+}
+
+func TestIngestLogsWindowInvalidTimestamp(t *testing.T) {
+	name := "TestIngestLogsWindowInvalidTimestamp.index_1"
+	cleanupIndex(t, name)
+	upto := config.Global.Logs.IngestAllowedUpto
+	config.Global.Logs.IngestAllowedUpto = time.Hour
+	t.Cleanup(func() { config.Global.Logs.IngestAllowedUpto = upto })
+
+	status, err := IngestLogs(name, []map[string]interface{}{{"@timestamp": "bad"}, {"message": "ok"}})
+	require.NoError(t, err)
+	assert.Equal(t, 1, status.Successful)
+	assert.Equal(t, 1, status.Failed)
+	assert.Contains(t, status.Error, "field [@timestamp] parse error")
+}
+
+func TestGetOrCreateLogsIndexTemplateType(t *testing.T) {
+	name := "TestGetOrCreateLogsIndexTemplateType.index_1"
+	tplName := "TestGetOrCreateLogsIndexTemplateType.template_1"
+	require.NoError(t, core.NewTemplate(tplName, &meta.IndexTemplate{
+		IndexPatterns: []string{"TestGetOrCreateLogsIndexTemplateType.*"},
+		Template: meta.TemplateTemplate{
+			Settings: &meta.IndexSettings{IndexType: meta.IndexTypeStandard},
+		},
+	}))
+	t.Cleanup(func() { assert.NoError(t, core.DeleteTemplate(tplName)) })
+	cleanupIndex(t, name)
+
+	index, err := getOrCreateLogsIndex(name)
+	require.NoError(t, err)
+	assert.Equal(t, meta.IndexTypeStandard, index.GetIndexType(), "template index_type wins over logs")
+}
+
+func TestReadLogsBodyErrors(t *testing.T) {
+	limit := config.Global.ServerBodyLimit
+	t.Cleanup(func() { config.Global.ServerBodyLimit = limit })
+
+	t.Run("no limit", func(t *testing.T) {
+		config.Global.ServerBodyLimit = 0
+		c, _ := logsRequest(t, "x", "12345")
+		data, err := readLogsBody(c)
+		require.NoError(t, err)
+		assert.Equal(t, "12345", string(data))
+	})
+
+	t.Run("read error", func(t *testing.T) {
+		config.Global.ServerBodyLimit = 4
+		c, _ := logsRequest(t, "x", "")
+		c.Request.Body = io.NopCloser(iotest.ErrReader(errors.New("read failed")))
+		_, err := readLogsBody(c)
+		assert.EqualError(t, err, "read failed")
+	})
 }

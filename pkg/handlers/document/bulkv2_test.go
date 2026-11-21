@@ -75,3 +75,46 @@ func TestBulkv2(t *testing.T) {
 		})
 	}
 }
+
+func TestBulkv2Errors(t *testing.T) {
+	indexName := "TestBulkv2Errors.index_1"
+	cleanupIndex(t, indexName)
+	tests := []struct {
+		name   string
+		data   string
+		target string
+		code   int
+		result string
+	}{
+		{
+			name:   "index from body",
+			data:   `{"index":"` + indexName + `","records":[{"_id":"1","name":"a"},{"name":"b"}]}`,
+			code:   http.StatusOK,
+			result: `{"message":"v2 data inserted","record_count":2}`,
+		},
+		{
+			name:   "invalid index name",
+			data:   `{"index":"_TestBulkv2Errors.index_2","records":[{"name":"a"}]}`,
+			code:   http.StatusInternalServerError,
+			result: `{"error":"index name cannot start with _"}`,
+		},
+		{
+			name:   "invalid document",
+			data:   `{"records":[{"@timestamp":"bad"}]}`,
+			target: indexName,
+			code:   http.StatusInternalServerError,
+			result: "field [@timestamp] value [bad] parse err",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, w := utils.NewContext()
+			utils.SetRequestData(c, tt.data)
+			utils.SetRequestParams(c, map[string]string{"target": tt.target})
+			Bulkv2(c)
+			assert.Equal(t, tt.code, w.Code)
+			assert.Contains(t, w.Body.String(), tt.result)
+		})
+	}
+	waitDocCount(t, indexName, 2)
+}

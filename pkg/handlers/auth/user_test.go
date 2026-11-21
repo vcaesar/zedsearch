@@ -20,7 +20,12 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
+	"github.com/vcaesar/zedsearch/pkg/auth"
+	"github.com/vcaesar/zedsearch/pkg/errors"
+	"github.com/vcaesar/zedsearch/pkg/meta"
+	"github.com/vcaesar/zedsearch/pkg/zutils/json"
 	"github.com/vcaesar/zedsearch/test/utils"
 )
 
@@ -150,4 +155,46 @@ func TestDeleteUser(t *testing.T) {
 			assert.Contains(t, w.Body.String(), tt.args.result)
 		})
 	}
+}
+
+func TestCreateUpdateUser_StorageFailure(t *testing.T) {
+	// bolt keys an id ending with "/" by an empty name, which it refuses
+	const id = "testcreateupdateuser_storagefailure.user_1/"
+	c, w := utils.NewContext()
+	utils.SetRequestData(c, map[string]interface{}{"_id": id, "name": "user", "role": "admin", "password": "pass1"})
+	CreateUpdateUser(c)
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Contains(t, w.Body.String(), "key required")
+
+	_, exists, err := auth.GetUser(id)
+	assert.ErrorIs(t, err, errors.ErrKeyNotFound)
+	assert.False(t, exists)
+	_, cached := auth.ZED_CACHED_USERS.Get(id)
+	assert.False(t, cached)
+}
+
+func TestListUser_HidesSecrets(t *testing.T) {
+	const id = "testlistuser_hidessecrets.user_1"
+	_, err := auth.CreateUser(id, "user", "pass1", "admin")
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, auth.DeleteUser(id)) })
+
+	c, w := utils.NewContext()
+	ListUser(c)
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var users []meta.User
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &users))
+	var found *meta.User
+	for i := range users {
+		assert.Empty(t, users[i].Salt, users[i].ID)
+		assert.Empty(t, users[i].Password, users[i].ID)
+		if users[i].ID == id {
+			found = &users[i]
+		}
+	}
+	require.NotNil(t, found)
+	assert.Equal(t, "admin", found.Role)
+	assert.NotContains(t, w.Body.String(), `"salt"`)
+	assert.NotContains(t, w.Body.String(), `"password"`)
 }
