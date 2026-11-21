@@ -262,8 +262,21 @@ func TestSetMapping_Branches(t *testing.T) {
 		}
 	})
 
+	subFields := `{"_source":{"enabled":true},"properties":{"title":{"type":"text","fields":{"raw":{"type":"keyword"}}}}}`
+	ensureIndex2 := func(t *testing.T) {
+		if _, exists := core.GetIndex(prefix + "2"); exists {
+			return
+		}
+		c, w := utils.NewContext()
+		utils.SetRequestData(c, subFields)
+		utils.SetRequestParams(c, map[string]string{"target": prefix + "2"})
+		SetMapping(c)
+		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	}
+
 	tests := []struct {
 		name   string
+		setup  func(t *testing.T)
 		target string
 		data   string
 		code   int
@@ -271,13 +284,16 @@ func TestSetMapping_Branches(t *testing.T) {
 	}{
 		{name: "invalid mapping", target: prefix + "1", data: `{"properties":{"f":{"type":"TestSetMapping_Branches"}}}`, code: http.StatusBadRequest, result: `doesn't support type [testsetmapping_branches]`},
 		{name: "invalid index name", target: "_" + prefix + "1", data: `{"properties":{"f":{"type":"keyword"}}}`, code: http.StatusInternalServerError, result: `index name cannot start with _`},
-		{name: "create with sub fields", target: prefix + "2", data: `{"_source":{"enabled":true},"properties":{"title":{"type":"text","fields":{"raw":{"type":"keyword"}}}}}`, code: http.StatusOK, result: `{"message":"ok"}`},
-		{name: "change _source", target: prefix + "2", data: `{"_source":{"enabled":false}}`, code: http.StatusBadRequest, result: `cannot change [_source] of an existing index`},
-		{name: "existing field", target: prefix + "2", data: `{"properties":{"title":{"type":"text"}}}`, code: http.StatusBadRequest, result: `already exists mapping of field [title]`},
+		{name: "create with sub fields", target: prefix + "2", data: subFields, code: http.StatusOK, result: `{"message":"ok"}`},
+		{name: "change _source", setup: ensureIndex2, target: prefix + "2", data: `{"_source":{"enabled":false}}`, code: http.StatusBadRequest, result: `cannot change [_source] of an existing index`},
+		{name: "existing field", setup: ensureIndex2, target: prefix + "2", data: `{"properties":{"title":{"type":"text"}}}`, code: http.StatusBadRequest, result: `already exists mapping of field [title]`},
 		{name: "nested without _source", target: prefix + "3", data: `{"_source":{"enabled":false},"properties":{"items":{"type":"nested"}}}`, code: http.StatusBadRequest, result: `nested field [items] requires _source`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.setup != nil {
+				tt.setup(t)
+			}
 			c, w := utils.NewContext()
 			utils.SetRequestData(c, tt.data)
 			utils.SetRequestParams(c, map[string]string{"target": tt.target})
@@ -288,6 +304,7 @@ func TestSetMapping_Branches(t *testing.T) {
 	}
 
 	t.Run("change _all", func(t *testing.T) {
+		ensureIndex2(t)
 		index, exists := core.GetIndex(prefix + "2")
 		require.True(t, exists)
 		c, w := utils.NewContext()
@@ -299,6 +316,7 @@ func TestSetMapping_Branches(t *testing.T) {
 	})
 
 	t.Run("state", func(t *testing.T) {
+		ensureIndex2(t)
 		index, exists := core.GetIndex(prefix + "2")
 		require.True(t, exists)
 		mappings := index.GetMappings()
