@@ -85,12 +85,14 @@ func TestBulkv2Errors(t *testing.T) {
 		target string
 		code   int
 		result string
+		docs   int64
 	}{
 		{
 			name:   "index from body",
 			data:   `{"index":"` + indexName + `","records":[{"_id":"1","name":"a"},{"name":"b"}]}`,
 			code:   http.StatusOK,
 			result: `{"message":"v2 data inserted","record_count":2}`,
+			docs:   2,
 		},
 		{
 			name:   "invalid index name",
@@ -114,7 +116,9 @@ func TestBulkv2Errors(t *testing.T) {
 			Bulkv2(c)
 			assert.Equal(t, tt.code, w.Code)
 			assert.Contains(t, w.Body.String(), tt.result)
+			if tt.docs > 0 {
+				waitDocCount(t, indexName, tt.docs)
+			}
 		})
 	}
-	waitDocCount(t, indexName, 2)
 }

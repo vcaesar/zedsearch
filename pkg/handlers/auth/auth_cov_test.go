@@ -38,7 +38,14 @@ var errMock = errors.New("mock storage failure")
 // failStorage wraps the metadata storage, failing the calls whose error is set.
 type failStorage struct {
 	storage.Storager
-	list, del error
+	list, del, set error
+}
+
+func (f *failStorage) Set(key string, value []byte) error {
+	if f.set != nil {
+		return f.set
+	}
+	return f.Storager.Set(key, value)
 }
 
 func (f *failStorage) List(prefix string, offset, limit int) ([][]byte, error) {

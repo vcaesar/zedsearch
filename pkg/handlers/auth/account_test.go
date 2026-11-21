@@ -105,17 +105,17 @@ func TestUpdateAccount(t *testing.T) {
 }
 
 func TestUpdateAccount_StorageFailure(t *testing.T) {
-	// a cached user whose id ends with "/" has no bolt key, so the update cannot be persisted
-	const id = "testupdateaccount_storagefailure.user_1/"
+	const id = "testupdateaccount_storagefailure.user_1"
 	salt := auth.GenerateSalt()
 	auth.ZED_CACHED_USERS.Set(id, &meta.User{ID: id, Name: "Old", Role: "admin", Salt: salt, Password: auth.GeneratePassword("oldpass1", salt)})
 	t.Cleanup(func() { auth.ZED_CACHED_USERS.Delete(id) })
 
+	useFailStorage(t, &failStorage{set: errMock})
 	c, w := utils.NewContext()
 	utils.SetRequestData(c, map[string]interface{}{"_id": id, "password": "oldpass1", "name": "New", "new_password": "newpass1"})
 	UpdateAccount(c)
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
-	assert.Contains(t, w.Body.String(), "key required")
+	assert.JSONEq(t, `{"error":"mock storage failure"}`, w.Body.String())
 
 	user, ok := auth.VerifyCredentials(id, "oldpass1")
 	require.True(t, ok, "a failed update keeps the old password")

@@ -93,6 +93,7 @@ func TestMultiErrors(t *testing.T) {
 		target string
 		code   int
 		result string
+		docs   int64
 	}{
 		{
 			name:   "skips invalid lines and keeps ids",
@@ -100,6 +101,7 @@ func TestMultiErrors(t *testing.T) {
 			target: indexName,
 			code:   http.StatusOK,
 			result: `{"message":"multiple data inserted","record_count":2}`,
+			docs:   2,
 		},
 		{
 			name:   "invalid index name",
@@ -134,7 +136,9 @@ func TestMultiErrors(t *testing.T) {
 			Multi(c)
 			assert.Equal(t, tt.code, w.Code)
 			assert.Contains(t, w.Body.String(), tt.result)
+			if tt.docs > 0 {
+				waitDocCount(t, indexName, tt.docs)
+			}
 		})
 	}
-	waitDocCount(t, indexName, 2)
 }
