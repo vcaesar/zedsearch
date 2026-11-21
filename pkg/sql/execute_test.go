@@ -98,6 +98,14 @@ func TestSortRows(t *testing.T) {
 				{"info", int64(2)},
 			},
 		},
+		{
+			name: "no order keeps the rows",
+			want: [][]interface{}{
+				{"error", int64(2)},
+				{"warn", int64(3)},
+				{"info", int64(2)},
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -154,6 +162,7 @@ func TestMetricValue(t *testing.T) {
 		{name: "value count narrows", agg: meta.AggregationResponse{Value: 3.0}, kind: AggCount, want: int64(3)},
 		{name: "cardinality narrows", agg: meta.AggregationResponse{Value: 2.0}, kind: AggCountDistinct, want: int64(2)},
 		{name: "missing value", agg: meta.AggregationResponse{}, kind: AggSum, want: nil},
+		{name: "non numeric count", agg: meta.AggregationResponse{Value: "x"}, kind: AggCount, want: nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -274,6 +283,7 @@ func TestLiteralValues(t *testing.T) {
 		{name: "integer", sql: `SELECT * FROM t WHERE a = 5`, want: int64(5)},
 		{name: "decimal", sql: `SELECT * FROM t WHERE a = 1.25`, want: 1.25},
 		{name: "negative", sql: `SELECT * FROM t WHERE a = -2`, want: -2.0},
+		{name: "negative numeric string", sql: `SELECT * FROM t WHERE a = -'1.5'`, want: -1.5},
 		{name: "boolean", sql: `SELECT * FROM t WHERE a = true`, want: true},
 		{name: "null", sql: `SELECT * FROM t WHERE a = null`, want: nil},
 	}

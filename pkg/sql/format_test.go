@@ -95,6 +95,27 @@ func TestResponseRenderQuoting(t *testing.T) {
 	assert.Equal(t, "message\na,b\na\\tb\n", string(data))
 }
 
+func TestResponseRenderTXTWidths(t *testing.T) {
+	resp := &Response{
+		Columns: []ResultColumn{{Name: "id", Type: "keyword"}, {Name: "n", Type: "long"}},
+		Rows:    [][]interface{}{{"abcdef", int64(1)}, {"x"}},
+	}
+
+	data, err := resp.Render(FormatTXT)
+	require.NoError(t, err)
+	assert.Equal(t, "  id  |n\n"+
+		"------+-\n"+
+		"abcdef|1\n"+
+		"x     | \n", string(data))
+}
+
+func TestRenderSeparatedInvalidSeparator(t *testing.T) {
+	data, err := testResponse().renderSeparated('\n')
+	require.Error(t, err)
+	assert.Nil(t, data)
+	assert.Contains(t, err.Error(), "write header")
+}
+
 func TestResponseRenderUnknownFormat(t *testing.T) {
 	_, err := testResponse().Render("yaml")
 	require.Error(t, err)
@@ -153,6 +174,9 @@ func TestRenderValue(t *testing.T) {
 		{name: "float", value: 1.50, want: "1.5"},
 		{name: "int64", value: int64(7), want: "7"},
 		{name: "uint64", value: uint64(7), want: "7"},
+		{name: "float32", value: float32(1.5), want: "1.5"},
+		{name: "int", value: 7, want: "7"},
+		{name: "other", value: []int{1, 2}, want: "[1 2]"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
