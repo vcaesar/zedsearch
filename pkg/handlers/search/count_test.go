@@ -16,8 +16,11 @@
 package search
 
 import (
+	"errors"
+	"io"
 	"net/http"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -116,6 +119,15 @@ func TestCount(t *testing.T) {
 		Count(c)
 		assert.Equal(t, http.StatusOK, w.Code)
 		assert.Contains(t, w.Body.String(), `{"count":3,`)
+	})
+
+	t.Run("body read error", func(t *testing.T) {
+		c, w := utils.NewContext()
+		c.Request.Body = io.NopCloser(iotest.ErrReader(errors.New("read failed")))
+		utils.SetRequestParams(c, map[string]string{"target": indexName})
+		Count(c)
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+		assert.Equal(t, `{"error":"read failed"}`, w.Body.String())
 	})
 
 	t.Run("cleanup", func(t *testing.T) {
