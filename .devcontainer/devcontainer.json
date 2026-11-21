@@ -1,32 +1,23 @@
-// For format details, see https://aka.ms/devcontainer.json. For config options, see the README at:
-// https://github.com/microsoft/vscode-dev-containers/tree/v0.224.3/containers/javascript-node
+// Format: https://containers.dev/implementors/json_reference/
 {
-	"name": "Node.js",
-	"build": {
-		"dockerfile": "Dockerfile",
-		// Update 'VARIANT' to pick a Node version: 16, 14, 12.
-		// Append -bullseye or -buster to pin to an OS version.
-		// Use -bullseye variants on local arm64/Apple Silicon.
-		"args": { "VARIANT": "16-bullseye" }
-	},
-
-	// Set *default* container specific settings.json values on container create.
-	"settings": {},
-
-	// Add the IDs of extensions you want installed when the container is created.
-	"extensions": [
-		"dbaeumer.vscode-eslint"
-	],
-
-	// Use 'forwardPorts' to make a list of ports inside the container available locally.
-	// "forwardPorts": [],
-
-	// Use 'postCreateCommand' to run commands after the container is created.
-	// "postCreateCommand": "yarn install",
-
-	// Comment out to connect as root instead. More info: https://aka.ms/vscode-remote/containers/non-root.
-	"remoteUser": "node",
+	"name": "ZedSearch",
+	// Floating tag: latest Go 1.27 patch on Debian trixie.
+	"image": "mcr.microsoft.com/devcontainers/go:1.27-trixie",
 	"features": {
-		"golang": "latest"
-	}
+		// frontend/ and -tags web builds need Node.js 24 + npm.
+		"ghcr.io/devcontainers/features/node:1": { "version": "24" }
+	},
+	// First-run admin; override from the host environment.
+	"containerEnv": {
+		"ZED_FIRST_ADMIN_USER": "${localEnv:ZED_FIRST_ADMIN_USER:admin}",
+		"ZED_FIRST_ADMIN_PASSWORD": "${localEnv:ZED_FIRST_ADMIN_PASSWORD:Complexpass#123}"
+	},
+	"forwardPorts": [4080],
+	"postCreateCommand": "go mod download",
+	"customizations": {
+		"vscode": {
+			"extensions": ["golang.go", "dbaeumer.vscode-eslint"]
+		}
+	},
+	"remoteUser": "vscode"
 }
