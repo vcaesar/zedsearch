@@ -51,9 +51,9 @@ ENV VERSION=$VERSION
 ENV COMMIT_HASH=$COMMIT_HASH
 ENV BUILD_DATE=$BUILD_DATE
 
-# `web` embeds frontend/dist; `ne` drops gse's big dictionaries (same as .goreleaser.yml).
+# `web` embeds frontend/dist. No `ne`: keep gse's big dict so zed_plugin_gse_dict_embed=big indexes tokenize the same after upgrade.
 RUN --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 go build -trimpath -tags ne,web -ldflags="-s -w -X github.com/vcaesar/zedsearch/pkg/meta.Version=${VERSION} -X github.com/vcaesar/zedsearch/pkg/meta.CommitHash=${COMMIT_HASH} -X github.com/vcaesar/zedsearch/pkg/meta.BuildDate=${BUILD_DATE}" -o zedsearch cmd/zedsearch/main.go
+    CGO_ENABLED=0 go build -trimpath -tags web -ldflags="-s -w -X github.com/vcaesar/zedsearch/pkg/meta.Version=${VERSION} -X github.com/vcaesar/zedsearch/pkg/meta.CommitHash=${COMMIT_HASH} -X github.com/vcaesar/zedsearch/pkg/meta.BuildDate=${BUILD_DATE}" -o zedsearch cmd/zedsearch/main.go
 ############################
 # STEP 3 build a small image
 ############################

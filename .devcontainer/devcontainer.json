@@ -7,10 +7,10 @@
 		// frontend/ and -tags web builds need Node.js 24 + npm.
 		"ghcr.io/devcontainers/features/node:1": { "version": "24" }
 	},
-	// First-run admin; override from the host environment.
+	// First-run admin from the host environment; no shared default password.
 	"containerEnv": {
 		"ZED_FIRST_ADMIN_USER": "${localEnv:ZED_FIRST_ADMIN_USER:admin}",
-		"ZED_FIRST_ADMIN_PASSWORD": "${localEnv:ZED_FIRST_ADMIN_PASSWORD:Complexpass#123}"
+		"ZED_FIRST_ADMIN_PASSWORD": "${localEnv:ZED_FIRST_ADMIN_PASSWORD}"
 	},
 	"forwardPorts": [4080],
 	"postCreateCommand": "go mod download",
