@@ -1,8 +1,9 @@
-# syntax=docker/dockerfile:experimental
+# syntax=docker/dockerfile:1
 ############################
 # STEP 1 build frontend dist
 ############################
-FROM node:24-slim as frontendBuilder
+# dist is platform-independent: build it natively instead of under QEMU.
+FROM --platform=$BUILDPLATFORM node:24-alpine AS frontend
 WORKDIR /frontend
 COPY ./frontend /frontend/
 
@@ -12,70 +13,43 @@ RUN npm run build
 ############################
 # STEP 2 build executable binary
 ############################
-# FROM golang:alpine AS builder
-FROM --platform=$BUILDPLATFORM public.ecr.aws/docker/library/golang:1.27 as builder
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS builder
 ARG VERSION
 ARG COMMIT_HASH
 ARG BUILD_DATE
 ARG TARGETOS
 ARG TARGETARCH
 
-RUN update-ca-certificates
-# RUN apk update && apk add --no-cache git
-# Create zedsearch user.
-ENV USER=zedsearch
-ENV GROUP=zedsearch
-ENV UID=10001
-ENV GID=10001
-# See https://stackoverflow.com/a/55757473/12429735RUN
-RUN groupadd --gid "${GID}" "${GROUP}"
-RUN adduser \
-    --disabled-password \
-    --gecos "" \
-    --home "/nonexistent" \
-    --shell "/sbin/nologin" \
-    --no-create-home \
-    --uid "${UID}" \
-    --gid "${GID}" \
-    "${USER}"
-# Create default directories for persistent ZedSearch data used in final build stage.
-# It follows the Linux filesystem hierarchy pattern
-# https://tldp.org/LDP/Linux-Filesystem-Hierarchy/html/var.html
-RUN mkdir -p /var/lib/zedsearch /data && chown zedsearch:zedsearch /var/lib/zedsearch /data
+# Create the unprivileged zedsearch user and the default data directories
+# (https://tldp.org/LDP/Linux-Filesystem-Hierarchy/html/var.html) used in the final stage.
+RUN apk add --no-cache ca-certificates tzdata \
+    && addgroup -g 10001 zedsearch \
+    && adduser -D -H -h /nonexistent -s /sbin/nologin -u 10001 -G zedsearch zedsearch \
+    && mkdir -p /var/lib/zedsearch /data /tmp \
+    && chown zedsearch:zedsearch /var/lib/zedsearch /data /tmp
 WORKDIR $GOPATH/src/github.com/vcaesar/zedsearch/
+# Fetch dependencies in their own layer so source edits keep the module cache.
+COPY go.mod go.sum ./
+RUN go mod download && go mod verify
 COPY . .
-COPY --from=frontendBuilder /frontend/dist frontend/dist
+COPY --from=frontend /frontend/dist frontend/dist
 
-# Fetch dependencies.
-# Using go get.
-RUN go mod tidy
-# Using go mod.
-# RUN go mod download
-# RUN go mod verify
-# Build the binary.
-# to tackle error standard_init_linux.go:207: exec user process caused "no such file or directory" set CGO_ENABLED=0.
-# CGO_ENABLED=0 builds a statically linked binary.
-# docs for -ldflags at https://pkg.go.dev/cmd/link
-#       -w : Omit the DWARF symbol table.
-#       -s : Omit the symbol table and debug information.
-#       Omit the symbol table and debug information will reduce the binary size.
-# RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o zedsearch cmd/zedsearch/main.go
-ENV VERSION=$VERSION
-ENV COMMIT_HASH=$COMMIT_HASH
-ENV BUILD_DATE=$BUILD_DATE
-
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -ldflags="-s -w -X github.com/vcaesar/zedsearch/pkg/meta.Version=${VERSION} -X github.com/vcaesar/zedsearch/pkg/meta.CommitHash=${COMMIT_HASH} -X github.com/vcaesar/zedsearch/pkg/meta.BuildDate=${BUILD_DATE}" -o zedsearch cmd/zedsearch/main.go
+# CGO_ENABLED=0 builds a static binary that runs on scratch; -s -w strip symbols and DWARF.
+# `web` embeds frontend/dist; `ne` drops gse's big dictionaries (same as .goreleaser.yml).
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -tags ne,web -ldflags="-s -w -X github.com/vcaesar/zedsearch/pkg/meta.Version=${VERSION} -X github.com/vcaesar/zedsearch/pkg/meta.CommitHash=${COMMIT_HASH} -X github.com/vcaesar/zedsearch/pkg/meta.BuildDate=${BUILD_DATE}" -o zedsearch cmd/zedsearch/main.go
 ############################
 # STEP 3 build a small image
 ############################
-# FROM public.ecr.aws/lts/ubuntu:latest
 FROM scratch
 # Import the user and group files from the builder.
 COPY --from=builder /etc/passwd /etc/passwd
 COPY --from=builder /etc/group /etc/group
 
-# Copy the ssl certificates
+# scratch has neither: the CA bundle is for outbound TLS (S3/GCS/OSS, etcd, OTLP,
+# Sentry), zoneinfo for named time zones ("time_zone": "Asia/Shanghai").
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
 
 # Copy our static executable.
 COPY --from=builder  /go/src/github.com/vcaesar/zedsearch/zedsearch /go/bin/zedsearch
@@ -83,9 +57,11 @@ COPY --from=builder  /go/src/github.com/vcaesar/zedsearch/zedsearch /go/bin/zeds
 # Create directories that can be used to keep ZedSearch data persistent along with host source or named volumes
 COPY --from=builder --chown=zedsearch:zedsearch /var/lib/zedsearch /var/lib/zedsearch
 COPY --from=builder --chown=zedsearch:zedsearch /data /data
+# os.TempDir: object storage spools segments here when zed_object_cache_size = 0.
+COPY --from=builder --chown=zedsearch:zedsearch /tmp /tmp
 
-# Use an unprivileged user.
-USER zedsearch:zedsearch
+# Unprivileged, numeric so Kubernetes runAsNonRoot can verify it.
+USER 10001:10001
 # Port on which the service will be exposed.
 EXPOSE 4080
 # Run the zedsearch binary.
