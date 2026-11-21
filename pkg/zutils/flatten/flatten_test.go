@@ -64,7 +64,8 @@ func TestUnflatten(t *testing.T) {
 }
 
 // A key that is both a value and an object is rejected; which of the two keys
-// is reported depends on the order the map is walked in.
+// is reported depends on the order the map is walked in. Go does not guarantee
+// that order varies, so the loop only gives both branches a chance to run.
 func TestUnflatten_Conflict(t *testing.T) {
 	data := map[string]interface{}{
 		"foo":     "abc",
@@ -80,7 +81,6 @@ func TestUnflatten_Conflict(t *testing.T) {
 			seen[err.Error()] = true
 		}
 	}
-	assert.Len(t, seen, len(want))
 }
 
 func TestFlatten_Prefix(t *testing.T) {
