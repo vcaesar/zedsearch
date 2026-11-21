@@ -21,6 +21,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/vcaesar/ice/vec"
+	"github.com/vcaesar/riot"
 
 	"github.com/vcaesar/zedsearch/pkg/zutils/json"
 )
@@ -57,6 +58,31 @@ func TestParseVector(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestParseVectorMetric(t *testing.T) {
+	tests := []struct {
+		name string
+		want riot.Metric
+	}{
+		{name: "cosine", want: riot.Cosine},
+		{name: "COSINESIMIL", want: riot.Cosine},
+		{name: "dot_product", want: riot.DotProduct},
+		{name: "max_inner_product", want: riot.DotProduct},
+		{name: "l2_norm", want: riot.L2},
+		{name: "Euclidean", want: riot.L2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseVectorMetric(tt.name)
+			assert.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+
+	got, err := ParseVectorMetric("hamming")
+	assert.EqualError(t, err, `unsupported similarity "hamming", expected cosine, dot_product or l2_norm`)
+	assert.Empty(t, got)
 }
 
 func TestNewProperty_Vector(t *testing.T) {
@@ -145,6 +171,16 @@ func TestRestoreSourceVectors(t *testing.T) {
 		got, err := RestoreSourceVectors([]byte(`{"a":1}`), map[string][]byte{"emb": []byte("bad")})
 		assert.NoError(t, err)
 		assert.Equal(t, `{"a":1}`, string(got))
+	})
+	t.Run("object of a nested vector is created again", func(t *testing.T) {
+		vector, err := vec.Encode([]float32{1, 2})
+		assert.NoError(t, err)
+		got, err := RestoreSourceVectors([]byte(`{"name":"x"}`), map[string][]byte{
+			SourceVectorsField: []byte(`[["a","b"]]`),
+			"a.b":              vector,
+		})
+		assert.NoError(t, err)
+		assert.JSONEq(t, `{"name":"x","a":{"b":[1,2]}}`, string(got))
 	})
 	t.Run("errors", func(t *testing.T) {
 		_, err := RestoreSourceVectors([]byte(`{}`), map[string][]byte{SourceVectorsField: []byte("emb")})
