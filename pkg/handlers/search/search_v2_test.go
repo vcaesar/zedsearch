@@ -18,10 +18,14 @@ package search
 import (
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/vcaesar/zedsearch/pkg/core"
+	"github.com/vcaesar/zedsearch/pkg/meta"
+	"github.com/vcaesar/zedsearch/pkg/zutils/json"
 	"github.com/vcaesar/zedsearch/test/utils"
 )
 
@@ -164,4 +168,67 @@ func TestMultipleSearch(t *testing.T) {
 		err := core.DeleteIndex(indexName)
 		assert.NoError(t, err)
 	})
+}
+
+func TestMultipleSearchLines(t *testing.T) {
+	indexName := "TestMultipleSearchLines.index_1"
+	index, err := core.NewIndex(indexName, "disk", 1)
+	require.NoError(t, err)
+	require.NoError(t, core.StoreIndex(index))
+	t.Cleanup(func() { assert.NoError(t, core.DeleteIndex(indexName)) })
+	require.NoError(t, index.CreateDocument("1", map[string]interface{}{"tag": "msearchlines"}, false))
+	require.Eventually(t, func() bool {
+		res, err := index.Search(&meta.ZedQuery{Size: 1})
+		return err == nil && res.Hits.Total.Value == 1
+	}, 10*time.Second, 20*time.Millisecond, "document not indexed")
+
+	query := `{"query":{"match":{"tag":"msearchlines"}}}`
+	tests := []struct {
+		name   string
+		data   string
+		params map[string]string
+		errors []string
+	}{
+		{
+			name:   "invalid query line",
+			data:   `{"index":"` + indexName + `"}` + "\n" + `{"query":x}`,
+			errors: []string{"invalid character"},
+		},
+		{
+			name:   "invalid header searches all indexes",
+			data:   "not json\n" + query,
+			errors: []string{""},
+		},
+		{
+			name:   "header without index uses target",
+			data:   "{}\n" + query,
+			params: map[string]string{"target": indexName},
+			errors: []string{""},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, w := utils.NewContext()
+			utils.SetRequestData(c, tt.data)
+			utils.SetRequestParams(c, tt.params)
+			MultipleSearch(c)
+			require.Equal(t, http.StatusOK, w.Code)
+
+			var out struct {
+				Responses []meta.SearchResponse `json:"responses"`
+			}
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &out))
+			require.Len(t, out.Responses, len(tt.errors))
+			for i, want := range tt.errors {
+				resp := out.Responses[i]
+				if want != "" {
+					assert.Contains(t, resp.Error, want)
+					continue
+				}
+				assert.Empty(t, resp.Error)
+				require.Len(t, resp.Hits.Hits, 1)
+				assert.Equal(t, indexName, resp.Hits.Hits[0].Index)
+			}
+		})
+	}
 }

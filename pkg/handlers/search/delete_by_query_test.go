@@ -1,12 +1,14 @@
 package search
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/goccy/go-json"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/vcaesar/zedsearch/pkg/core"
 	"github.com/vcaesar/zedsearch/pkg/ider"
@@ -134,6 +136,36 @@ func TestDeleteByQuery(t *testing.T) {
 			assert.NoError(t, core.DeleteIndex(index.GetName()))
 		})
 	}
+}
+
+func TestDeleteByQueryWriteFailure(t *testing.T) {
+	indexName := "TestDeleteByQueryWriteFailure.index_1"
+	index, err := core.NewIndex(indexName, "disk", 1)
+	require.NoError(t, err)
+	require.NoError(t, core.StoreIndex(index))
+	t.Cleanup(func() { assert.NoError(t, core.DeleteIndex(indexName)) })
+	require.NoError(t, index.CreateDocument("1", map[string]interface{}{"name": "zed"}, false))
+	require.Eventually(t, func() bool {
+		res, err := index.Search(&meta.ZedQuery{Size: 1})
+		return err == nil && res.Hits.Total.Value == 1
+	}, 10*time.Second, 20*time.Millisecond, "document not indexed")
+
+	core.WriteGuard = func(name string) error {
+		if name == indexName {
+			return assert.AnError
+		}
+		return nil
+	}
+	t.Cleanup(func() { core.WriteGuard = nil })
+
+	c, w := utils.NewContext()
+	utils.SetRequestData(c, `{"query":{"match":{"name":"zed"}},"size":10}`)
+	utils.SetRequestParams(c, map[string]string{"target": indexName})
+	DeleteByQuery(c)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), `"total":0,"deleted":0,`)
+	assert.Contains(t, w.Body.String(), `"failures":["1"]`)
 }
 
 func assertHTTPResponse(t *testing.T, w *httptest.ResponseRecorder, statusCode int, body body) {

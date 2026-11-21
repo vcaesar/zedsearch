@@ -64,6 +64,24 @@ func TestSearchV1(t *testing.T) {
 				result: "invalid character",
 			},
 		},
+		{
+			name: "unsupported aggregation",
+			args: args{
+				code:   http.StatusBadRequest,
+				data:   `{"search_type":"alldocuments","aggs":{"a":{"agg_type":"bogus","field":"name"}}}`,
+				params: map[string]string{"target": indexName},
+				result: `{"error":"aggregation not supported bogus"}`,
+			},
+		},
+		{
+			name: "range aggregation without ranges",
+			args: args{
+				code:   http.StatusBadRequest,
+				data:   `{"search_type":"alldocuments","aggs":{"a":{"agg_type":"range","field":"num"}}}`,
+				params: map[string]string{"target": indexName},
+				result: `[range] aggregation needs ranges`,
+			},
+		},
 	}
 
 	t.Run("prepare", func(t *testing.T) {
