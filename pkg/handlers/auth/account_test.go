@@ -21,8 +21,10 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/vcaesar/zedsearch/pkg/auth"
+	"github.com/vcaesar/zedsearch/pkg/meta"
 	"github.com/vcaesar/zedsearch/test/utils"
 )
 
@@ -100,4 +102,22 @@ func TestUpdateAccount(t *testing.T) {
 	user, ok := auth.VerifyCredentials(id, "newpass1")
 	assert.True(t, ok)
 	assert.Equal(t, "Final", user.Name)
+}
+
+func TestUpdateAccount_StorageFailure(t *testing.T) {
+	const id = "testupdateaccount_storagefailure.user_1"
+	salt := auth.GenerateSalt()
+	auth.ZED_CACHED_USERS.Set(id, &meta.User{ID: id, Name: "Old", Role: "admin", Salt: salt, Password: auth.GeneratePassword("oldpass1", salt)})
+	t.Cleanup(func() { auth.ZED_CACHED_USERS.Delete(id) })
+
+	useFailStorage(t, &failStorage{set: errMock})
+	c, w := utils.NewContext()
+	utils.SetRequestData(c, map[string]interface{}{"_id": id, "password": "oldpass1", "name": "New", "new_password": "newpass1"})
+	UpdateAccount(c)
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.JSONEq(t, `{"error":"mock storage failure"}`, w.Body.String())
+
+	user, ok := auth.VerifyCredentials(id, "oldpass1")
+	require.True(t, ok, "a failed update keeps the old password")
+	assert.Equal(t, "Old", user.Name)
 }

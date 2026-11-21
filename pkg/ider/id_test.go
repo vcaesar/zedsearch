@@ -17,12 +17,49 @@
 package ider
 
 import (
+	"bytes"
+	"os"
 	"testing"
+	"time"
 
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
+	"github.com/sony/sonyflake/v2"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
+	"github.com/vcaesar/zedsearch/pkg/config"
 	"github.com/vcaesar/zedsearch/pkg/zutils/base62"
 )
+
+// Package variables are initialized before init runs, so init sees an
+// out-of-range node id and its fatal is recorded here instead of exiting.
+var (
+	initNodeID = config.Global.NodeID
+	initLogger = log.Logger
+	initFatals = 0
+	initOutput = func() *bytes.Buffer {
+		out := new(bytes.Buffer)
+		log.Logger = zerolog.New(out)
+		zerolog.FatalExitFunc = func() { initFatals++ }
+		config.Global.NodeID = maxNodeID + 1
+		return out
+	}()
+)
+
+func TestMain(m *testing.M) {
+	config.Global.NodeID, log.Logger, zerolog.FatalExitFunc = initNodeID, initLogger, nil
+	var err error
+	if local, err = NewNode(initNodeID); err != nil {
+		log.Fatal().Err(err).Msg("restore the local node")
+	}
+	os.Exit(m.Run())
+}
+
+func TestInit_NodeIDOutOfRange(t *testing.T) {
+	assert.Equal(t, 1, initFatals)
+	assert.Contains(t, initOutput.String(), "id generater init[local] err node id 1024 out of range [0, 1023]")
+}
 
 func TestGenerate(t *testing.T) {
 	got := Generate()
@@ -42,6 +79,35 @@ func TestNewNode(t *testing.T) {
 		assert.Error(t, err, "node id %d must be rejected", i)
 		assert.Nil(t, node)
 	}
+}
+
+func TestNewNode_StartTimeAhead(t *testing.T) {
+	old := epoch
+	t.Cleanup(func() { epoch = old })
+	epoch = time.Now().Add(time.Hour)
+
+	node, err := NewNode(1)
+	assert.ErrorIs(t, err, sonyflake.ErrStartTimeAhead)
+	assert.Nil(t, node)
+}
+
+func TestGenerate_OverTimeLimit(t *testing.T) {
+	oldEpoch, oldExit, oldLogger := epoch, zerolog.FatalExitFunc, log.Logger
+	t.Cleanup(func() { epoch, zerolog.FatalExitFunc, log.Logger = oldEpoch, oldExit, oldLogger })
+
+	// 41 bits of milliseconds overflow after about 69 years
+	epoch = time.Now().AddDate(-70, 0, 0)
+	var out bytes.Buffer
+	log.Logger = zerolog.New(&out)
+	exited := false
+	zerolog.FatalExitFunc = func() { exited = true }
+
+	node, err := NewNode(1)
+	require.NoError(t, err)
+	assert.Equal(t, base62.Encode(0), node.Generate())
+	assert.True(t, exited, "an exhausted id clock is fatal")
+	assert.Contains(t, out.String(), "id generate failed")
+	assert.Contains(t, out.String(), sonyflake.ErrOverTimeLimit.Error())
 }
 
 func TestGenerate_Unique(t *testing.T) {

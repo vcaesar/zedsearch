@@ -16,8 +16,11 @@
 package document
 
 import (
+	"errors"
+	"io"
 	"net/http"
 	"testing"
+	"testing/iotest"
 
 	"github.com/stretchr/testify/assert"
 
@@ -76,6 +79,66 @@ func TestMulti(t *testing.T) {
 			Multi(c)
 			assert.Equal(t, tt.args.code, w.Code)
 			assert.Contains(t, w.Body.String(), tt.args.result)
+		})
+	}
+}
+
+func TestMultiErrors(t *testing.T) {
+	indexName := "TestMultiErrors.index_1"
+	cleanupIndex(t, indexName)
+	tests := []struct {
+		name   string
+		data   string
+		body   io.Reader
+		target string
+		code   int
+		result string
+		docs   int64
+	}{
+		{
+			name:   "skips invalid lines and keeps ids",
+			data:   "not json\n" + `{"_id":"1","name":"a"}` + "\n" + `{"name":"b"}`,
+			target: indexName,
+			code:   http.StatusOK,
+			result: `{"message":"multiple data inserted","record_count":2}`,
+			docs:   2,
+		},
+		{
+			name:   "invalid index name",
+			data:   `{"name":"a"}`,
+			target: "_TestMultiErrors.index_2",
+			code:   http.StatusInternalServerError,
+			result: `{"error":"index name cannot start with _"}`,
+		},
+		{
+			name:   "invalid document",
+			data:   `{"@timestamp":"bad"}`,
+			target: indexName,
+			code:   http.StatusInternalServerError,
+			result: "field [@timestamp] value [bad] parse err",
+		},
+		{
+			name:   "body read error",
+			body:   iotest.ErrReader(errors.New("read failed")),
+			target: indexName,
+			code:   http.StatusInternalServerError,
+			result: `{"error":"read failed"}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, w := utils.NewContext()
+			utils.SetRequestData(c, tt.data)
+			if tt.body != nil {
+				c.Request.Body = io.NopCloser(tt.body)
+			}
+			utils.SetRequestParams(c, map[string]string{"target": tt.target})
+			Multi(c)
+			assert.Equal(t, tt.code, w.Code)
+			assert.Contains(t, w.Body.String(), tt.result)
+			if tt.docs > 0 {
+				waitDocCount(t, indexName, tt.docs)
+			}
 		})
 	}
 }

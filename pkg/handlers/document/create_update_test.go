@@ -116,6 +116,17 @@ func TestCreateUpdate(t *testing.T) {
 				result:  "index name cannot be empty",
 			},
 		},
+		{
+			name: "invalid timestamp",
+			args: args{
+				code:    http.StatusInternalServerError,
+				rawData: `{"_id": "2", "@timestamp": "bad"}`,
+				params: map[string]string{
+					"target": "TestDocumentCreateUpdate.index_1",
+				},
+				result: "field [@timestamp] value [bad] parse err",
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

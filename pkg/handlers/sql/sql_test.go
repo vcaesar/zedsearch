@@ -426,9 +426,34 @@ func TestSearchErrors(t *testing.T) {
 }
 
 func TestTranslateErrors(t *testing.T) {
-	c, w := utils.NewContext()
-	utils.SetRequestData(c, `{"query":"SELECT * FROM logs WHERE count + 1 = 2"}`)
-	Translate(c)
-	assert.Equal(t, http.StatusBadRequest, w.Code)
-	assert.Contains(t, w.Body.String(), "unsupported WHERE expression")
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "invalid json",
+			body: `{"query": }`,
+			want: "invalid character",
+		},
+		{
+			name: "missing query",
+			body: `{"fetch_size":1}`,
+			want: "query is required",
+		},
+		{
+			name: "unsupported where",
+			body: `{"query":"SELECT * FROM logs WHERE count + 1 = 2"}`,
+			want: "unsupported WHERE expression",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, w := utils.NewContext()
+			utils.SetRequestData(c, tt.body)
+			Translate(c)
+			assert.Equal(t, http.StatusBadRequest, w.Code)
+			assert.Contains(t, w.Body.String(), tt.want)
+		})
+	}
 }

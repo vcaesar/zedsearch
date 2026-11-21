@@ -88,6 +88,17 @@ func TestUpdate(t *testing.T) {
 				result: `"error":`,
 			},
 		},
+		{
+			name: "invalid index name",
+			args: args{
+				code:    http.StatusInternalServerError,
+				rawData: `{"_id":"1","name":"user"}`,
+				params: map[string]string{
+					"target": "_TestDocumentUpdate.index_3",
+				},
+				result: `{"error":"index name cannot start with _"}`,
+			},
+		},
 	}
 
 	t.Run("prepare", func(t *testing.T) {
