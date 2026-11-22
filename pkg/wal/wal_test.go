@@ -18,9 +18,12 @@ package wal
 import (
 	"log"
 	"os"
+	"path"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	"github.com/vcaesar/zedsearch/pkg/config"
 )
 
 var l *Log
@@ -34,13 +37,13 @@ func TestMain(m *testing.M) {
 		log.Fatal(err)
 	}
 
-	m.Run()
+	code := m.Run()
 
 	if err = l.Close(); err != nil {
 		log.Fatal(err)
 	}
 
-	os.Exit(0)
+	os.Exit(code)
 }
 
 func TestOpenClose(t *testing.T) {
@@ -51,33 +54,83 @@ func TestOpenClose(t *testing.T) {
 }
 
 func TestWAL(t *testing.T) {
-	var err error
+	// plain go test keeps data/ between runs: work after the last entry
+	before, err := l.LastIndex()
+	assert.NoError(t, err)
+	id := before + 1
+
 	err = l.Write([]byte("test"))
 	assert.NoError(t, err)
 
 	var data []byte
-	data, err = l.Read(1)
+	data, err = l.Read(id)
 	assert.NoError(t, err)
-	assert.NotNil(t, data)
+	assert.Equal(t, "test", string(data))
 
 	assert.Equal(t, name, l.Name())
+
+	err = l.TruncateFront(id)
+	assert.NoError(t, err)
+
 	length, err := l.Len()
 	assert.NoError(t, err)
-	assert.Equal(t, length, uint64(1))
+	assert.Equal(t, uint64(1), length)
 
 	firstIndex, err := l.FirstIndex()
 	assert.NoError(t, err)
-	assert.Equal(t, firstIndex, uint64(1))
+	assert.Equal(t, id, firstIndex)
 
 	lastIndex, err := l.LastIndex()
 	assert.NoError(t, err)
-	assert.Equal(t, lastIndex, uint64(1))
-
-	err = l.TruncateFront(1)
-	assert.NoError(t, err)
+	assert.Equal(t, id, lastIndex)
 
 	err = l.Sync()
 	assert.NoError(t, err)
+}
+
+func TestWriteBatch(t *testing.T) {
+	l, err := Open("walTestBatch")
+	assert.NoError(t, err)
+	before, err := l.LastIndex()
+	assert.NoError(t, err)
+
+	assert.NoError(t, l.WriteBatch(nil))
+	assert.NoError(t, l.WriteBatch([][]byte{[]byte("one"), []byte("two"), []byte("three")}))
+	last, err := l.LastIndex()
+	assert.NoError(t, err)
+	assert.Equal(t, before+3, last)
+	for i, want := range []string{"one", "two", "three"} {
+		data, err := l.Read(before + uint64(i) + 1)
+		assert.NoError(t, err)
+		assert.Equal(t, want, string(data))
+	}
+
+	assert.NoError(t, l.Close())
+	assert.Error(t, l.WriteBatch([][]byte{[]byte("closed")}))
+}
+
+func TestWriteBatchSpansSegments(t *testing.T) {
+	dataPath := config.Global.DataPath
+	config.Global.DataPath = t.TempDir()
+	defer func() { config.Global.DataPath = dataPath }()
+
+	l, err := Open("TestWriteBatchSpansSegments")
+	assert.NoError(t, err)
+	defer func() { assert.NoError(t, l.Close()) }()
+
+	big := make([]byte, 9<<20) // two entries exceed the 16 MB segment size
+	assert.NoError(t, l.WriteBatch([][]byte{big, big, []byte("tail")}))
+
+	segments, err := os.ReadDir(path.Join(config.Global.DataPath, "TestWriteBatchSpansSegments", "wal"))
+	assert.NoError(t, err)
+	assert.Greater(t, len(segments), 1)
+
+	last, err := l.LastIndex()
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(3), last)
+	data, err := l.Read(3)
+	assert.NoError(t, err)
+	assert.Equal(t, "tail", string(data))
 }
 
 func BenchmarkWAL(b *testing.B) {
@@ -87,4 +140,36 @@ func BenchmarkWAL(b *testing.B) {
 		err = l.Write([]byte("test"))
 		assert.NoError(b, err)
 	}
+}
+
+func TestOpenError(t *testing.T) {
+	dataPath := config.Global.DataPath
+	config.Global.DataPath = t.TempDir()
+	defer func() { config.Global.DataPath = dataPath }()
+
+	t.Run("wal", func(t *testing.T) {
+		dir := path.Join(config.Global.DataPath, "TestOpenError.wal")
+		assert.NoError(t, os.MkdirAll(dir, 0o750))
+		// the wal directory is a file
+		assert.NoError(t, os.WriteFile(path.Join(dir, "wal"), []byte("x"), 0o640))
+		_, err := Open("TestOpenError.wal")
+		assert.Error(t, err)
+	})
+	t.Run("redo", func(t *testing.T) {
+		// the redo file is a directory
+		dir := path.Join(config.Global.DataPath, "TestOpenError.redo")
+		assert.NoError(t, os.MkdirAll(path.Join(dir, "redo"), 0o750))
+		l, err := Open("TestOpenError.redo")
+		assert.Error(t, err)
+		assert.Nil(t, l)
+		// the wal must be closed on failure, or Windows cannot remove its files
+		assert.NoError(t, os.RemoveAll(dir))
+	})
+}
+
+func TestCloseTwice(t *testing.T) {
+	l, err := Open("TestCloseTwice")
+	assert.NoError(t, err)
+	assert.NoError(t, l.Close())
+	assert.Error(t, l.Close())
 }

@@ -32,13 +32,12 @@ func TestMain(m *testing.M) {
 		log.Fatal(err)
 	}
 
-	m.Run()
+	code := m.Run()
 
 	if err = l.Close(); err != nil {
 		log.Fatal(err)
 	}
-
-	os.Exit(0)
+	os.Exit(code)
 }
 
 func TestOpenClose(t *testing.T) {
@@ -128,4 +127,51 @@ func BenchmarkLogRead(b *testing.B) {
 		assert.NoError(b, err)
 		assert.NotNil(b, data)
 	}
+}
+
+func TestReopen(t *testing.T) {
+	name := "data/TestReopen"
+	l, err := Open(name, &Options{NoSync: true})
+	assert.NoError(t, err)
+	assert.NoError(t, l.Write(1, []byte("one")))
+	assert.NoError(t, l.Write(2, []byte("two")))
+	assert.NoError(t, l.Write(1, []byte("uno")))
+	assert.NoError(t, l.Close())
+
+	l, err = Open(name, nil)
+	assert.NoError(t, err)
+	for key, want := range map[uint64]string{1: "uno", 2: "two"} {
+		got, err := l.Read(key)
+		assert.NoError(t, err)
+		assert.Equal(t, want, string(got))
+	}
+	assert.NoError(t, l.Close())
+}
+
+func TestOpenError(t *testing.T) {
+	assert.NoError(t, os.MkdirAll("data/TestOpenError/dir", 0o755))
+	assert.NoError(t, os.WriteFile("data/TestOpenError/file", []byte("x"), 0o644))
+	for _, tt := range []struct{ name, path string }{
+		{"parent is a file", "data/TestOpenError/file/log"},
+		{"log is a directory", "data/TestOpenError/dir"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Open(tt.path, nil)
+			assert.Error(t, err)
+		})
+	}
+}
+
+func TestErrors(t *testing.T) {
+	l, err := Open("data/TestErrors", nil)
+	assert.NoError(t, err)
+
+	assert.ErrorIs(t, l.Write(1, make([]byte, ValueFixedLength+1)), ErrValueTooLarge)
+	assert.NoError(t, l.Write(1, make([]byte, ValueFixedLength)))
+	_, err = l.Read(2)
+	assert.ErrorIs(t, err, ErrNotFound)
+
+	assert.NoError(t, l.f.Close())
+	assert.Error(t, l.Write(2, []byte("closed")))
+	assert.Error(t, l.Close())
 }

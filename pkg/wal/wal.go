@@ -12,11 +12,21 @@
 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 * See the License for the specific language governing permissions and
 * limitations under the License.
- */
+*
+Part of this work fall under the AtomAI Enterprise Edition (EE)
+and are licensed under the Business Source License 1.1,
+if you are the Cloud companies or your companies with revenue greater than $1M,
+please refer to [AGPL-3.0](./LICENSE-AGPL)) and [LICENSE-EE](./LICENSE-EE) for details,
+and production use of the Licensed Work requires a commercial license agreement with Zedsearch.
+Contact info@atomai.cc for licensing.
+
+The other parts of this work are licensed under the [Apache license](./LICENSE).
+*/
 
 package wal
 
 import (
+	stderrors "errors"
 	"path"
 
 	"github.com/zedsearch/wal"
@@ -56,7 +66,8 @@ func Open(indexName string) (*Log, error) {
 	redoOpt.NoCopy = true
 	l.Redo, err = redo.Open(path.Join(config.Global.DataPath, indexName, "redo"), redoOpt)
 	if err != nil {
-		return nil, errors.New(errors.ErrorTypeRuntimeException, "open wal redo error").Cause(err)
+		// close the opened wal so its segment files are not left locked
+		return nil, errors.New(errors.ErrorTypeRuntimeException, "open wal redo error").Cause(stderrors.Join(err, l.log.Close()))
 	}
 
 	return l, nil
@@ -80,6 +91,17 @@ func (l *Log) LastIndex() (uint64, error) {
 
 func (l *Log) Write(data []byte) error {
 	return l.log.Write(0, data)
+}
+
+// WriteBatch appends entries in order with sequential indexes.
+// A batch may span segments; on error, a prefix of the batch may already
+// be written and is not rolled back.
+func (l *Log) WriteBatch(entries [][]byte) error {
+	batch := new(wal.Batch)
+	for _, data := range entries {
+		batch.Write(0, data)
+	}
+	return l.log.WriteBatch(batch)
 }
 
 func (l *Log) Read(id uint64) ([]byte, error) {
