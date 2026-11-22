@@ -16,11 +16,19 @@
 package upgrade
 
 import (
+	"os"
 	"strings"
 
 	"github.com/rs/zerolog/log"
 
 	"github.com/vcaesar/zedsearch/pkg/meta"
+)
+
+// File operations of the upgrades, replaced by tests to fail on demand.
+var (
+	rename  = os.Rename
+	mkdir   = os.Mkdir
+	readDir = os.ReadDir
 )
 
 func Do(oldVersion string, index *meta.Index) error {
