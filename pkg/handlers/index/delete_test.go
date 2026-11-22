@@ -116,12 +116,13 @@ func TestDelete_WildcardErrors(t *testing.T) {
 	})
 
 	tests := []struct {
-		name   string
-		target string
-		result string
+		name    string
+		target  string
+		result  string
+		deleted bool
 	}{
 		{name: "invalid pattern", target: "TestDelete_WildcardErrors.(*", result: "error parsing regexp"},
-		{name: "repeated pattern", target: "TestDelete_WildcardErrors.index_*,TestDelete_WildcardErrors.index_*", result: `{"error":"index TestDelete_WildcardErrors.index_1 does not exists"}`},
+		{name: "repeated pattern", target: "TestDelete_WildcardErrors.index_*,TestDelete_WildcardErrors.index_*", result: `{"error":"index TestDelete_WildcardErrors.index_1 does not exists"}`, deleted: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -130,9 +131,9 @@ func TestDelete_WildcardErrors(t *testing.T) {
 			Delete(c)
 			assert.Equal(t, http.StatusBadRequest, w.Code)
 			assert.Contains(t, w.Body.String(), tt.result)
+
+			_, exists := core.GetIndex(indexName)
+			assert.Equal(t, !tt.deleted, exists, "only the repeated pattern deletes the index before failing")
 		})
 	}
-
-	_, exists := core.GetIndex(indexName)
-	assert.False(t, exists, "the first pattern deletes the index before the second one fails")
 }
