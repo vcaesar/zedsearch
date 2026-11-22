@@ -16,14 +16,15 @@
 
 # ZedSearch
 
-ZedSearch ist eine Suchmaschine für Volltextindizierung. Sie ist eine leichtgewichtige Alternative zu Elasticsearch und benötigt nur einen Bruchteil der Ressourcen. Als zugrunde liegende Indizierungsbibliothek wird [bluge](https://github.com/blugelabs/bluge) (über den Fork [vcaesar/riot](https://github.com/vcaesar/riot)) verwendet.
+ZedSearch ist eine Suchmaschine für Volltext- und Vektorindizierung und eine Cloud-native Observability-Plattform für Logs, Metriken, Traces, Analysen, Monitoring und KI.
+Sie ist eine leichtgewichtige Alternative zu Elasticsearch, OpenSearch, Datadog und Splunk und benötigt nur einen Bruchteil der Ressourcen.
+Als zugrunde liegende Indizierungsbibliothek wird [vcaesar/riot](https://github.com/vcaesar/riot) verwendet.
 
-Im Gegensatz zu Elasticsearch, bei dem man ein paar Dutzend Stellschrauben verstehen und abstimmen muss, ist sie sehr einfach zu betreiben. Sie können ZedSearch in 2 Minuten zum Laufen bringen.
+Im Gegensatz zu Elasticsearch, bei dem man ein paar Dutzend Stellschrauben verstehen und abstimmen muss, ist sie sehr einfach zu betreiben. Sie können ZedSearch in 1 Minute zum Laufen bringen.
 
 Sie ist ein direkter Ersatz für Elasticsearch, wenn Sie nur Daten über APIs einspielen und mit Kibana suchen (Kibana wird von ZedSearch nicht unterstützt. ZedSearch bietet eine eigene Oberfläche).
 
-Im folgenden Video sehen Sie eine kurze Demo von ZedSearch.
-
+<!-- Im folgenden Video sehen Sie eine kurze Demo von ZedSearch. -->
 <!-- [![Zed Youtube](../screenshots/zed-youtube.jpg)](https://www.youtube.com/watch?v=aZXtuVjt1ow) -->
 
 ## Homebrew
@@ -51,9 +52,48 @@ docker run -d --name zedsearch \
 
 Das benannte Volume `zedsearch-data` ist für den Container-Benutzer (uid 10001) beschreibbar; für ein Host-Verzeichnis führen Sie `mkdir -p ./data && sudo chown 10001:10001 ./data` aus und mounten `-v "$PWD/data:/data"`.
 
+## Cluster
+
+Die Knoten teilen sich ein etcd und verteilen den Besitz der Indizes untereinander, mit Replikaten und Failover; jeder Knoten bedient jede Anfrage. Jeder Knoten braucht eine eindeutige `ZED_CLUSTER_NODE_ID`, eine von den anderen Knoten erreichbare `ZED_CLUSTER_ADVERTISE_ADDR` und dasselbe `ZED_CLUSTER_SECRET`. Modell, Einstellungen und Grenzen siehe [pkg/cluster](../pkg/cluster/README.md).
+
+### Docker
+
+```sh
+docker network create zed
+docker run -d --name zed-etcd --network zed quay.io/coreos/etcd:v3.7.3 etcd \
+    --listen-client-urls http://0.0.0.0:2379 --advertise-client-urls http://zed-etcd:2379 \
+    --data-dir /etcd-data
+
+for i in 1 2 3; do
+  docker run -d --name zed$i --network zed -p 408$i:4080 \
+    -v zed$i-data:/data -e ZED_DATA_PATH=/data \
+    -e ZED_FIRST_ADMIN_USER="admin" -e ZED_FIRST_ADMIN_PASSWORD="your_password_zed#123" \
+    -e ZED_CLUSTER_ENABLE=true -e ZED_CLUSTER_NAME=prod -e ZED_CLUSTER_NODE_ID=node-$i \
+    -e ZED_CLUSTER_ADVERTISE_ADDR=http://zed$i:4080 -e ZED_CLUSTER_SECRET="your_cluster_secret_zed#123" \
+    -e ZED_ETCD_ENDPOINTS=http://zed-etcd:2379 \
+    riotgo/zedsearch:latest
+done
+
+curl --retry 10 --retry-connrefused -u admin:"your_password_zed#123" http://localhost:4081/api/cluster/nodes
+```
+
+### Kubernetes
+
+[k8s/cluster.yaml](../k8s/cluster.yaml) startet ein StatefulSet `zedsearch-cluster` mit drei Knoten hinter dem Service `zedsearch`, mit einem etcd aus einem Knoten (in Produktion drei Mitglieder betreiben):
+
+```sh
+kubectl create namespace zedsearch
+kubectl -n zedsearch create secret generic zedsearch-admin \
+    --from-literal=ZED_FIRST_ADMIN_USER=admin --from-literal=ZED_FIRST_ADMIN_PASSWORD='your_password_zed#123'
+kubectl -n zedsearch create secret generic zedsearch-cluster --from-literal=ZED_CLUSTER_SECRET='your_cluster_secret_zed#123'
+kubectl apply -f k8s/cluster.yaml
+kubectl -n zedsearch port-forward svc/zedsearch 4080:4080
+```
+
 # Warum ZedSearch
 
-Elasticsearch ist zwar ein sehr gutes Produkt, aber es ist komplex, benötigt viele Ressourcen und ist über zehn Jahre alt. Ich habe ZedSearch entwickelt, damit Volltext-Suchindizierung ohne großen Aufwand einfacher nutzbar wird.
+Elasticsearch ist zwar ein sehr gutes Produkt, aber es ist komplex, benötigt viele Ressourcen, ist über ein Jahrzehnt alt und verbraucht viel Speicher und mehr.
+Ich habe ZedSearch entwickelt, damit man Volltext- und Vektor-Suchindizierung, Observability und Datenanalyse ohne viel Aufwand einfacher nutzen kann.
 
 # Funktionen:
 

@@ -16,14 +16,15 @@ English | [简体中文](langs/README.zh.md) | [繁體中文](langs/README.zht.m
 
 # ZedSearch
 
-ZedSearch is a search engine that does full text indexing. It is a lightweight alternative to Elasticsearch and runs using a fraction of the resources. It uses [bluge](https://github.com/blugelabs/bluge) (via the [vcaesar/riot](https://github.com/vcaesar/riot) fork) as the underlying indexing library.
+ZedSearch is a search engine that does full text and vector indexing, and cloud-native platform for observability logs, metrics, traces, analytics, monitoring, AI.
+It is a lightweight alternative to Elasticsearch, OpenSearch, Datadog, Splunk and runs using a fraction of the resources.
+It uses the [vcaesar/riot](https://github.com/vcaesar/riot) as the underlying indexing library.
 
-It is very simple and easy to operate as opposed to Elasticsearch which requires a couple dozen knobs to understand and tune. You can get ZedSearch up and running in 2 minutes.
+It is very simple and easy to operate as opposed to Elasticsearch which requires a couple dozen knobs to understand and tune. You can get ZedSearch up and running in 1 minutes.
 
 It is a drop-in replacement for Elasticsearch if you are just ingesting data using APIs and searching using kibana (Kibana is not supported with ZedSearch. ZedSearch provides its own UI).
 
-Check the below video for a quick demo of ZedSearch.
-
+<!-- Check the below video for a quick demo of ZedSearch. -->
 <!-- [![Zed Youtube](./screenshots/zed-youtube.jpg)](https://www.youtube.com/watch?v=aZXtuVjt1ow) -->
 
 ## Homebrew
@@ -51,9 +52,48 @@ docker run -d --name zedsearch \
 
 The named volume `zedsearch-data` is writable by the container user (uid 10001); to use a host directory instead, run `mkdir -p ./data && sudo chown 10001:10001 ./data` and mount `-v "$PWD/data:/data"`.
 
+## Cluster
+
+Nodes share an etcd and own the indexes between them, with replicas and failover; any node serves any request. Every node needs a unique `ZED_CLUSTER_NODE_ID`, a `ZED_CLUSTER_ADVERTISE_ADDR` the other nodes can reach and the same `ZED_CLUSTER_SECRET`. See [pkg/cluster](./pkg/cluster/README.md) for the model, settings and limits.
+
+### Docker
+
+```sh
+docker network create zed
+docker run -d --name zed-etcd --network zed quay.io/coreos/etcd:v3.7.3 etcd \
+    --listen-client-urls http://0.0.0.0:2379 --advertise-client-urls http://zed-etcd:2379 \
+    --data-dir /etcd-data
+
+for i in 1 2 3; do
+  docker run -d --name zed$i --network zed -p 408$i:4080 \
+    -v zed$i-data:/data -e ZED_DATA_PATH=/data \
+    -e ZED_FIRST_ADMIN_USER="admin" -e ZED_FIRST_ADMIN_PASSWORD="your_password_zed#123" \
+    -e ZED_CLUSTER_ENABLE=true -e ZED_CLUSTER_NAME=prod -e ZED_CLUSTER_NODE_ID=node-$i \
+    -e ZED_CLUSTER_ADVERTISE_ADDR=http://zed$i:4080 -e ZED_CLUSTER_SECRET="your_cluster_secret_zed#123" \
+    -e ZED_ETCD_ENDPOINTS=http://zed-etcd:2379 \
+    riotgo/zedsearch:latest
+done
+
+curl --retry 10 --retry-connrefused -u admin:"your_password_zed#123" http://localhost:4081/api/cluster/nodes
+```
+
+### Kubernetes
+
+[k8s/cluster.yaml](./k8s/cluster.yaml) runs a three-node StatefulSet `zedsearch-cluster` behind the Service `zedsearch`, with a single-node etcd (run three members for production):
+
+```sh
+kubectl create namespace zedsearch
+kubectl -n zedsearch create secret generic zedsearch-admin \
+    --from-literal=ZED_FIRST_ADMIN_USER=admin --from-literal=ZED_FIRST_ADMIN_PASSWORD='your_password_zed#123'
+kubectl -n zedsearch create secret generic zedsearch-cluster --from-literal=ZED_CLUSTER_SECRET='your_cluster_secret_zed#123'
+kubectl apply -f k8s/cluster.yaml
+kubectl -n zedsearch port-forward svc/zedsearch 4080:4080
+```
+
 # Why ZedSearch
 
-While Elasticsearch is a very good product, it is complex and requires lots of resources and is more than a decade old. I built ZedSearch so it becomes easier for folks to use full text search indexing without doing a lot of work.
+While Elasticsearch is a very good product, it is complex and requires lots of resources and is more than a decade old, so many memory and others.
+I built ZedSearch so it becomes easier for folks to use full text and vector search indexing, observability and data analytics without doing a lot of work.
 
 # Features:
 
