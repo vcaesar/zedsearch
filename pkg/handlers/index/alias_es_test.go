@@ -169,6 +169,26 @@ func TestAddOrRemoveESAlias(t *testing.T) {
 			wantErr:     false,
 			wantAliases: []string{"existing_alias_3"},
 		},
+		{
+			name: "should_ignore_missing_index",
+			args: args{
+				data:   `{"actions": [{"add": {"index": "TestAddOrRemoveESAlias.index_missing","alias": "test_alias_5"}}]}`,
+				result: `{"acknowledged":true}`,
+			},
+			wantCode:    http.StatusOK,
+			wantErr:     false,
+			wantAliases: []string{},
+		},
+		{
+			name: "should_ignore_invalid_wildcard_index_name",
+			args: args{
+				data:   `{"actions": [{"add": {"index": "TestAddOrRemoveESAlias.(*","alias": "test_alias_6"}}]}`,
+				result: `{"acknowledged":true}`,
+			},
+			wantCode:    http.StatusOK,
+			wantErr:     false,
+			wantAliases: []string{},
+		},
 	}
 
 	for _, tt := range tests {
@@ -284,5 +304,25 @@ func newIndex(t *testing.T, indexName string) (*core.Index, func()) {
 		require.NoError(t, metadata.Alias.Set(map[string][]string{}))
 		core.ZED_INDEX_ALIAS_LIST = *core.NewAliasList()
 		require.NoError(t, core.DeleteIndex(indexName))
+	}
+}
+
+func TestIndexNameMatches(t *testing.T) {
+	tests := []struct {
+		name      string
+		pattern   string
+		indexName string
+		want      bool
+	}{
+		{name: "equal", pattern: "TestIndexNameMatches.index_1", indexName: "TestIndexNameMatches.index_1", want: true},
+		{name: "not equal without wildcard", pattern: "TestIndexNameMatches.index_1", indexName: "TestIndexNameMatches.index_2", want: false},
+		{name: "wildcard", pattern: "TestIndexNameMatches.*", indexName: "TestIndexNameMatches.index_1", want: true},
+		{name: "wildcard not matching", pattern: "Other.*", indexName: "TestIndexNameMatches.index_1", want: false},
+		{name: "invalid regex", pattern: "TestIndexNameMatches.(*", indexName: "TestIndexNameMatches.(index_1", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, indexNameMatches(tt.pattern, tt.indexName))
+		})
 	}
 }

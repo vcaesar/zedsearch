@@ -16,8 +16,11 @@
 package index
 
 import (
+	"errors"
+	"io"
 	"net/http"
 	"testing"
+	"testing/iotest"
 
 	"github.com/stretchr/testify/assert"
 
@@ -181,4 +184,13 @@ func TestESFieldType(t *testing.T) {
 			assert.Equal(t, tt.want, esFieldType(tt.typ))
 		})
 	}
+}
+
+func TestFieldCaps_BodyReadError(t *testing.T) {
+	c, w := utils.NewContext()
+	c.Request.Body = io.NopCloser(iotest.ErrReader(errors.New("TestFieldCaps_BodyReadError read error")))
+	utils.SetRequestParams(c, map[string]string{"target": "TestFieldCaps_BodyReadError.index_1"})
+	FieldCaps(c)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Equal(t, `{"error":"TestFieldCaps_BodyReadError read error"}`, w.Body.String())
 }
