@@ -105,3 +105,35 @@ func prepareIndex(t *testing.T, name, storageType string) {
 	err = core.StoreIndex(index)
 	assert.NoError(t, err)
 }
+
+func TestDelete_WildcardErrors(t *testing.T) {
+	indexName := "TestDelete_WildcardErrors.index_1"
+	prepareIndex(t, indexName, "disk")
+	t.Cleanup(func() {
+		if _, exists := core.GetIndex(indexName); exists {
+			assert.NoError(t, core.DeleteIndex(indexName))
+		}
+	})
+
+	tests := []struct {
+		name    string
+		target  string
+		result  string
+		deleted bool
+	}{
+		{name: "invalid pattern", target: "TestDelete_WildcardErrors.(*", result: "error parsing regexp"},
+		{name: "repeated pattern", target: "TestDelete_WildcardErrors.index_*,TestDelete_WildcardErrors.index_*", result: `{"error":"index TestDelete_WildcardErrors.index_1 does not exists"}`, deleted: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, w := utils.NewContext()
+			utils.SetRequestParams(c, map[string]string{"target": tt.target})
+			Delete(c)
+			assert.Equal(t, http.StatusBadRequest, w.Code)
+			assert.Contains(t, w.Body.String(), tt.result)
+
+			_, exists := core.GetIndex(indexName)
+			assert.Equal(t, !tt.deleted, exists, "only the repeated pattern deletes the index before failing")
+		})
+	}
+}

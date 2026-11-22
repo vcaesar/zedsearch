@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/vcaesar/riot/analysis"
 
 	"github.com/vcaesar/zedsearch/pkg/core"
 	"github.com/vcaesar/zedsearch/pkg/meta"
@@ -294,4 +295,56 @@ func getTokenStrings(data []byte) (string, error) {
 	}
 
 	return "[" + strings.Join(strs, " ") + "]", nil
+}
+
+func TestParseAnalysisComponents_Errors(t *testing.T) {
+	parsers := []struct {
+		name  string
+		parse func(interface{}) (int, error)
+	}{
+		{name: "tokenizer", parse: func(v interface{}) (int, error) { r, err := parseTokenizer(v); return len(r), err }},
+		{name: "token_filter", parse: func(v interface{}) (int, error) { r, err := parseTokenFilter(v); return len(r), err }},
+		{name: "char_filter", parse: func(v interface{}) (int, error) { r, err := parseCharFilter(v); return len(r), err }},
+	}
+	unknown := "TestParseAnalysisComponents_Errors.unknown"
+	inputs := []struct {
+		name string
+		data interface{}
+	}{
+		{name: "unknown name", data: unknown},
+		{name: "unknown name in slice", data: []interface{}{unknown}},
+		{name: "unknown type", data: map[string]interface{}{"type": unknown}},
+		{name: "named without type", data: map[string]interface{}{"named": map[string]interface{}{}}},
+	}
+	for _, p := range parsers {
+		for _, in := range inputs {
+			t.Run(p.name+"/"+in.name, func(t *testing.T) {
+				n, err := p.parse(in.data)
+				assert.Error(t, err)
+				assert.Zero(t, n)
+			})
+		}
+	}
+}
+
+func TestFormatTokenType(t *testing.T) {
+	tests := []struct {
+		typ  analysis.TokenType
+		want string
+	}{
+		{typ: analysis.AlphaNumeric, want: "AlphaNumeric"},
+		{typ: analysis.Ideographic, want: "Ideographic"},
+		{typ: analysis.Numeric, want: "Numeric"},
+		{typ: analysis.DateTime, want: "DateTime"},
+		{typ: analysis.Shingle, want: "Shingle"},
+		{typ: analysis.Single, want: "Single"},
+		{typ: analysis.Double, want: "Double"},
+		{typ: analysis.Boolean, want: "Boolean"},
+		{typ: analysis.TokenType(-1), want: "Unknown"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.want, func(t *testing.T) {
+			assert.Equal(t, tt.want, formatTokenType(tt.typ))
+		})
+	}
 }
