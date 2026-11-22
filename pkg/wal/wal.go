@@ -26,6 +26,7 @@ The other parts of this work are licensed under the [Apache license](./LICENSE).
 package wal
 
 import (
+	stderrors "errors"
 	"path"
 
 	"github.com/zedsearch/wal"
@@ -65,7 +66,8 @@ func Open(indexName string) (*Log, error) {
 	redoOpt.NoCopy = true
 	l.Redo, err = redo.Open(path.Join(config.Global.DataPath, indexName, "redo"), redoOpt)
 	if err != nil {
-		return nil, errors.New(errors.ErrorTypeRuntimeException, "open wal redo error").Cause(err)
+		// close the opened wal so its segment files are not left locked
+		return nil, errors.New(errors.ErrorTypeRuntimeException, "open wal redo error").Cause(stderrors.Join(err, l.log.Close()))
 	}
 
 	return l, nil

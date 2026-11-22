@@ -157,10 +157,13 @@ func TestOpenError(t *testing.T) {
 	})
 	t.Run("redo", func(t *testing.T) {
 		// the redo file is a directory
-		assert.NoError(t, os.MkdirAll(path.Join(config.Global.DataPath, "TestOpenError.redo", "redo"), 0o750))
+		dir := path.Join(config.Global.DataPath, "TestOpenError.redo")
+		assert.NoError(t, os.MkdirAll(path.Join(dir, "redo"), 0o750))
 		l, err := Open("TestOpenError.redo")
 		assert.Error(t, err)
 		assert.Nil(t, l)
+		// the wal must be closed on failure, or Windows cannot remove its files
+		assert.NoError(t, os.RemoveAll(dir))
 	})
 }
 

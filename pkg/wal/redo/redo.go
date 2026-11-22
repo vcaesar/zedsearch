@@ -79,7 +79,7 @@ func Open(name string, opt *Options) (*Log, error) {
 
 	data, err := io.ReadAll(f)
 	if err != nil {
-		return nil, err
+		return nil, errors.Join(err, f.Close())
 	}
 
 	n := 0
