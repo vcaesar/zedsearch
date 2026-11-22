@@ -16,14 +16,15 @@
 
 # ZedSearch
 
-ZedSearch — это поисковый движок с полнотекстовой индексацией. Это легковесная альтернатива Elasticsearch, которой требуется лишь малая доля ресурсов. В качестве базовой библиотеки индексации используется [bluge](https://github.com/blugelabs/bluge) (через форк [vcaesar/riot](https://github.com/vcaesar/riot)).
+ZedSearch — это поисковый движок с полнотекстовой и векторной индексацией, а также облачная (cloud-native) платформа наблюдаемости для логов, метрик, трассировок, аналитики, мониторинга и ИИ.
+Это легковесная альтернатива Elasticsearch, OpenSearch, Datadog и Splunk, которой требуется лишь малая доля ресурсов.
+В качестве базовой библиотеки индексации используется [vcaesar/riot](https://github.com/vcaesar/riot).
 
-В отличие от Elasticsearch, где нужно разобраться и настроить пару десятков параметров, ZedSearch очень прост в эксплуатации. Его можно запустить за 2 минуты.
+В отличие от Elasticsearch, где нужно разобраться и настроить пару десятков параметров, ZedSearch очень прост в эксплуатации. Его можно запустить за 1 минуту.
 
 Он является прямой заменой Elasticsearch, если вы только загружаете данные через API и ищете с помощью Kibana (Kibana не поддерживается ZedSearch. ZedSearch предоставляет собственный интерфейс).
 
-Посмотрите видео ниже, чтобы увидеть краткую демонстрацию ZedSearch.
-
+<!-- Посмотрите видео ниже, чтобы увидеть краткую демонстрацию ZedSearch. -->
 <!-- [![Zed Youtube](../screenshots/zed-youtube.jpg)](https://www.youtube.com/watch?v=aZXtuVjt1ow) -->
 
 ## Homebrew
@@ -51,9 +52,62 @@ docker run -d --name zedsearch \
 
 Именованный том `zedsearch-data` доступен для записи пользователю контейнера (uid 10001); чтобы использовать каталог хоста, выполните `mkdir -p ./data && sudo chown 10001:10001 ./data` и смонтируйте `-v "$PWD/data:/data"`.
 
+## Кластер
+
+Узлы используют общий etcd и распределяют владение индексами между собой, с репликами и переключением при отказе; любой узел обслуживает любой запрос. Каждому узлу нужен уникальный `ZED_CLUSTER_NODE_ID`, доступный другим узлам `ZED_CLUSTER_ADVERTISE_ADDR` и одинаковый `ZED_CLUSTER_SECRET`. Модель, настройки и ограничения описаны в [pkg/cluster](../pkg/cluster/README.md).
+
+### Docker
+
+```sh
+# Use your own admin password and a fresh cluster secret for every deployment.
+ZED_PASSWORD='your_password_zed#123'
+ZED_SECRET="$(openssl rand -hex 32)"
+
+docker network create zed
+docker run -d --name zed-etcd --network zed --restart unless-stopped \
+    -v zed-etcd-data:/etcd-data quay.io/coreos/etcd:v3.7.3 etcd \
+    --listen-client-urls http://0.0.0.0:2379 --advertise-client-urls http://zed-etcd:2379 \
+    --data-dir /etcd-data
+
+# Node to node traffic, with the secret, is plain HTTP on the private network "zed",
+# so ports are published on localhost only. Across hosts, advertise https:// addresses
+# or use an encrypted network. --restart retries a node that started before etcd.
+for i in 1 2 3; do
+  docker run -d --name zed$i --network zed -p 127.0.0.1:408$i:4080 --restart unless-stopped \
+    -v zed$i-data:/data -e ZED_DATA_PATH=/data \
+    -e ZED_FIRST_ADMIN_USER="admin" -e ZED_FIRST_ADMIN_PASSWORD="$ZED_PASSWORD" \
+    -e ZED_CLUSTER_ENABLE=true -e ZED_CLUSTER_NAME=prod -e ZED_CLUSTER_NODE_ID=node-$i \
+    -e ZED_CLUSTER_ADVERTISE_ADDR=http://zed$i:4080 -e ZED_CLUSTER_SECRET="$ZED_SECRET" \
+    -e ZED_ETCD_ENDPOINTS=http://zed-etcd:2379 \
+    riotgo/zedsearch:latest
+done
+
+curl --retry 10 --retry-connrefused -u admin:"$ZED_PASSWORD" http://localhost:4081/api/cluster/nodes
+
+# Back up the shared metadata in zed-etcd-data; restore a snapshot into a new
+# volume with `etcdutl snapshot restore` before starting zed-etcd on it.
+docker exec zed-etcd etcdctl snapshot save /etcd-data/snapshot.db
+docker cp zed-etcd:/etcd-data/snapshot.db ./etcd-snapshot.db
+```
+
+### Kubernetes
+
+[k8s/cluster.yaml](../k8s/cluster.yaml) запускает StatefulSet `zedsearch-cluster` из трёх узлов за Service `zedsearch` и etcd из одного узла (в продакшене запускайте три участника):
+
+```sh
+kubectl create namespace zedsearch
+kubectl -n zedsearch create secret generic zedsearch-admin \
+    --from-literal=ZED_FIRST_ADMIN_USER=admin --from-literal=ZED_FIRST_ADMIN_PASSWORD='your_password_zed#123'
+kubectl -n zedsearch create secret generic zedsearch-cluster \
+    --from-literal=ZED_CLUSTER_SECRET="$(openssl rand -hex 32)"
+kubectl apply -f k8s/cluster.yaml
+kubectl -n zedsearch port-forward svc/zedsearch 4080:4080
+```
+
 # Почему ZedSearch
 
-Хотя Elasticsearch — очень хороший продукт, он сложен, требует много ресурсов и существует уже более десяти лет. Я создал ZedSearch, чтобы людям было проще пользоваться полнотекстовой поисковой индексацией без лишней работы.
+Хотя Elasticsearch — очень хороший продукт, он сложен, требует много ресурсов, существует уже более десяти лет и потребляет много памяти и прочего.
+Я создал ZedSearch, чтобы полнотекстовую и векторную поисковую индексацию, наблюдаемость и анализ данных было проще использовать без лишних усилий.
 
 # Возможности:
 

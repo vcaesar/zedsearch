@@ -16,14 +16,15 @@
 
 # ZedSearch
 
-ZedSearch는 전문(full text) 색인을 수행하는 검색 엔진입니다. Elasticsearch의 경량 대안으로, 아주 적은 리소스로 실행됩니다. 기본 색인 라이브러리로 [bluge](https://github.com/blugelabs/bluge)([vcaesar/riot](https://github.com/vcaesar/riot) 포크를 통해)를 사용합니다.
+ZedSearch는 전문(full text) 색인과 벡터 색인을 수행하는 검색 엔진이자, 로그, 메트릭, 트레이스, 분석, 모니터링, AI를 위한 클라우드 네이티브 관측성(observability) 플랫폼입니다.
+Elasticsearch, OpenSearch, Datadog, Splunk의 경량 대안으로, 아주 적은 리소스로 실행됩니다.
+기본 색인 라이브러리로 [vcaesar/riot](https://github.com/vcaesar/riot)를 사용합니다.
 
-이해하고 조정해야 할 수십 개의 설정이 필요한 Elasticsearch와 달리 매우 간단하고 운영하기 쉽습니다. ZedSearch는 2분 안에 설치하고 실행할 수 있습니다.
+이해하고 조정해야 할 수십 개의 설정이 필요한 Elasticsearch와 달리 매우 간단하고 운영하기 쉽습니다. ZedSearch는 1분 안에 설치하고 실행할 수 있습니다.
 
 API로 데이터를 수집하고 Kibana로 검색하기만 한다면 Elasticsearch를 그대로 대체할 수 있습니다(ZedSearch는 Kibana를 지원하지 않습니다. ZedSearch는 자체 UI를 제공합니다).
 
-ZedSearch의 간단한 데모는 아래 동영상을 확인하세요.
-
+<!-- ZedSearch의 간단한 데모는 아래 동영상을 확인하세요. -->
 <!-- [![Zed Youtube](../screenshots/zed-youtube.jpg)](https://www.youtube.com/watch?v=aZXtuVjt1ow) -->
 
 ## Homebrew
@@ -51,9 +52,62 @@ docker run -d --name zedsearch \
 
 이름 있는 볼륨 `zedsearch-data`는 컨테이너 사용자(uid 10001)가 쓸 수 있습니다. 호스트 디렉터리를 쓰려면 `mkdir -p ./data && sudo chown 10001:10001 ./data`를 실행한 뒤 `-v "$PWD/data:/data"`로 마운트하세요.
 
+## 클러스터
+
+노드들은 etcd를 공유하고 인덱스 소유권을 서로 나누며, 복제본과 장애 조치를 지원합니다. 어떤 노드든 모든 요청을 처리할 수 있습니다. 각 노드에는 고유한 `ZED_CLUSTER_NODE_ID`, 다른 노드가 접근할 수 있는 `ZED_CLUSTER_ADVERTISE_ADDR`, 그리고 동일한 `ZED_CLUSTER_SECRET`가 필요합니다. 모델, 설정 및 제한 사항은 [pkg/cluster](../pkg/cluster/README.md)를 참고하세요.
+
+### Docker
+
+```sh
+# Use your own admin password and a fresh cluster secret for every deployment.
+ZED_PASSWORD='your_password_zed#123'
+ZED_SECRET="$(openssl rand -hex 32)"
+
+docker network create zed
+docker run -d --name zed-etcd --network zed --restart unless-stopped \
+    -v zed-etcd-data:/etcd-data quay.io/coreos/etcd:v3.7.3 etcd \
+    --listen-client-urls http://0.0.0.0:2379 --advertise-client-urls http://zed-etcd:2379 \
+    --data-dir /etcd-data
+
+# Node to node traffic, with the secret, is plain HTTP on the private network "zed",
+# so ports are published on localhost only. Across hosts, advertise https:// addresses
+# or use an encrypted network. --restart retries a node that started before etcd.
+for i in 1 2 3; do
+  docker run -d --name zed$i --network zed -p 127.0.0.1:408$i:4080 --restart unless-stopped \
+    -v zed$i-data:/data -e ZED_DATA_PATH=/data \
+    -e ZED_FIRST_ADMIN_USER="admin" -e ZED_FIRST_ADMIN_PASSWORD="$ZED_PASSWORD" \
+    -e ZED_CLUSTER_ENABLE=true -e ZED_CLUSTER_NAME=prod -e ZED_CLUSTER_NODE_ID=node-$i \
+    -e ZED_CLUSTER_ADVERTISE_ADDR=http://zed$i:4080 -e ZED_CLUSTER_SECRET="$ZED_SECRET" \
+    -e ZED_ETCD_ENDPOINTS=http://zed-etcd:2379 \
+    riotgo/zedsearch:latest
+done
+
+curl --retry 10 --retry-connrefused -u admin:"$ZED_PASSWORD" http://localhost:4081/api/cluster/nodes
+
+# Back up the shared metadata in zed-etcd-data; restore a snapshot into a new
+# volume with `etcdutl snapshot restore` before starting zed-etcd on it.
+docker exec zed-etcd etcdctl snapshot save /etcd-data/snapshot.db
+docker cp zed-etcd:/etcd-data/snapshot.db ./etcd-snapshot.db
+```
+
+### Kubernetes
+
+[k8s/cluster.yaml](../k8s/cluster.yaml)는 Service `zedsearch` 뒤에서 3노드 StatefulSet `zedsearch-cluster`를 단일 노드 etcd와 함께 실행합니다(프로덕션에서는 멤버 3개를 실행하세요):
+
+```sh
+kubectl create namespace zedsearch
+kubectl -n zedsearch create secret generic zedsearch-admin \
+    --from-literal=ZED_FIRST_ADMIN_USER=admin --from-literal=ZED_FIRST_ADMIN_PASSWORD='your_password_zed#123'
+kubectl -n zedsearch create secret generic zedsearch-cluster \
+    --from-literal=ZED_CLUSTER_SECRET="$(openssl rand -hex 32)"
+kubectl apply -f k8s/cluster.yaml
+kubectl -n zedsearch port-forward svc/zedsearch 4080:4080
+```
+
 # 왜 ZedSearch인가
 
-Elasticsearch는 매우 좋은 제품이지만 복잡하고 많은 리소스가 필요하며 10년도 더 된 제품입니다. 저는 사람들이 많은 작업 없이도 전문 검색 색인을 더 쉽게 사용할 수 있도록 ZedSearch를 만들었습니다.
+Elasticsearch는 매우 좋은 제품이지만, 복잡하고 많은 리소스를 필요로 하며 10년이 넘은 제품이고, 메모리 등 자원을 많이 사용합니다.
+ZedSearch는 많은 작업 없이도 누구나 전문 및 벡터 검색 색인, 관측성(observability), 데이터 분석을 더 쉽게 사용할 수 있도록 만들었습니다.
 
 # 기능:
 

@@ -16,14 +16,15 @@
 
 # ZedSearch
 
-ZedSearch 是一個進行全文索引的搜尋引擎。它是 Elasticsearch 的輕量級替代方案，只需一小部分資源即可執行。它使用 [bluge](https://github.com/blugelabs/bluge)（透過 [vcaesar/riot](https://github.com/vcaesar/riot) 分支）作為底層索引函式庫。
+ZedSearch 是一個進行全文索引與向量索引的搜尋引擎，也是一個面向可觀測性的雲原生平台，涵蓋日誌、指標、鏈路追蹤、分析、監控與 AI。
+它是 Elasticsearch、OpenSearch、Datadog、Splunk 的輕量級替代方案，只需一小部分資源即可執行。
+它使用 [vcaesar/riot](https://github.com/vcaesar/riot) 作為底層索引函式庫。
 
-相較於需要理解與調整數十個參數的 Elasticsearch，它非常簡單且容易維運。你可以在 2 分鐘內啟動並執行 ZedSearch。
+相較於需要理解與調整數十個參數的 Elasticsearch，它非常簡單且容易維運。你可以在 1 分鐘內啟動並執行 ZedSearch。
 
 如果你只是透過 API 寫入資料並使用 Kibana 進行搜尋，它可以直接取代 Elasticsearch（ZedSearch 不支援 Kibana，ZedSearch 提供自己的 UI）。
 
-觀看下方影片，快速了解 ZedSearch 的展示。
-
+<!-- 觀看下方影片，快速了解 ZedSearch 的展示。 -->
 <!-- [![Zed Youtube](../screenshots/zed-youtube.jpg)](https://www.youtube.com/watch?v=aZXtuVjt1ow) -->
 
 ## Homebrew
@@ -51,9 +52,62 @@ docker run -d --name zedsearch \
 
 具名磁碟區 `zedsearch-data` 可由容器使用者（uid 10001）寫入；若要改用主機目錄，請先執行 `mkdir -p ./data && sudo chown 10001:10001 ./data`，再掛載 `-v "$PWD/data:/data"`。
 
+## 叢集
+
+各節點共用一個 etcd，並在彼此之間分配索引的擁有權，支援副本與容錯移轉；任一節點都可處理任一請求。每個節點需要唯一的 `ZED_CLUSTER_NODE_ID`、其他節點可存取的 `ZED_CLUSTER_ADVERTISE_ADDR`，以及相同的 `ZED_CLUSTER_SECRET`。模型、設定與限制詳見 [pkg/cluster](../pkg/cluster/README.md)。
+
+### Docker
+
+```sh
+# Use your own admin password and a fresh cluster secret for every deployment.
+ZED_PASSWORD='your_password_zed#123'
+ZED_SECRET="$(openssl rand -hex 32)"
+
+docker network create zed
+docker run -d --name zed-etcd --network zed --restart unless-stopped \
+    -v zed-etcd-data:/etcd-data quay.io/coreos/etcd:v3.7.3 etcd \
+    --listen-client-urls http://0.0.0.0:2379 --advertise-client-urls http://zed-etcd:2379 \
+    --data-dir /etcd-data
+
+# Node to node traffic, with the secret, is plain HTTP on the private network "zed",
+# so ports are published on localhost only. Across hosts, advertise https:// addresses
+# or use an encrypted network. --restart retries a node that started before etcd.
+for i in 1 2 3; do
+  docker run -d --name zed$i --network zed -p 127.0.0.1:408$i:4080 --restart unless-stopped \
+    -v zed$i-data:/data -e ZED_DATA_PATH=/data \
+    -e ZED_FIRST_ADMIN_USER="admin" -e ZED_FIRST_ADMIN_PASSWORD="$ZED_PASSWORD" \
+    -e ZED_CLUSTER_ENABLE=true -e ZED_CLUSTER_NAME=prod -e ZED_CLUSTER_NODE_ID=node-$i \
+    -e ZED_CLUSTER_ADVERTISE_ADDR=http://zed$i:4080 -e ZED_CLUSTER_SECRET="$ZED_SECRET" \
+    -e ZED_ETCD_ENDPOINTS=http://zed-etcd:2379 \
+    riotgo/zedsearch:latest
+done
+
+curl --retry 10 --retry-connrefused -u admin:"$ZED_PASSWORD" http://localhost:4081/api/cluster/nodes
+
+# Back up the shared metadata in zed-etcd-data; restore a snapshot into a new
+# volume with `etcdutl snapshot restore` before starting zed-etcd on it.
+docker exec zed-etcd etcdctl snapshot save /etcd-data/snapshot.db
+docker cp zed-etcd:/etcd-data/snapshot.db ./etcd-snapshot.db
+```
+
+### Kubernetes
+
+[k8s/cluster.yaml](../k8s/cluster.yaml) 在 Service `zedsearch` 之後執行一個三節點 StatefulSet `zedsearch-cluster`，並附帶單節點 etcd（正式環境請執行三個成員）：
+
+```sh
+kubectl create namespace zedsearch
+kubectl -n zedsearch create secret generic zedsearch-admin \
+    --from-literal=ZED_FIRST_ADMIN_USER=admin --from-literal=ZED_FIRST_ADMIN_PASSWORD='your_password_zed#123'
+kubectl -n zedsearch create secret generic zedsearch-cluster \
+    --from-literal=ZED_CLUSTER_SECRET="$(openssl rand -hex 32)"
+kubectl apply -f k8s/cluster.yaml
+kubectl -n zedsearch port-forward svc/zedsearch 4080:4080
+```
+
 # 為什麼選擇 ZedSearch
 
-雖然 Elasticsearch 是一款非常優秀的產品，但它複雜、需要大量資源，而且已有十多年歷史。我打造 ZedSearch 是為了讓大家不必做大量工作就能更輕鬆地使用全文搜尋索引。
+雖然 Elasticsearch 是一款非常優秀的產品，但它複雜、需要大量資源，已有十多年歷史，並且佔用大量記憶體等資源。
+我打造 ZedSearch 是為了讓大家無需做大量工作就能更輕鬆地使用全文與向量搜尋索引、可觀測性與資料分析。
 
 # 功能：
 

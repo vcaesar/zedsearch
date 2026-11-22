@@ -1,0 +1,206 @@
+# Three-node ZedSearch cluster (pkg/cluster) with a single-node etcd.
+# Create the Secrets first, see admin-secret.yaml and:
+#
+#   kubectl -n zedsearch create secret generic zedsearch-cluster \
+#     --from-literal=ZED_CLUSTER_SECRET='...'
+#
+# Run three etcd members for production.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: zedsearch
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: etcd
+  namespace: zedsearch
+spec:
+  selector:
+    app: etcd
+  ports:
+  - name: client
+    port: 2379
+    targetPort: client
+
+---
+
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: etcd
+  namespace: zedsearch
+spec:
+  serviceName: etcd
+  replicas: 1
+  selector:
+    matchLabels:
+      app: etcd
+  template:
+    metadata:
+      labels:
+        app: etcd
+    spec:
+      containers:
+        - name: etcd
+          image: quay.io/coreos/etcd:v3.7.3
+          command:
+            - etcd
+            - --data-dir=/etcd-data
+            - --listen-client-urls=http://0.0.0.0:2379
+            - --advertise-client-urls=http://etcd.zedsearch.svc:2379
+          ports:
+            - containerPort: 2379
+              name: client
+          volumeMounts:
+          - name: etcd-data
+            mountPath: /etcd-data
+  volumeClaimTemplates:
+  - metadata:
+      name: etcd-data
+    spec:
+      accessModes:
+        - ReadWriteOnce
+      resources:
+        requests:
+          storage: 1Gi
+
+---
+
+# Headless: every pod gets <pod>.zedsearch-cluster.zedsearch.svc, published
+# before it is ready so nodes can reach each other while joining.
+apiVersion: v1
+kind: Service
+metadata:
+  name: zedsearch-cluster
+  namespace: zedsearch
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: zedsearch-cluster
+  ports:
+  - name: http
+    port: 4080
+    targetPort: http
+
+---
+
+# Client entry point, any node routes a request to the index owner.
+apiVersion: v1
+kind: Service
+metadata:
+  name: zedsearch
+  namespace: zedsearch
+spec:
+  selector:
+    app: zedsearch-cluster
+  ports:
+  - name: http
+    port: 4080
+    targetPort: http
+
+---
+
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: zedsearch-cluster
+  namespace: zedsearch
+spec:
+  serviceName: zedsearch-cluster
+  replicas: 3
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: zedsearch-cluster
+  template:
+    metadata:
+      labels:
+        app: zedsearch-cluster
+    spec:
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: zedsearch
+          image: riotgo/zedsearch:latest
+          envFrom:
+            - secretRef:
+                name: zedsearch-admin
+            - secretRef:
+                name: zedsearch-cluster
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: ZED_DATA_PATH
+              value: /data
+            - name: ZED_CLUSTER_ENABLE
+              value: "true"
+            - name: ZED_CLUSTER_NAME
+              value: prod
+            - name: ZED_CLUSTER_NODE_ID
+              value: $(POD_NAME)
+            - name: ZED_CLUSTER_ADVERTISE_ADDR
+              value: http://$(POD_NAME).zedsearch-cluster.zedsearch.svc:4080
+            - name: ZED_ETCD_ENDPOINTS
+              value: http://etcd.zedsearch.svc:2379
+          imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            limits:
+              cpu: 1024m
+              memory: 2048Mi
+            requests:
+              cpu: 32m
+              memory: 50Mi
+          ports:
+            - containerPort: 4080
+              name: http
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 20
+            failureThreshold: 3
+          volumeMounts:
+          - name: data
+            mountPath: /data
+          - name: tmp
+            mountPath: /tmp
+      volumes:
+      - name: tmp
+        emptyDir: {}
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes:
+        - ReadWriteOnce
+      resources:
+        requests:
+          storage: 10Gi
