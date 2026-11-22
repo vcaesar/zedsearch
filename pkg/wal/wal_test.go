@@ -109,6 +109,30 @@ func TestWriteBatch(t *testing.T) {
 	assert.Error(t, l.WriteBatch([][]byte{[]byte("closed")}))
 }
 
+func TestWriteBatchSpansSegments(t *testing.T) {
+	dataPath := config.Global.DataPath
+	config.Global.DataPath = t.TempDir()
+	defer func() { config.Global.DataPath = dataPath }()
+
+	l, err := Open("TestWriteBatchSpansSegments")
+	assert.NoError(t, err)
+	defer func() { assert.NoError(t, l.Close()) }()
+
+	big := make([]byte, 9<<20) // two entries exceed the 16 MB segment size
+	assert.NoError(t, l.WriteBatch([][]byte{big, big, []byte("tail")}))
+
+	segments, err := os.ReadDir(path.Join(config.Global.DataPath, "TestWriteBatchSpansSegments", "wal"))
+	assert.NoError(t, err)
+	assert.Greater(t, len(segments), 1)
+
+	last, err := l.LastIndex()
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(3), last)
+	data, err := l.Read(3)
+	assert.NoError(t, err)
+	assert.Equal(t, "tail", string(data))
+}
+
 func BenchmarkWAL(b *testing.B) {
 	var err error
 	b.ResetTimer()

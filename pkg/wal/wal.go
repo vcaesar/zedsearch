@@ -91,7 +91,9 @@ func (l *Log) Write(data []byte) error {
 	return l.log.Write(0, data)
 }
 
-// WriteBatch appends entries in order with one write to the log file.
+// WriteBatch appends entries in order with sequential indexes.
+// A batch may span segments; on error, a prefix of the batch may already
+// be written and is not rolled back.
 func (l *Log) WriteBatch(entries [][]byte) error {
 	batch := new(wal.Batch)
 	for _, data := range entries {
