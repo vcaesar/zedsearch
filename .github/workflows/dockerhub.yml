@@ -50,13 +50,16 @@ jobs:
             exit 1
           fi
           tags="${IMAGE}:${version}"
+          latest=false
           newest="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/v" --jq '.[].ref' \
             | sed 's|^refs/tags/||' | { grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; } | sort -V | tail -n 1)"
           if [ "$newest" = "v${version}" ]; then
             tags="${tags},${IMAGE}:latest"
+            latest=true
           fi
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "tags=${tags}" >> "$GITHUB_OUTPUT"
+          echo "latest=${latest}" >> "$GITHUB_OUTPUT"
           echo "Publishing ${tags} (newest stable tag: ${newest:-none})"
       - uses: actions/checkout@v7
         with:
@@ -78,3 +81,29 @@ jobs:
           tags: ${{ steps.version.outputs.tags }}
           build-args: |
             VERSION=${{ steps.version.outputs.version }}
+      # The overview follows latest, so an older release never replaces a newer README.
+      # Relative URLs are pinned to the release tag here: the action's URL completion
+      # uses GITHUB_REF_NAME, which is the default branch under workflow_run.
+      # Images (markdown and HTML src) go to raw/, links to blob/.
+      - name: Prepare Docker Hub overview
+        if: steps.version.outputs.latest == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          base="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
+          sed -i -E \
+            -e "s#src=\"(\./)?([^\":\#][^\":]*)\"#src=\"${base}/raw/v${VERSION}/\2\"#g" \
+            -e "s#(!\[[^]]*\]\()(\./)?([^):\#][^):]*)\)#\1${base}/raw/v${VERSION}/\3)#g" \
+            -e "s#(\]\()(\./)?([^):\#][^):]*)\)#\1${base}/blob/v${VERSION}/\3)#g" \
+            README.md
+      - name: Update Docker Hub overview
+        if: steps.version.outputs.latest == 'true'
+        uses: peter-evans/dockerhub-description@v5
+        with:
+          # Needs a token with read/write/delete scope.
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ env.IMAGE }}
+          short-description: ${{ github.event.repository.description }}
+          readme-filepath: ./README.md
+          enable-url-completion: false
