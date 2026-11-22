@@ -387,3 +387,54 @@ func TestEngineClose(t *testing.T) {
 		t.Fatal("Serve did not return after Close")
 	}
 }
+
+func TestEngineDelete(t *testing.T) {
+	e := New()
+	e.DELETE("/doc/:id", func(c Context) { c.Data(http.StatusOK, "text/plain", []byte(c.Param("id"))) })
+	w := do(e, http.MethodDelete, "/doc/9", nil)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "9", w.Body.String())
+	assert.Equal(t, http.StatusNotFound, do(e, http.MethodGet, "/doc/9", nil).Code)
+}
+
+func TestEngineParamsAndQuery(t *testing.T) {
+	e := New()
+	e.GET("/p/:id", func(c Context) {
+		c.SetParam("extra", "x") // not a route param: appended
+		c.JSON(http.StatusOK, H{
+			"id":      c.Param("id"),
+			"missing": c.Param("missing"),
+			"extra":   c.Param("extra"),
+			"q":       c.DefaultQuery("q", "dflt"),
+			"empty":   c.DefaultQuery("empty", "dflt"),
+		})
+	})
+	w := do(e, http.MethodGet, "/p/1?q=set&empty=", nil)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.JSONEq(t, `{"id":"1","missing":"","extra":"x","q":"set","empty":""}`, w.Body.String())
+}
+
+type ctxKey struct{}
+
+func TestEngineSetContext(t *testing.T) {
+	e := New()
+	e.Use(func(c Context) { c.SetContext(context.WithValue(c.Context(), ctxKey{}, "v")) })
+	e.GET("/ctx", func(c Context) {
+		v, _ := c.Context().Value(ctxKey{}).(string)
+		c.Data(http.StatusOK, "text/plain", []byte(v))
+	})
+	assert.Equal(t, "v", do(e, http.MethodGet, "/ctx", nil).Body.String())
+}
+
+func TestEngineJSONError(t *testing.T) {
+	e := New()
+	e.GET("/json", func(c Context) { c.JSON(http.StatusOK, H{"ch": make(chan int)}) })
+	e.GET("/indented", func(c Context) { c.IndentedJSON(http.StatusOK, H{"ch": make(chan int)}) })
+	for _, target := range []string{"/json", "/indented"} {
+		t.Run(target, func(t *testing.T) {
+			w := do(e, http.MethodGet, target, nil)
+			assert.Equal(t, http.StatusInternalServerError, w.Code)
+			assert.Empty(t, w.Body.String())
+		})
+	}
+}
