@@ -65,21 +65,21 @@ func UpgradeFromV026T027(index *meta.Index) error {
 	}
 
 	// mv index index_old
-	err := os.Rename(
+	err := rename(
 		path.Join(rootPath, indexName),
 		path.Join(rootPath, indexName+"_old"),
 	)
 	if err != nil {
 		return err
 	}
-	if err := os.Mkdir(path.Join(rootPath, indexName), 0o755); err != nil {
+	if err := mkdir(path.Join(rootPath, indexName), 0o755); err != nil {
 		return err
 	}
 
 	// make new shards
 	shardNames := make([]string, 0, index.ShardNum)
 	for id := range index.Shards {
-		if err := os.Mkdir(path.Join(rootPath, indexName, id), 0o755); err != nil {
+		if err := mkdir(path.Join(rootPath, indexName, id), 0o755); err != nil {
 			return err
 		}
 		shardNames = append(shardNames, id)
@@ -90,13 +90,13 @@ func UpgradeFromV026T027(index *meta.Index) error {
 	firstShardName := shardNames[0]
 
 	// update old shards to new shards
-	fs, err := os.ReadDir(path.Join(rootPath, indexName+"_old"))
+	fs, err := readDir(path.Join(rootPath, indexName+"_old"))
 	if err != nil {
 		return err
 	}
 	first := index.Shards[firstShardName]
 	for _, f := range fs {
-		err := os.Rename(
+		err := rename(
 			path.Join(rootPath, indexName+"_old", f.Name()),
 			path.Join(rootPath, indexName, firstShardName, f.Name()),
 		)

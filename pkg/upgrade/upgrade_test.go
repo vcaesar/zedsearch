@@ -16,6 +16,7 @@
 package upgrade
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
@@ -365,4 +366,75 @@ func TestUpgradeMetadataFromV026T027(t *testing.T) {
 		_, err := UpgradeMetadataFromV026T027(nil)
 		assert.Error(t, err)
 	})
+}
+
+var errInjected = errors.New("injected")
+
+// failRename makes the nth rename from now fail.
+func failRename(t *testing.T, nth int) {
+	t.Helper()
+	old := rename
+	calls := 0
+	rename = func(from, to string) error {
+		if calls++; calls == nth {
+			return errInjected
+		}
+		return old(from, to)
+	}
+	t.Cleanup(func() { rename = old })
+}
+
+// failMkdir makes the nth mkdir from now fail.
+func failMkdir(t *testing.T, nth int) {
+	t.Helper()
+	old := mkdir
+	calls := 0
+	mkdir = func(name string, perm os.FileMode) error {
+		if calls++; calls == nth {
+			return errInjected
+		}
+		return old(name, perm)
+	}
+	t.Cleanup(func() { mkdir = old })
+}
+
+func failReadDir(t *testing.T) {
+	t.Helper()
+	old := readDir
+	readDir = func(string) ([]os.DirEntry, error) { return nil, errInjected }
+	t.Cleanup(func() { readDir = old })
+}
+
+func TestUpgradeStepErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		inject  func(t *testing.T)
+		upgrade func(*meta.Index) error
+		shards  map[string]*meta.IndexShard
+		want    error
+	}{
+		{"v0.2.4 mkdir index", func(t *testing.T) { failMkdir(t, 1) }, UpgradeFromV024T025, nil, errInjected},
+		{"v0.2.4 move into 000000", func(t *testing.T) { failRename(t, 2) }, UpgradeFromV024T025, nil, errInjected},
+		{"v0.2.6 mkdir index", func(t *testing.T) { failMkdir(t, 1) }, UpgradeFromV026T027, nil, errInjected},
+		{"v0.2.6 read old index", failReadDir, UpgradeFromV026T027, nil, errInjected},
+		{"v0.2.6 move into first shard", func(t *testing.T) { failRename(t, 2) }, UpgradeFromV026T027, nil, errInjected},
+		{
+			"v0.2.6 mkdir shard", func(*testing.T) {}, UpgradeFromV026T027,
+			// the parent of the shard directory does not exist
+			map[string]*meta.IndexShard{"missing/a": {ID: "missing/a", ShardNum: 1}}, os.ErrNotExist,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := withDataPath(t)
+			withShardNum(t, 1)
+			name := "TestUpgradeStepErrors"
+			// not upgraded by either step yet
+			writeFile(t, "s0", root, name, "seg")
+			tt.inject(t)
+
+			err := tt.upgrade(&meta.Index{Name: name, ShardNum: int64(len(tt.shards)), Shards: tt.shards})
+			assert.ErrorIs(t, err, tt.want)
+		})
+	}
 }

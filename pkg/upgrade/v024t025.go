@@ -16,7 +16,6 @@
 package upgrade
 
 import (
-	"os"
 	"path"
 
 	"github.com/vcaesar/zedsearch/pkg/config"
@@ -38,13 +37,13 @@ func UpgradeFromV024T025(index *meta.Index) error {
 	if ok, _ := zutils.IsExist(path.Join(rootPath, indexName, "000000")); ok {
 		return nil // if index already upgraded, skip
 	}
-	if err := os.Rename(path.Join(rootPath, indexName), path.Join(rootPath, indexName+"_old")); err != nil {
+	if err := rename(path.Join(rootPath, indexName), path.Join(rootPath, indexName+"_old")); err != nil {
 		return err
 	}
-	if err := os.Mkdir(path.Join(rootPath, indexName), 0o755); err != nil {
+	if err := mkdir(path.Join(rootPath, indexName), 0o755); err != nil {
 		return err
 	}
-	if err := os.Rename(path.Join(rootPath, indexName+"_old"), path.Join(rootPath, indexName, "000000")); err != nil {
+	if err := rename(path.Join(rootPath, indexName+"_old"), path.Join(rootPath, indexName, "000000")); err != nil {
 		return err
 	}
 	return nil
