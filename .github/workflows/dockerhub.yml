@@ -82,13 +82,20 @@ jobs:
           build-args: |
             VERSION=${{ steps.version.outputs.version }}
       # The overview follows latest, so an older release never replaces a newer README.
-      # URL completion only rewrites markdown links, so the HTML logo is made absolute here.
+      # Relative URLs are pinned to the release tag here: the action's URL completion
+      # uses GITHUB_REF_NAME, which is the default branch under workflow_run.
+      # Images (markdown and HTML src) go to raw/, links to blob/.
       - name: Prepare Docker Hub overview
         if: steps.version.outputs.latest == 'true'
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          sed -i "s|src=\"\./|src=\"${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/raw/v${VERSION}/|g" README.md
+          base="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
+          sed -i -E \
+            -e "s#src=\"(\./)?([^\":\#][^\":]*)\"#src=\"${base}/raw/v${VERSION}/\2\"#g" \
+            -e "s#(!\[[^]]*\]\()(\./)?([^):\#][^):]*)\)#\1${base}/raw/v${VERSION}/\3)#g" \
+            -e "s#(\]\()(\./)?([^):\#][^):]*)\)#\1${base}/blob/v${VERSION}/\3)#g" \
+            README.md
       - name: Update Docker Hub overview
         if: steps.version.outputs.latest == 'true'
         uses: peter-evans/dockerhub-description@v5
@@ -99,4 +106,4 @@ jobs:
           repository: ${{ env.IMAGE }}
           short-description: ${{ github.event.repository.description }}
           readme-filepath: ./README.md
-          enable-url-completion: true
+          enable-url-completion: false
