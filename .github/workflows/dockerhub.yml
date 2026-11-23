@@ -12,7 +12,7 @@ on:
         description: "Release version without v (e.g. 1.2.3)"
         required: true
       overview_only:
-        description: "Only update the Docker Hub overview, skip the image build"
+        description: "Only update the Docker Hub overview from README.md, skip the image build (latest stable version only)"
         type: boolean
         default: false
 
@@ -45,6 +45,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           INPUT_VERSION: ${{ inputs.version }}
+          OVERVIEW_ONLY: ${{ inputs.overview_only }}
           RELEASE_TAG: ${{ github.event.workflow_run.head_branch }}
         run: |
           version="${INPUT_VERSION:-$RELEASE_TAG}"
@@ -60,6 +61,10 @@ jobs:
           if [ "$newest" = "v${version}" ]; then
             tags="${tags},${IMAGE}:latest"
             latest=true
+          fi
+          if [ "$OVERVIEW_ONLY" = "true" ] && [ "$latest" != "true" ]; then
+            echo "::error::overview_only needs the newest stable version (${newest:-none}), got ${version}" >&2
+            exit 1
           fi
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "tags=${tags}" >> "$GITHUB_OUTPUT"
