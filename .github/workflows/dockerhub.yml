@@ -11,6 +11,10 @@ on:
       version:
         description: "Release version without v (e.g. 1.2.3)"
         required: true
+      overview_only:
+        description: "Only update the Docker Hub overview, skip the image build"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -67,12 +71,16 @@ jobs:
           ref: refs/tags/v${{ steps.version.outputs.version }}
           persist-credentials: false
       - uses: docker/setup-qemu-action@v4
+        if: ${{ !inputs.overview_only }}
       - uses: docker/setup-buildx-action@v4
+        if: ${{ !inputs.overview_only }}
       - uses: docker/login-action@v4
+        if: ${{ !inputs.overview_only }}
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - uses: docker/build-push-action@v7
+        if: ${{ !inputs.overview_only }}
         with:
           context: .
           file: Dockerfile
@@ -100,10 +108,10 @@ jobs:
         if: steps.version.outputs.latest == 'true'
         uses: peter-evans/dockerhub-description@v5
         with:
-          # Needs a token with read/write/delete scope.
+          # Needs a token with Read, Write, Delete scope; push-only tokens get 403 Forbidden.
+          # The short description is left as set on Docker Hub: the GitHub one exceeds 100 bytes.
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: ${{ env.IMAGE }}
-          short-description: ${{ github.event.repository.description }}
           readme-filepath: ./README.md
           enable-url-completion: false
