@@ -119,6 +119,35 @@ func TestStartStopInstallsHooks(t *testing.T) {
 	Stop() // idempotent
 }
 
+// Once Stop began, a write or a recovery request starts no goroutine: its
+// wg.Add would race Stop's Wait. The flags it set are cleared again.
+func TestNothingSpawnsAfterStop(t *testing.T) {
+	name := "TestNothingSpawnsAfterStop.index_1"
+	newDiskIndex(t, name)
+	topo := newFakeTopology("node-a")
+	topo.set(name, "node-a", "node-b")
+	topo.set("replicated", "node-b", "node-a")
+	transport := &funcTransport{replicate: func(string, *Batch) (Ack, error) {
+		t.Error("nothing may be shipped after Stop")
+		return Ack{}, nil
+	}}
+	m := newManager(t, ModeDocument, topo, transport)
+	p, err := m.prepare(context.Background(), name)
+	require.NoError(t, err)
+	p.insync = []string{"node-b"}
+
+	m.spawnMu.Lock()
+	m.stopped = true
+	m.spawnMu.Unlock()
+	for range preshipOps {
+		m.record(name, "0", []byte(testEntry))
+	}
+	assert.False(t, p.preshipping)
+	m.startRecovery("replicated")
+	assert.False(t, m.replicaFor("replicated").isRecovering())
+	assert.False(t, m.spawn(func() { t.Error("ran after Stop") }))
+}
+
 // A local write to an index another node owns (a `_bulk` line served on
 // the wrong node) is refused instead of diverging from the owner.
 func TestMayWrite(t *testing.T) {
@@ -129,6 +158,64 @@ func TestMayWrite(t *testing.T) {
 	assert.Error(t, m.mayWrite("remote"))
 	assert.NoError(t, m.mayWrite("local"))
 	assert.NoError(t, m.mayWrite("unassigned"))
+}
+
+// The WAL consumer asks mayStore under its cycle lock. A tick dropping an
+// index waits for that lock while it holds the index list, which a holder
+// of m.mu reads: mayStore waiting for m.mu closes the cycle and stalls
+// every write of the node.
+func TestMayStoreDoesNotWaitForManager(t *testing.T) {
+	topo := newFakeTopology("node-b")
+	topo.set("replicated", "node-a", "node-b")
+	m := newManager(t, ModeDocument, topo, newLoopTransport())
+	m.replicaFor("replicated")
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	answers := make(chan bool, 2)
+	go func() {
+		answers <- m.mayStore("replicated")
+		answers <- m.mayStore("other")
+	}()
+	for _, want := range []bool{false, true} {
+		select {
+		case got := <-answers:
+			assert.Equal(t, want, got)
+		case <-time.After(5 * time.Second):
+			t.Fatal("mayStore waits for m.mu")
+		}
+	}
+}
+
+// The read checks look the replica up without m.mu, which a replicate
+// request holds while it loads a replica's state from disk.
+func TestReadChecksDoNotWaitForManager(t *testing.T) {
+	const name = "TestReadChecksDoNotWaitForManager.index_1"
+	newDiskIndex(t, name)
+	previous := inSync
+	inSync = func(string) bool { return true }
+	t.Cleanup(func() { inSync = previous })
+	topo := newFakeTopology("node-b")
+	topo.set(name, "node-a", "node-b")
+	m := newManager(t, ModeSegment, topo, newLoopTransport())
+	activate(t, m)
+	m.replicaFor(name).ready = true
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	answers := make(chan bool, 2)
+	go func() {
+		answers <- Ready(name)
+		answers <- Current(name)
+	}()
+	for range 2 {
+		select {
+		case got := <-answers:
+			assert.True(t, got)
+		case <-time.After(5 * time.Second):
+			t.Fatal("a read check waits for m.mu")
+		}
+	}
 }
 
 // A replica drops its copy of an index whose metadata the owner deleted,

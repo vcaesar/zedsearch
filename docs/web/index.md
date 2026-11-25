@@ -15,6 +15,7 @@ Elasticsearch is a very good product, but it is complex, needs lots of resources
 1. Native API under `/api` and an Elasticsearch-compatible API under `/es` for ingestion (single document and `_bulk`), Query DSL search, `_msearch`, `_count`, mappings, settings, aliases, index templates and ILM policies.
 1. SQL search (`/api/_sql`, `/es/_sql`).
 1. Aggregations and highlighting.
+1. [Learning to rank](../learning-to-rank.md): rerank the top hits with a linear, tree ensemble or XGBoost model at query time (`learning_to_rank` and `sltr` rescorers, `/es/_ml/trained_models`).
 1. Built-in authentication with users and roles.
 1. Index storage on local disk or object storage (S3/MinIO, Google Cloud Storage, Alibaba Cloud OSS), with hot/warm/cold data tiers.
 1. Metadata in bolt (default), badger or etcd.
@@ -28,5 +29,6 @@ Elasticsearch is a very good product, but it is complex, needs lots of resources
 - [Quickstart](quickstart.md)
 - [Installation](installation.md)
 - [Configuration and environment variables](environment-variables.md)
+- [Learning to rank](../learning-to-rank.md)
 - [Roadmap](roadmap.md)
 - API: [zedsearch-docs](https://github.com/zedsearch/zedsearch-docs)

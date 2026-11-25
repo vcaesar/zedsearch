@@ -34,6 +34,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/rs/zerolog/log"
@@ -70,6 +71,48 @@ type Batch struct {
 	From     uint64          `json:"from"`
 	Ops      []Op            `json:"ops"`
 	Mappings json.RawMessage `json:"mappings,omitempty"`
+}
+
+// encode returns b as JSON. The entries and mappings were encoded by this
+// node, so they are appended as they are: json.Marshal validates and
+// compacts every RawMessage again, a second pass over the whole batch.
+func (b *Batch) encode() ([]byte, error) {
+	index, err := json.Marshal(b.Index)
+	if err != nil {
+		return nil, err
+	}
+	term, err := json.Marshal(b.Term)
+	if err != nil {
+		return nil, err
+	}
+	size := 64 + len(index) + len(term) + len(b.Mappings)
+	for _, op := range b.Ops {
+		size += 48 + len(op.Shard) + len(op.Entry)
+	}
+	out := make([]byte, 0, size)
+	out = append(append(out, `{"index":`...), index...)
+	out = append(append(out, `,"term":`...), term...)
+	out = strconv.AppendUint(append(out, `,"from":`...), b.From, 10)
+	out = append(out, `,"ops":[`...)
+	var shard []byte // of the previous operation, a batch has few shards
+	for i, op := range b.Ops {
+		if i == 0 || op.Shard != b.Ops[i-1].Shard {
+			if shard, err = json.Marshal(op.Shard); err != nil {
+				return nil, err
+			}
+		}
+		if i > 0 {
+			out = append(out, ',')
+		}
+		out = strconv.AppendUint(append(out, `{"seq":`...), op.Seq, 10)
+		out = append(append(out, `,"shard":`...), shard...)
+		out = append(append(append(out, `,"entry":`...), op.Entry...), '}')
+	}
+	out = append(out, ']')
+	if len(b.Mappings) > 0 {
+		out = append(append(out, `,"mappings":`...), b.Mappings...)
+	}
+	return append(out, '}'), nil
 }
 
 // Ack is a replica's answer: the term it follows and its last operation.
@@ -154,7 +197,7 @@ func closeBody(resp *http.Response) {
 func (t *HTTPTransport) Replicate(ctx context.Context, node string, batch *Batch) (Ack, error) {
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
-	payload, err := json.Marshal(batch)
+	payload, err := batch.encode()
 	if err != nil {
 		return Ack{}, err
 	}

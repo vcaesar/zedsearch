@@ -321,6 +321,13 @@ func IsLocalOwner(indexName string) bool {
 	return n.membership.Live() && n.fence.IsLocalOwner(indexName)
 }
 
+// Live reports whether the local membership lease cannot have expired, so
+// this node may accept writes. It is always true with clustering disabled.
+func Live() bool {
+	n := get()
+	return n == nil || n.membership.Live()
+}
+
 // Replicas returns the nodes keeping a warm read replica of indexName,
 // empty when clustering is off or `zed_cluster_replicas` is 0.
 func Replicas(indexName string) []string {

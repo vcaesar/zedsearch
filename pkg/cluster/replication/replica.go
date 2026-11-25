@@ -91,7 +91,9 @@ func (m *manager) replicaFor(name string) *replica {
 		if st, ok := loadState(name, m.mode); ok {
 			r.term, r.seq, r.filesSeq, r.ready, r.saved = st.Term, st.Seq, st.FilesSeq, true, st
 		}
+		m.replicasMu.Lock()
 		m.replicas[name] = r
+		m.replicasMu.Unlock()
 	}
 	return r
 }
@@ -228,9 +230,7 @@ func (m *manager) startRecovery(name string) {
 	}
 	r.mu.Unlock()
 
-	m.wg.Add(1)
-	go func() {
-		defer m.wg.Done()
+	started := m.spawn(func() {
 		err := m.recover(name, r, have)
 		r.mu.Lock()
 		r.recovering = false
@@ -238,7 +238,12 @@ func (m *manager) startRecovery(name string) {
 		if err != nil && !errors.Is(err, ErrNotModified) && m.ctx.Err() == nil {
 			log.Warn().Err(err).Str("index", name).Msg("replication: recovery failed")
 		}
-	}()
+	})
+	if !started {
+		r.mu.Lock()
+		r.recovering = false
+		r.mu.Unlock()
+	}
 }
 
 func (m *manager) recover(name string, r *replica, have Checkpoint) error {

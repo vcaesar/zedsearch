@@ -74,6 +74,9 @@ const (
 	// retainBytes bounds the memory those operations take per index while
 	// a replica lags or is gone.
 	retainBytes = 64 << 20
+	// preshipOps is how many operations a running write records before they
+	// start shipping to the in-sync replicas, ahead of its commit.
+	preshipOps = 256
 	// commitParallelism is how many indexes of one bulk ship at a time.
 	commitParallelism = 8
 	// callTimeout bounds one node to node replication call.
@@ -150,6 +153,10 @@ type manager struct {
 	mu        sync.Mutex
 	primaries map[string]*primary
 	replicas  map[string]*replica
+	// replicasMu is held with mu to change replicas and alone by mayStore,
+	// which runs under core locks the holders of mu wait for, and by the
+	// read checks Ready and Current. Nothing is called while it is held.
+	replicasMu sync.Mutex
 	// retired keeps primaries replaced or dropped while a running bulk may
 	// have written to them, so that bulk fails instead of skipping them
 	retired []*primary
@@ -161,6 +168,21 @@ type manager struct {
 	ctx    context.Context // cancelled by Stop
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+	// spawnMu orders spawn before Stop's wait, stopped is set by Stop
+	spawnMu sync.Mutex
+	stopped bool
+}
+
+// spawn runs f in the background, unless Stop began: a request may start
+// a goroutine while Stop waits, and a wg.Add racing that wait misuses wg.
+func (m *manager) spawn(f func()) bool {
+	m.spawnMu.Lock()
+	defer m.spawnMu.Unlock()
+	if m.stopped {
+		return false
+	}
+	m.wg.Go(f)
+	return true
 }
 
 var (
@@ -261,6 +283,9 @@ func Stop() {
 	core.WALHook = nil
 	core.StoreGuard = nil
 	core.WriteGuard = nil
+	m.spawnMu.Lock()
+	m.stopped = true
+	m.spawnMu.Unlock()
 	m.cancel()
 	m.wg.Wait()
 	m.mu.Lock()
@@ -273,9 +298,9 @@ func Stop() {
 
 // mayStore keeps a replica from writing the owner's index metadata.
 func (m *manager) mayStore(index string) bool {
-	m.mu.Lock()
+	m.replicasMu.Lock()
 	_, isReplica := m.replicas[index]
-	m.mu.Unlock()
+	m.replicasMu.Unlock()
 	return !isReplica || m.topo.IsOwner(index)
 }
 
@@ -351,7 +376,9 @@ func (m *manager) dropDeleted(name string) {
 		return
 	}
 	m.mu.Lock()
+	m.replicasMu.Lock()
 	delete(m.replicas, name)
+	m.replicasMu.Unlock()
 	m.mu.Unlock()
 	log.Info().Str("index", name).Msg("replication: dropped the copy of a deleted index")
 }
@@ -398,7 +425,9 @@ func (m *manager) cleanup(ctx context.Context) {
 	}
 	for name, r := range m.replicas {
 		if !r.isRecovering() && !m.topo.IsReplica(name) && !m.topo.IsOwner(name) {
+			m.replicasMu.Lock()
 			delete(m.replicas, name)
+			m.replicasMu.Unlock()
 		}
 	}
 	m.mu.Unlock()
@@ -576,9 +605,9 @@ func Ready(index string) bool {
 	if m == nil {
 		return false
 	}
-	m.mu.Lock()
+	m.replicasMu.Lock()
 	r := m.replicas[index]
-	m.mu.Unlock()
+	m.replicasMu.Unlock()
 	return r != nil && r.isReady()
 }
 
@@ -615,9 +644,9 @@ func Current(name string) bool {
 	if m.mode != ModeSegment {
 		return true
 	}
-	m.mu.Lock()
+	m.replicasMu.Lock()
 	r := m.replicas[name]
-	m.mu.Unlock()
+	m.replicasMu.Unlock()
 	return r != nil && !r.hasKept()
 }
 

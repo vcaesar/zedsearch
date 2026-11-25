@@ -308,11 +308,14 @@ func TestClusterReadFailures(t *testing.T) {
 
 func TestClusterNotLive(t *testing.T) {
 	// a long ttl keeps the heartbeat from re-joining during the test
+	assert.True(t, Live(), "without clustering the node is always live")
 	startFaultCluster(t, time.Hour, 30*time.Minute)
+	assert.True(t, Live())
 	require.NoError(t, get().membership.Leave(context.Background()))
 
 	assert.ErrorIs(t, CheckEpoch("logs", 0), ErrNotLive)
 	assert.False(t, IsLocalOwner("logs"))
+	assert.False(t, Live())
 }
 
 func TestClusterReplicasAndInSync(t *testing.T) {
@@ -359,6 +362,38 @@ func TestClusterReplicasAndInSync(t *testing.T) {
 
 	_, ok = NodeAddr(context.Background(), "node-a")
 	assert.False(t, ok, "a node without an advertise address cannot be routed to")
+}
+
+// The local node is in sync once the owner lists it, and no longer once it
+// is dropped; without clustering it never is.
+func TestClusterIsLocalInSync(t *testing.T) {
+	assert.False(t, IsLocalInSync("logs"), "clustering is off")
+
+	startTestCluster(t, "node-a", "", 4)
+	require.Eventually(t, func() bool { return len(Assignments()) == 4 }, 3*time.Second, 10*time.Millisecond)
+	ctx := context.Background()
+	_, epoch, _ := Owner("logs")
+	assert.False(t, IsLocalInSync("logs"))
+
+	require.NoError(t, UpdateInSync(ctx, "logs", []string{"node-a", "node-b"}, epoch))
+	require.Eventually(t, func() bool { return IsLocalInSync("logs") }, 3*time.Second, 5*time.Millisecond)
+	assert.False(t, IsLocalInSync("other"), "only the listed index")
+
+	require.NoError(t, UpdateInSync(ctx, "logs", []string{"node-b"}, epoch))
+	require.Eventually(t, func() bool { return !IsLocalInSync("logs") }, 3*time.Second, 5*time.Millisecond)
+}
+
+// A node whose lease cannot be granted does not join.
+func TestClusterJoinFails(t *testing.T) {
+	previous := config.Global.Cluster
+	t.Cleanup(func() { config.Global.Cluster = previous })
+	config.Global.Cluster.Name = "test-cluster"
+	config.Global.Cluster.NodeID = "node-a"
+
+	store := newFaultStore(failOn(errFault, "", "Grant"))
+	defer func() { require.NoError(t, store.Close()) }()
+	assert.ErrorIs(t, StartWith(context.Background(), store), errFault)
+	assert.False(t, Enabled())
 }
 
 func TestNodeIDDefaultsToHostname(t *testing.T) {

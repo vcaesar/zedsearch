@@ -26,6 +26,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"time"
 
 	blugeindex "github.com/vcaesar/riot/index"
@@ -81,10 +83,10 @@ func LoadIndex(name string) (*Index, error) {
 }
 
 // ApplyReplicaEntries appends WAL entries recorded on the owner to the WAL
-// of the same shard here. Every entry is rewritten to an update across all
-// second layer shards, which makes it idempotent: the replica's second
-// layer layout may differ from the owner's, and an entry may be applied
-// twice when a snapshot already contains it.
+// of the same shard here, in one write. Every entry is rewritten to an
+// update across all second layer shards, which makes it idempotent: the
+// replica's second layer layout may differ from the owner's, and an entry
+// may be applied twice when a snapshot already contains it.
 func ApplyReplicaEntries(index *Index, shardID string, entries [][]byte) error {
 	if err := index.checkWritable(); err != nil {
 		return err
@@ -92,6 +94,14 @@ func ApplyReplicaEntries(index *Index, shardID string, entries [][]byte) error {
 	shard, ok := index.shards[shardID]
 	if !ok {
 		return fmt.Errorf("index [%s] has no shard [%s]", index.GetName(), shardID)
+	}
+	batch := make([][]byte, len(entries))
+	for i, entry := range entries {
+		data, err := idempotentEntry(entry)
+		if err != nil {
+			return err
+		}
+		batch[i] = data
 	}
 	if err := shard.OpenWAL(); err != nil {
 		return err
@@ -103,29 +113,78 @@ func ApplyReplicaEntries(index *Index, shardID string, entries [][]byte) error {
 	if shard.wal == nil {
 		return ErrIndexReadOnly
 	}
-	for _, entry := range entries {
-		data, err := idempotentEntry(entry)
-		if err != nil {
-			return err
-		}
-		if err := shard.wal.Write(data); err != nil {
-			return err
-		}
-	}
-	return nil
+	return shard.wal.WriteBatch(batch)
 }
 
+// idempotentEntry returns entry as an update across all second layer
+// shards. A write that names its document id is recorded that way on the
+// owner and passes through as it is; the other entries keep their field
+// values as encoded.
 func idempotentEntry(entry []byte) ([]byte, error) {
-	doc := make(map[string]interface{})
+	// a map, not a struct: struct fields match keys in any case, and a
+	// document field named `@_Shard` would pass for the entry's own
+	doc := make(map[string]json.RawMessage)
 	if err := json.Unmarshal(entry, &doc); err != nil {
 		return nil, err
 	}
-	if doc[meta.ActionFieldName] == meta.ActionTypeInsert {
-		doc[meta.ActionFieldName] = meta.ActionTypeUpdate
+	allShards := strconv.FormatInt(ShardIDNeedUpdate, 10)
+	action := entryAction(doc[meta.ActionFieldName])
+	if (action == meta.ActionTypeUpdate || action == meta.ActionTypeDelete) && string(doc[meta.ShardFieldName]) == allShards {
+		return entry, nil
 	}
-	doc[meta.ShardFieldName] = ShardIDNeedUpdate
-	return json.Marshal(doc)
+	if action == meta.ActionTypeInsert {
+		doc[meta.ActionFieldName] = json.RawMessage(updateAction)
+	}
+	doc[meta.ShardFieldName] = json.RawMessage(allShards)
+	return appendObject(make([]byte, 0, len(entry)+len(allShards)), doc)
 }
+
+// entryAction decodes the action token, escapes included; empty when it
+// is not a string, which leaves the action as it is.
+func entryAction(raw json.RawMessage) string {
+	var action string
+	if err := json.Unmarshal(raw, &action); err != nil {
+		return ""
+	}
+	return action
+}
+
+// appendObject encodes doc in key order with its values as they are: they
+// were validated by the decode, json.Marshal would compact each one again.
+func appendObject(out []byte, doc map[string]json.RawMessage) ([]byte, error) {
+	keys := make([]string, 0, len(doc))
+	for k := range doc {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	out = append(out, '{')
+	for i, k := range keys {
+		if i > 0 {
+			out = append(out, ',')
+		}
+		var err error
+		if out, err = appendKey(out, k); err != nil {
+			return nil, err
+		}
+		out = append(append(out, ':'), doc[k]...)
+	}
+	return append(out, '}'), nil
+}
+
+// appendKey appends k quoted, through json.Marshal when a byte of it needs
+// escaping as json.Marshal escapes it.
+func appendKey(out []byte, k string) ([]byte, error) {
+	for i := 0; i < len(k); i++ {
+		if c := k[i]; c < 0x20 || c >= 0x80 || c == '"' || c == '\\' || c == '<' || c == '>' || c == '&' {
+			b, err := json.Marshal(k)
+			return append(out, b...), err
+		}
+	}
+	return append(append(append(out, '"'), k...), '"'), nil
+}
+
+// updateAction is the update action of a WAL entry as encoded.
+const updateAction = `"` + meta.ActionTypeUpdate + `"`
 
 // WaitApplied waits until every WAL entry written before the call has been
 // applied to the writers.

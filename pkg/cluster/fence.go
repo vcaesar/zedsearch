@@ -127,10 +127,11 @@ func (f *Fence) Refresh(ctx context.Context) error {
 	case insyncRev >= f.insyncRev:
 		// a watch event newer than this read may already be applied
 		f.insync, f.insyncRev = insync, insyncRev
-	case insyncRev == 0 && f.insyncRev == seen:
-		// the key is absent and no watch event landed during the read: the
-		// cached set is older than the removal. Its revision stays, so a
-		// queued event for it is still ignored.
+	case f.insyncRev == seen:
+		// no watch event landed during the read, so the cached set is older
+		// than it: the key was removed, or the store was restored from a
+		// snapshot and its revisions went back. The cached revision stays,
+		// so a queued event for it is still ignored.
 		f.insync = insync
 	}
 	f.mu.Unlock()
