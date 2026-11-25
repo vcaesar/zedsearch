@@ -104,6 +104,13 @@ func TestHybrid_Retriever(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, CombineSum, r.Retrievers[0].Combination)
 		assert.Len(t, r.Leaves(), 3)
+		assert.False(t, r.HasMinScore())
+
+		r, err = Hybrid(hybridZedQuery(t, `{"retriever": {"rrf": {"retrievers": [
+			{"standard": {}}, {"linear": {"min_score": 1, "retrievers": [{"standard": {}}]}}]}}}`))
+		require.NoError(t, err)
+		assert.Nil(t, r.MinScore)
+		assert.True(t, r.HasMinScore(), "a nested min_score")
 	})
 
 	t.Run("a single retriever becomes the query", func(t *testing.T) {

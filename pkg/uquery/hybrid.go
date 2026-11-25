@@ -121,6 +121,19 @@ func (r *Retriever) Leaves() []interface{} {
 	return leaves
 }
 
+// HasMinScore reports whether r or a retriever below it has a min_score.
+func (r *Retriever) HasMinScore() bool {
+	if r.MinScore != nil {
+		return true
+	}
+	for _, child := range r.Retrievers {
+		if child.HasMinScore() {
+			return true
+		}
+	}
+	return false
+}
+
 func parseError(reason string) error {
 	return errors.New(errors.ErrorTypeParsingException, reason)
 }

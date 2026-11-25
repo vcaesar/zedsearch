@@ -131,6 +131,27 @@ func TestSearch_Hybrid(t *testing.T) {
 		assert.Equal(t, 1, resp.Hits.Total.Value)
 	})
 
+	t.Run("min_score above every fused score counts none", func(t *testing.T) {
+		// a is first in both lists: 2/61, about 0.033
+		resp, err := index.Search(hybridRequest(t, `{"retriever": {"rrf": {"min_score": 0.1, "retrievers": [
+			{"standard": {"query": `+hybridMatch+`}}, {"standard": {"query": `+hybridMatch+`}}]}},
+			"aggs": {"tags": {"terms": {"field": "tag"}}}}`))
+		require.NoError(t, err)
+		assert.Empty(t, resp.Hits.Hits)
+		assert.Equal(t, 0, resp.Hits.Total.Value, "not the union of the retrievers")
+		assert.Zero(t, resp.Hits.MaxScore)
+		assert.Contains(t, resp.Aggregations, "tags", "aggregations keep the union")
+	})
+
+	t.Run("nested min_score counts the fused hits", func(t *testing.T) {
+		resp, err := index.Search(hybridRequest(t, `{"retriever": {"rrf": {"retrievers": [
+			{"linear": {"min_score": 1e9, "retrievers": [{"standard": {"query": `+hybridMatch+`}}]}},
+			{"standard": {"query": {"term": {"tag": "y"}}}}]}}}`))
+		require.NoError(t, err)
+		assert.ElementsMatch(t, []string{"b", "c"}, hitIDs(resp))
+		assert.Equal(t, 2, resp.Hits.Total.Value, "a matches the union but no retriever keeps it")
+	})
+
 	t.Run("knn filter of field-keyed options", func(t *testing.T) {
 		resp, err := index.Search(hybridRequest(t, `{"query": {"hybrid": {"filter": {"term": {"tag": "x"}},
 			"queries": [{"knn": {"emb": {"vector": [1, 0, 0], "k": 1}}}]}}}`))

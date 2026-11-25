@@ -94,8 +94,9 @@ func searchHybrid(query *meta.ZedQuery, r *uquery.Retriever, run func(*meta.ZedQ
 	if err != nil {
 		return searchFailed(err)
 	}
-	if r.MinScore != nil {
-		// min_score leaves out hits of the union
+	if r.HasMinScore() {
+		// min_score leaves out hits of the union: count the fused hits
+		// that qualify, before the page; aggregations keep the union
 		resp.Hits.Total = meta.Total{Value: len(ranked)}
 	}
 	start := min(query.From, len(ranked))
