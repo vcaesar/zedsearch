@@ -91,6 +91,7 @@ curl --retry 10 --retry-connrefused -u admin:"$ZED_PASSWORD" http://localhost:40
 # Back up the shared metadata in zed-etcd-data; the copy runs only after a successful save.
 docker exec zed-etcd etcdctl snapshot save /etcd-data/snapshot.db &&
   docker cp zed-etcd:/etcd-data/snapshot.db ./etcd-snapshot.db
+
 # Restore with every node stopped: `etcdutl snapshot restore` into a new volume, then
 # empty the in-sync sets before the nodes start, since a replica listed in an old
 # snapshot may have missed later writes. Steps: pkg/cluster/README.md, "Backup and restore".
@@ -136,15 +137,16 @@ go + gin (ou fiber v3 com `-tags fiber`) + react
 10. Análise em vários idiomas, incluindo CJK
 11. [Índices de logs](../pkg/logs/README.md) opcionais com normalização do horário do evento e padrões para busca em logs, com ingestão de JSON, Splunk HEC, Loki e OTLP/HTTP JSON (compatível com OpenObserve) e eventos do Logstash
 12. Busca vetorial kNN e consultas geográficas (`geo_distance`, `geo_bounding_box`, `geo_polygon`, `geo_shape`)
-13. Consultas SQL pela API SQL do Elasticsearch (`/es/_sql`, `/api/_sql`, `/es/_sql/translate`): `SELECT … WHERE` (`LIKE`, `IN`, `BETWEEN`, `IS NULL`, `MATCH()`, `QUERY()`), `COUNT`/`SUM`/`AVG`/`MIN`/`MAX`, `GROUP BY` (`HISTOGRAM`, `DATE_HISTOGRAM`), `HAVING`, `ORDER BY`, `LIMIT`, com saída JSON, txt, csv ou tsv; e [esquemas MySQL `CREATE TABLE` como mappings](../docs/sql-mappings.md)
-14. [Cluster](../pkg/cluster/README.md) de alta disponibilidade: propriedade de partições coordenada pelo etcd, transferência com fencing, réplicas e busca scatter-gather
-15. Rastreamento OpenTelemetry via OTLP/HTTP (`zed_tracing_enable`); cada requisição recebe um `X-Trace-Id` que a acompanha entre os nós
-16. Fleet e `zedagent` (`agent/`): registro de agentes, gestão de políticas, envio de arquivos de log e métricas do sistema, ou agente autônomo
-17. [Crawler web](../pkg/crawler/README.md) que respeita robots.txt (`cmd/zedcrawl`), com PageRank e indexação bulk no ZedSearch
-18. Camadas de dados: hot (disco local), warm (armazenamento de objetos) e cold (armazenamento de objetos somente leitura compartilhado por todos os nós), alternadas via `/api/index/{index}/_tier` ou pelo ciclo de vida do índice (`warm_after`, `cold_after`, `delete_after`) e políticas ILM (`/es/_ilm/policy`)
-19. Conjuntos de sinônimos (`/es/_synonyms`) com recarga dos analisadores de busca, e regras de consulta (`/es/_query_rules`) que fixam ou excluem documentos
-20. Rescoring de [Learning to rank](../docs/learning-to-rank.md) com modelos lineares, de árvore e XGBoost (`/es/_ml/trained_models`), avaliados em Go puro
-21. Mais APIs do Elasticsearch: `_msearch`, `_count`, `_delete_by_query`, `_reindex`, `_field_caps`, aliases, modelos de índice, `_cat/indices`, `_cat/health` e `_cluster/health`
+13. Busca híbrida que funde resultados de texto completo e kNN: retrievers `rrf` e `linear` do Elasticsearch (pesos, `minmax`/`l2_norm`), o legado `rank.rrf` e a consulta `hybrid` do OpenSearch com uma `search_pipeline` inline (`normalization-processor`, `score-ranker-processor` RRF)
+14. Consultas SQL pela API SQL do Elasticsearch (`/es/_sql`, `/api/_sql`, `/es/_sql/translate`): `SELECT … WHERE` (`LIKE`, `IN`, `BETWEEN`, `IS NULL`, `MATCH()`, `QUERY()`), `COUNT`/`SUM`/`AVG`/`MIN`/`MAX`, `GROUP BY` (`HISTOGRAM`, `DATE_HISTOGRAM`), `HAVING`, `ORDER BY`, `LIMIT`, com saída JSON, txt, csv ou tsv; e [esquemas MySQL `CREATE TABLE` como mappings](../docs/sql-mappings.md)
+15. [Cluster](../pkg/cluster/README.md) de alta disponibilidade: propriedade de partições coordenada pelo etcd, transferência com fencing, réplicas e busca scatter-gather
+16. Rastreamento OpenTelemetry via OTLP/HTTP (`zed_tracing_enable`); cada requisição recebe um `X-Trace-Id` que a acompanha entre os nós
+17. Fleet e `zedagent` (`agent/`): registro de agentes, gestão de políticas, envio de arquivos de log e métricas do sistema, ou agente autônomo
+18. [Crawler web](../pkg/crawler/README.md) que respeita robots.txt (`cmd/zedcrawl`), com PageRank e indexação bulk no ZedSearch
+19. Camadas de dados: hot (disco local), warm (armazenamento de objetos) e cold (armazenamento de objetos somente leitura compartilhado por todos os nós), alternadas via `/api/index/{index}/_tier` ou pelo ciclo de vida do índice (`warm_after`, `cold_after`, `delete_after`) e políticas ILM (`/es/_ilm/policy`)
+20. Conjuntos de sinônimos (`/es/_synonyms`) com recarga dos analisadores de busca, e regras de consulta (`/es/_query_rules`) que fixam ou excluem documentos
+21. Rescoring de [Learning to rank](../docs/learning-to-rank.md) com modelos lineares, de árvore e XGBoost (`/es/_ml/trained_models`), avaliados em Go puro
+22. Mais APIs do Elasticsearch: `_msearch`, `_count`, `_delete_by_query`, `_reindex`, `_field_caps`, aliases, modelos de índice, `_cat/indices`, `_cat/health` e `_cluster/health`
 
 # Benchmarks
 
