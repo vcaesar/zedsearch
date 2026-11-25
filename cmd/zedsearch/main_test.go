@@ -387,6 +387,26 @@ func touch(t *testing.T, at time.Time, files ...string) {
 }
 
 func TestCertReloader(t *testing.T) {
+	restore(t, &certCheckInterval)
+	certCheckInterval = 0
+
+	t.Run("checks the files at most once per interval", func(t *testing.T) {
+		restore(t, &certCheckInterval)
+		certCheckInterval = time.Hour
+		dir := t.TempDir()
+		certFile, keyFile := writeCertSerial(t, dir, 1)
+		r, err := newCertReloader(certFile, keyFile)
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), servedSerial(t, r), "the first handshake checks")
+
+		writeCertSerial(t, dir, 2)
+		touch(t, time.Now().Add(time.Minute), certFile, keyFile)
+		assert.Equal(t, int64(1), servedSerial(t, r), "within the interval")
+
+		r.checked = time.Now().Add(-2 * time.Hour)
+		assert.Equal(t, int64(2), servedSerial(t, r), "after the interval")
+	})
+
 	t.Run("missing files", func(t *testing.T) {
 		dir := t.TempDir()
 		certFile, keyFile := writeCert(t, dir)
@@ -467,6 +487,8 @@ func TestCertReloader(t *testing.T) {
 
 func TestListenReloadsCertificate(t *testing.T) {
 	restoreTLS(t)
+	restore(t, &certCheckInterval)
+	certCheckInterval = 0
 	dir := t.TempDir()
 	certFile, keyFile := writeCertSerial(t, dir, 1)
 	config.Global.ServerTLSCertificateFile, config.Global.ServerTLSKeyFile = certFile, keyFile

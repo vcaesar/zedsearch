@@ -25,6 +25,9 @@ params = {
 #     "query": {"term": "+City:Turin +Silver"},
 # }
 
-res = requests.post(zed_host + "/api/" + index + "/_search", json=params, auth=auth, timeout=(5, 30))
+# a redirect is refused: it could resend the body over http://
+res = requests.post(zed_host + "/api/" + index + "/_search", json=params, auth=auth, timeout=(5, 30), allow_redirects=False)
+if res.is_redirect:
+    sys.exit("ZED_HOST answered with a redirect, the request was not sent again")
 res.raise_for_status()
 print(res.text)

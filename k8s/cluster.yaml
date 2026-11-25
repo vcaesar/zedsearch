@@ -214,9 +214,11 @@ spec:
   podManagementPolicy: Parallel
   # every node must run the same version: a template change (a release)
   # reaches no pod by itself, the pods take it together once deleted at once,
-  # see the image below
+  # see the image below. rollingUpdate: null clears the default an existing
+  # StatefulSet carries, which OnDelete rejects on kubectl apply.
   updateStrategy:
     type: OnDelete
+    rollingUpdate: null
   selector:
     matchLabels:
       app: zedsearch-cluster

@@ -1,6 +1,6 @@
 import os
 import sys
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import docx
 import requests
@@ -42,7 +42,12 @@ def main():
             "file": file,
             "text": text_of(doc),
         }
-        requests.put(zed_url, json=data, auth=auth, timeout=(5, 30)).raise_for_status()
+        # the file name is the id, so a rerun updates the documents instead of adding copies;
+        # a redirect is refused: it could resend the text over http://
+        res = requests.put(zed_url + "/" + quote(file, safe=""), json=data, auth=auth, timeout=(5, 30), allow_redirects=False)
+        if res.is_redirect:
+            sys.exit(f"{file}: ZED_HOST answered with a redirect, the document was not sent again")
+        res.raise_for_status()
 
 
 if __name__ == "__main__":

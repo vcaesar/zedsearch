@@ -229,8 +229,13 @@ type certReloader struct {
 	cert     *tls.Certificate
 	certInfo os.FileInfo
 	keyInfo  os.FileInfo
+	checked  time.Time
 	failed   string
 }
+
+// certCheckInterval bounds how often handshakes look at the files, so a burst
+// of connections or a broken rewrite does not stat or parse them on each one.
+var certCheckInterval = time.Second
 
 func newCertReloader(certFile, keyFile string) (*certReloader, error) {
 	r := &certReloader{certFile: certFile, keyFile: keyFile}
@@ -246,10 +251,14 @@ func newCertReloader(certFile, keyFile string) (*certReloader, error) {
 
 // GetCertificate is the tls.Config hook. A changed pair that fails to load,
 // such as one caught halfway through a rewrite, keeps the previous
-// certificate and is tried again on the next handshake.
+// certificate and is tried again at the next check.
 func (r *certReloader) GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if time.Since(r.checked) < certCheckInterval {
+		return r.cert, nil
+	}
+	r.checked = time.Now()
 	certInfo, keyInfo, err := r.stat()
 	if err == nil && (fileChanged(r.certInfo, certInfo) || fileChanged(r.keyInfo, keyInfo)) {
 		err = r.load(certInfo, keyInfo)

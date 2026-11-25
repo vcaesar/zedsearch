@@ -25,6 +25,9 @@ data = {
     "Year": 2006,
 }
 
-res = requests.put(zed_host + "/api/" + index + "/_doc", json=data, auth=auth, timeout=(5, 30))
+# a redirect is refused: it could resend the body over http://
+res = requests.put(zed_host + "/api/" + index + "/_doc", json=data, auth=auth, timeout=(5, 30), allow_redirects=False)
+if res.is_redirect:
+    sys.exit("ZED_HOST answered with a redirect, the request was not sent again")
 res.raise_for_status()
 print(res.text)

@@ -1,6 +1,6 @@
 # Load word files
 
-`load-word-files.py` parses every `.docx` file in `sample-files/` and indexes it into the `books` index, one document per file with the fields `file` and `text` (paragraphs and table cells, nested tables included, in document order).
+`load-word-files.py` parses every `.docx` file in `sample-files/` and indexes it into the `books` index, one document per file with the fields `file` and `text` (paragraphs and table cells, nested tables included, in document order). The file name is the document id, so a rerun updates the documents instead of adding copies.
 
 ```sh
 pip install 'python-docx>=1.1.2' requests
