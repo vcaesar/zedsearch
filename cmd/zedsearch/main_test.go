@@ -181,10 +181,16 @@ func restoreTLS(t *testing.T) {
 // writeCert writes a self-signed localhost certificate and key into dir.
 func writeCert(t *testing.T, dir string) (certFile, keyFile string) {
 	t.Helper()
+	return writeCertSerial(t, dir, 1)
+}
+
+// writeCertSerial writes a self-signed localhost certificate with serial and its key into dir.
+func writeCertSerial(t *testing.T, dir string, serial int64) (certFile, keyFile string) {
+	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
+		SerialNumber: big.NewInt(serial),
 		Subject:      pkix.Name{CommonName: "localhost"},
 		DNSNames:     []string{"localhost"},
 		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},

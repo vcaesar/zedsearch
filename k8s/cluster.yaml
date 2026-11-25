@@ -57,6 +57,8 @@ spec:
 
 # Serving certificate of every node: the advertised pod names and the
 # client Service. Its ca.crt is the root the nodes verify each other with.
+# A node serves a renewed certificate on the next TLS handshake, without a
+# restart.
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
@@ -221,7 +223,7 @@ spec:
       containers:
         - name: zedsearch
           # every node must run the same version: a new release reaches the
-          # nodes with `kubectl rollout restart statefulset/zedsearch-cluster`
+          # nodes with `kubectl -n zedsearch rollout restart statefulset/zedsearch-cluster`
           image: riotgo/zedsearch:latest
           envFrom:
             - secretRef:
@@ -242,7 +244,10 @@ spec:
             - name: ZED_CLUSTER_NODE_ID
               value: $(POD_NAME)
             # https: the cluster secret and forwarded credentials never
-            # cross the pod network in cleartext
+            # cross the pod network in cleartext. A cluster that ran the http
+            # manifest restarts all its pods at once to switch, since an http
+            # pod without the CA cannot reach an https one during a rolling
+            # update: `kubectl -n zedsearch delete pod -l app=zedsearch-cluster`
             - name: ZED_CLUSTER_ADVERTISE_ADDR
               value: https://$(POD_NAME).zedsearch-cluster.zedsearch.svc:4080
             - name: ZED_ETCD_ENDPOINTS

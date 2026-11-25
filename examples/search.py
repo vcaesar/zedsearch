@@ -19,6 +19,6 @@ params = {
 #     "query": {"term": "+City:Turin +Silver"},
 # }
 
-res = requests.post(zed_host + "/api/" + index + "/_search", json=params, auth=auth)
+res = requests.post(zed_host + "/api/" + index + "/_search", json=params, auth=auth, timeout=(5, 30))
 res.raise_for_status()
 print(res.text)

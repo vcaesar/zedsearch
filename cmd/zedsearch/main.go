@@ -198,14 +198,14 @@ func listen(addr string) (net.Listener, error) {
 		return net.Listen("tcp", addr)
 	}
 
-	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	certs, err := newCertReloader(certFile, keyFile)
 	if err != nil {
 		return nil, err
 	}
 	// set minimum TLS version (1.2) and intermediate cipher suites
 	return tls.Listen("tcp", addr, &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		MinVersion:   tls.VersionTLS12,
+		GetCertificate: certs.GetCertificate,
+		MinVersion:     tls.VersionTLS12,
 		CipherSuites: []uint16{
 			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
 			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,

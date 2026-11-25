@@ -19,6 +19,6 @@ data = {
     "Year": 2006,
 }
 
-res = requests.put(zed_host + "/api/" + index + "/_doc", json=data, auth=auth)
+res = requests.put(zed_host + "/api/" + index + "/_doc", json=data, auth=auth, timeout=(5, 30))
 res.raise_for_status()
 print(res.text)
