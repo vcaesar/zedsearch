@@ -181,10 +181,16 @@ func restoreTLS(t *testing.T) {
 // writeCert writes a self-signed localhost certificate and key into dir.
 func writeCert(t *testing.T, dir string) (certFile, keyFile string) {
 	t.Helper()
+	return writeCertSerial(t, dir, 1)
+}
+
+// writeCertSerial writes a self-signed localhost certificate with serial and its key into dir.
+func writeCertSerial(t *testing.T, dir string, serial int64) (certFile, keyFile string) {
+	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
+		SerialNumber: big.NewInt(serial),
 		Subject:      pkix.Name{CommonName: "localhost"},
 		DNSNames:     []string{"localhost"},
 		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
@@ -361,4 +367,149 @@ func TestProfiling(t *testing.T) {
 			assert.NotPanics(t, profiling)
 		})
 	}
+}
+
+// servedSerial returns the serial of the certificate r serves.
+func servedSerial(t *testing.T, r *certReloader) int64 {
+	t.Helper()
+	cert, err := r.GetCertificate(nil)
+	require.NoError(t, err)
+	require.NotNil(t, cert.Leaf)
+	return cert.Leaf.SerialNumber.Int64()
+}
+
+// touch moves the modification time of files forward, as a rewrite does.
+func touch(t *testing.T, at time.Time, files ...string) {
+	t.Helper()
+	for _, f := range files {
+		require.NoError(t, os.Chtimes(f, at, at))
+	}
+}
+
+func TestCertReloader(t *testing.T) {
+	restore(t, &certCheckInterval)
+	certCheckInterval = 0
+
+	t.Run("checks the files at most once per interval", func(t *testing.T) {
+		restore(t, &certCheckInterval)
+		certCheckInterval = time.Hour
+		dir := t.TempDir()
+		certFile, keyFile := writeCertSerial(t, dir, 1)
+		r, err := newCertReloader(certFile, keyFile)
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), servedSerial(t, r), "the first handshake checks")
+
+		writeCertSerial(t, dir, 2)
+		touch(t, time.Now().Add(time.Minute), certFile, keyFile)
+		assert.Equal(t, int64(1), servedSerial(t, r), "within the interval")
+
+		r.checked = time.Now().Add(-2 * time.Hour)
+		assert.Equal(t, int64(2), servedSerial(t, r), "after the interval")
+	})
+
+	t.Run("missing files", func(t *testing.T) {
+		dir := t.TempDir()
+		certFile, keyFile := writeCert(t, dir)
+		_, err := newCertReloader(filepath.Join(dir, "missing.pem"), keyFile)
+		assert.Error(t, err)
+		_, err = newCertReloader(certFile, filepath.Join(dir, "missing.key"))
+		assert.Error(t, err)
+	})
+
+	t.Run("invalid pair", func(t *testing.T) {
+		bad := filepath.Join(t.TempDir(), "bad.pem")
+		require.NoError(t, os.WriteFile(bad, []byte("not a pem"), 0o600))
+		_, err := newCertReloader(bad, bad)
+		assert.Error(t, err)
+	})
+
+	t.Run("reloads a renewed certificate", func(t *testing.T) {
+		dir := t.TempDir()
+		certFile, keyFile := writeCertSerial(t, dir, 1)
+		r, err := newCertReloader(certFile, keyFile)
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), servedSerial(t, r))
+		assert.Equal(t, int64(1), servedSerial(t, r), "unchanged files keep the pair")
+
+		writeCertSerial(t, dir, 2)
+		touch(t, time.Now().Add(time.Minute), certFile, keyFile)
+		assert.Equal(t, int64(2), servedSerial(t, r))
+	})
+
+	t.Run("reloads replaced files with unchanged modification times", func(t *testing.T) {
+		dir := t.TempDir()
+		certFile, keyFile := writeCertSerial(t, dir, 1)
+		r, err := newCertReloader(certFile, keyFile)
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), servedSerial(t, r))
+
+		next := t.TempDir()
+		newCert, newKey := writeCertSerial(t, next, 2)
+		for src, dst := range map[string]string{newCert: certFile, newKey: keyFile} {
+			info, err := os.Stat(dst)
+			require.NoError(t, err)
+			touch(t, info.ModTime(), src)
+			require.NoError(t, os.Rename(src, dst))
+		}
+		assert.Equal(t, int64(2), servedSerial(t, r))
+	})
+
+	t.Run("keeps the previous certificate when a rewrite fails", func(t *testing.T) {
+		dir := t.TempDir()
+		certFile, keyFile := writeCertSerial(t, dir, 1)
+		r, err := newCertReloader(certFile, keyFile)
+		require.NoError(t, err)
+
+		keyInfo, err := os.Stat(keyFile)
+		require.NoError(t, err)
+		failedAt := time.Now().Add(time.Minute)
+		require.NoError(t, os.WriteFile(certFile, []byte("half written"), 0o600))
+		touch(t, failedAt, certFile)
+		assert.Equal(t, int64(1), servedSerial(t, r))
+
+		// the repaired pair keeps the times seen at the failure: only a retry,
+		// not a cached failed state, serves it
+		writeCertSerial(t, dir, 2)
+		touch(t, failedAt, certFile)
+		touch(t, keyInfo.ModTime(), keyFile)
+		assert.Equal(t, int64(2), servedSerial(t, r), "the failure is retried, not cached")
+
+		require.NoError(t, os.Rename(keyFile, keyFile+".old"))
+		assert.Equal(t, int64(2), servedSerial(t, r), "a missing file keeps the pair")
+		require.NoError(t, os.Rename(keyFile+".old", keyFile))
+
+		writeCertSerial(t, dir, 3)
+		touch(t, time.Now().Add(2*time.Minute), certFile, keyFile)
+		assert.Equal(t, int64(3), servedSerial(t, r))
+		assert.Empty(t, r.failed)
+	})
+}
+
+func TestListenReloadsCertificate(t *testing.T) {
+	restoreTLS(t)
+	restore(t, &certCheckInterval)
+	certCheckInterval = 0
+	dir := t.TempDir()
+	certFile, keyFile := writeCertSerial(t, dir, 1)
+	config.Global.ServerTLSCertificateFile, config.Global.ServerTLSKeyFile = certFile, keyFile
+	ln, err := listen("127.0.0.1:0")
+	require.NoError(t, err)
+	defer func() { _ = ln.Close() }()
+
+	serial := func() int64 {
+		errc := acceptHandshake(ln)
+		conn, err := tls.Dial("tcp", ln.Addr().String(), &tls.Config{
+			InsecureSkipVerify: true, //nolint:gosec // self-signed test certificate
+		})
+		require.NoError(t, err)
+		peer := conn.ConnectionState().PeerCertificates[0]
+		require.NoError(t, conn.Close())
+		require.NoError(t, <-errc)
+		return peer.SerialNumber.Int64()
+	}
+	assert.Equal(t, int64(1), serial())
+
+	writeCertSerial(t, dir, 2)
+	touch(t, time.Now().Add(time.Minute), certFile, keyFile)
+	assert.Equal(t, int64(2), serial())
 }

@@ -22,7 +22,7 @@ Utiliza [vcaesar/riot](https://github.com/vcaesar/riot) como biblioteca de index
 
 Es muy simple y fácil de operar, a diferencia de Elasticsearch, que requiere entender y ajustar un par de docenas de parámetros. Puedes tener ZedSearch funcionando en 1 minuto.
 
-Es un reemplazo directo de Elasticsearch si solo ingieres datos mediante APIs y buscas usando Kibana (ZedSearch no es compatible con Kibana. ZedSearch ofrece su propia interfaz).
+Es un reemplazo directo de Elasticsearch si solo ingieres y buscas datos mediante sus APIs. Kibana no es compatible, ZedSearch ofrece su propia interfaz.
 
 <!-- Mira el siguiente video para una demostración rápida de ZedSearch. -->
 <!-- [![Zed Youtube](../screenshots/zed-youtube.jpg)](https://www.youtube.com/watch?v=aZXtuVjt1ow) -->
@@ -70,8 +70,12 @@ docker run -d --name zed-etcd --network zed --restart unless-stopped \
     --data-dir /etcd-data
 
 # Node to node traffic, with the secret, is plain HTTP on the private network "zed",
-# so ports are published on localhost only. Across hosts, advertise https:// addresses
-# or use an encrypted network. --restart retries a node that started before etcd.
+# so ports are published on localhost only. Across hosts use an encrypted network, or
+# advertise https:// addresses and serve them: ZED_SERVER_TLS_CERTIFICATE_FILE and
+# ZED_SERVER_TLS_KEY_FILE on every node (or a TLS proxy in front of it), with a
+# certificate the other nodes trust (system roots, or a private CA added with
+# SSL_CERT_FILE / SSL_CERT_DIR as k8s/cluster.yaml does).
+# --restart retries a node that started before etcd.
 for i in 1 2 3; do
   docker run -d --name zed$i --network zed -p 127.0.0.1:408$i:4080 --restart unless-stopped \
     -v zed$i-data:/data -e ZED_DATA_PATH=/data \
@@ -84,10 +88,12 @@ done
 
 curl --retry 10 --retry-connrefused -u admin:"$ZED_PASSWORD" http://localhost:4081/api/cluster/nodes
 
-# Back up the shared metadata in zed-etcd-data; restore a snapshot into a new
-# volume with `etcdutl snapshot restore` before starting zed-etcd on it.
-docker exec zed-etcd etcdctl snapshot save /etcd-data/snapshot.db
-docker cp zed-etcd:/etcd-data/snapshot.db ./etcd-snapshot.db
+# Back up the shared metadata in zed-etcd-data; the copy runs only after a successful save.
+docker exec zed-etcd etcdctl snapshot save /etcd-data/snapshot.db &&
+  docker cp zed-etcd:/etcd-data/snapshot.db ./etcd-snapshot.db
+# Restore with every node stopped: `etcdutl snapshot restore` into a new volume, then
+# empty the in-sync sets before the nodes start, since a replica listed in an old
+# snapshot may have missed later writes. Steps: pkg/cluster/README.md, "Backup and restore".
 ```
 
 ### Kubernetes
@@ -95,21 +101,26 @@ docker cp zed-etcd:/etcd-data/snapshot.db ./etcd-snapshot.db
 [k8s/cluster.yaml](../k8s/cluster.yaml) ejecuta un StatefulSet `zedsearch-cluster` de tres nodos detrás del Service `zedsearch`, con un etcd de un solo nodo (usa tres miembros en producción):
 
 ```sh
+# needs cert-manager for the node TLS certificates; nodes serve HTTPS
 kubectl create namespace zedsearch
 kubectl -n zedsearch create secret generic zedsearch-admin \
     --from-literal=ZED_FIRST_ADMIN_USER=admin --from-literal=ZED_FIRST_ADMIN_PASSWORD='your_password_zed#123'
 kubectl -n zedsearch create secret generic zedsearch-cluster \
     --from-literal=ZED_CLUSTER_SECRET="$(openssl rand -hex 32)"
 kubectl apply -f k8s/cluster.yaml
-kubectl -n zedsearch port-forward svc/zedsearch 4080:4080
+kubectl -n zedsearch wait --for=jsonpath='{.status.readyReplicas}'=3 statefulset/zedsearch-cluster --timeout=10m
+kubectl -n zedsearch port-forward svc/zedsearch 4080:4080 &
+kubectl -n zedsearch get secret zedsearch-tls -o jsonpath='{.data.ca\.crt}' | base64 -d > zedsearch-ca.crt
+
+curl --retry 10 --retry-connrefused --cacert zedsearch-ca.crt -u admin:'your_password_zed#123' https://localhost:4080/api/cluster/nodes
 ```
 
 # Por qué ZedSearch
 
-Aunque Elasticsearch es un producto muy bueno, es complejo, requiere muchos recursos, tiene más de una década y consume mucha memoria, entre otras cosas.
-Creé ZedSearch para que sea más fácil usar la indexación de búsqueda de texto completo y vectorial, la observabilidad y el análisis de datos sin mucho trabajo.
+Elasticsearch y los motores similares son muy buenos productos, pero son complejos, necesitan mucha memoria y otros recursos, y arrastran más de una década de historia de diseño.
+Creé ZedSearch para que la búsqueda de texto completo y vectorial, la observabilidad y el análisis de datos sean más fáciles, más rápidos y gratuitos de usar, sin mucho trabajo.
 
-# Características:
+# Características
 
 go + gin (o fiber v3 con `-tags fiber`) + react
 
@@ -121,15 +132,19 @@ go + gin (o fiber v3 con `-tags fiber`) + react
 6. Autenticación lista para usar
 7. Sin esquema: no es necesario definir un esquema por adelantado y diferentes documentos del mismo índice pueden tener campos distintos.
 8. Almacenamiento de índices en disco, S3, MinIO y otros
-9. Soporte de agregaciones y de las funcionalidades completas de Elasticsearch
-10. Soporte multilingüe, incluido CJK
+9. Agregaciones y amplia compatibilidad con la API de Elasticsearch, con soporte de funcionalidades completas
+10. Análisis multilingüe, incluido CJK
 11. [Índices de logs](../pkg/logs/README.md) opcionales con normalización del tiempo del evento y valores predeterminados para búsqueda de logs, con ingesta de JSON, Splunk HEC, Loki y OTLP/HTTP JSON (compatible con OpenObserve) y eventos de Logstash
 12. Búsqueda vectorial kNN y consultas geográficas (`geo_distance`, `geo_bounding_box`, `geo_polygon`, `geo_shape`)
-13. API SQL de Elasticsearch (`/es/_sql`, `/es/_sql/translate`) y [esquemas MySQL `CREATE TABLE` como mappings](../docs/sql-mappings.md)
+13. Consultas SQL mediante la API SQL de Elasticsearch (`/es/_sql`, `/api/_sql`, `/es/_sql/translate`): `SELECT … WHERE` (`LIKE`, `IN`, `BETWEEN`, `IS NULL`, `MATCH()`, `QUERY()`), `COUNT`/`SUM`/`AVG`/`MIN`/`MAX`, `GROUP BY` (`HISTOGRAM`, `DATE_HISTOGRAM`), `HAVING`, `ORDER BY`, `LIMIT`, con salida JSON, txt, csv o tsv; y [esquemas MySQL `CREATE TABLE` como mappings](../docs/sql-mappings.md)
 14. [Clúster](../pkg/cluster/README.md) de alta disponibilidad: propiedad de particiones coordinada por etcd, traspaso con fencing, réplicas y búsqueda scatter-gather
 15. Trazado OpenTelemetry mediante OTLP/HTTP (`zed_tracing_enable`); cada petición recibe un `X-Trace-Id` que la sigue entre nodos
 16. Fleet y `zedagent` (`agent/`): registro de agentes, gestión de políticas, envío de archivos de logs y métricas del sistema, o agente independiente
 17. [Rastreador web](../pkg/crawler/README.md) que respeta robots.txt (`cmd/zedcrawl`), con PageRank e indexación bulk en ZedSearch
+18. Niveles de datos: hot (disco local), warm (almacenamiento de objetos) y cold (almacenamiento de objetos de solo lectura compartido por todos los nodos), cambiados con `/api/index/{index}/_tier` o por el ciclo de vida del índice (`warm_after`, `cold_after`, `delete_after`) y políticas ILM (`/es/_ilm/policy`)
+19. Conjuntos de sinónimos (`/es/_synonyms`) con recarga de analizadores de búsqueda, y reglas de consulta (`/es/_query_rules`) que fijan o excluyen documentos
+20. Rescoring de [Learning to rank](../docs/learning-to-rank.md) con modelos lineales, de árbol y XGBoost (`/es/_ml/trained_models`), evaluados en Go puro
+21. Más API de Elasticsearch: `_msearch`, `_count`, `_delete_by_query`, `_reindex`, `_field_caps`, alias, plantillas de índice, `_cat/indices`, `_cat/health` y `_cluster/health`
 
 # Benchmarks
 
@@ -175,6 +190,31 @@ Imagen Docker (sin comprimir), índice de texto de los mismos 50.000 documentos 
 | Memoria máxima            | **388 MiB** |           858 MiB |         3,185 MiB |      3,191 MiB |        1,014 MiB |               919 MiB |
 | CPU media                 |    **134%** |              366% |              157% |           156% |             230% |                  140% |
 | CPU máxima                |        553% |              710% |              620% |           529% |             545% |              **519%** |
+
+### Búsqueda vectorial
+
+20.000 vectores coseno de 128 dimensiones, k=10, HNSW (M=16, ef_construction 100, 100 candidatos), por HTTP en la misma máquina y el mismo corpus. Más es mejor en recall, QPS y carga; el índice vectorial es el crecimiento de datos tras la carga, antes de `_flush`.
+
+| Métrica                       |        ZedSearch | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 | Qdrant 1.20 | Milvus 3.0 | Weaviate 1.40 |
+| ----------------------------- | ---------------: | ----------------: | -------------: | ---------------: | ----------: | ---------: | ------------: |
+| Recall@10                     |            0.939 |         **0.956** |          0.823 |            0.485 |       0.891 |      0.685 |         0.595 |
+| Latencia, 1 cliente           |      **1.47 ms** |           2.56 ms |        2.09 ms |          4.71 ms |     1.84 ms |    2.70 ms |       2.28 ms |
+| QPS, 8 clientes               |    **1,923 QPS** |           983 QPS |      1,385 QPS |        1,025 QPS |   1,653 QPS |  1,827 QPS |     1,706 QPS |
+| Carga + indexación            | **10,070 vec/s** |       3,004 vec/s |    1,770 vec/s |        377 vec/s | 4,609 vec/s |  999 vec/s |   3,103 vec/s |
+| Índice vectorial, 20k × 128-d |          28.3 MB |           63.9 MB |        75.6 MB |      **25.8 MB** |     41.4 MB |    34.3 MB |       75.6 MB |
+
+### Búsqueda vectorial, clúster de 3 nodos
+
+Medianas de tres ejecuciones: tres nodos con 1 réplica en una sola VM de Docker de 8 vCPU, ZedSearch con etcd y replicación `document`. Los nodos comparten las CPU, así que mide el coste de la replicación, no el escalado horizontal.
+
+| Métrica                                         |     ZedSearch ×3 |     OpenSearch ×3 |
+| ----------------------------------------------- | ---------------: | ----------------: |
+| Recall@10                                       |        **0.960** |             0.905 |
+| Latencia, 1 cliente                             |      **1.81 ms** |           3.59 ms |
+| QPS, 8 clientes                                 |    **1,611 QPS** |           970 QPS |
+| Carga + indexación                              |  **4,157 vec/s** |       1,451 vec/s |
+| Índice vectorial tras `_flush`, todos los nodos |      **56.5 MB** |           70.4 MB |
+| Memoria en reposo / máxima, todos los nodos     | **78 / 902 MiB** | 4,517 / 5,360 MiB |
 
 # Documentación
 
@@ -241,7 +281,9 @@ zed_shard_num = 3
 
 # Ejemplos
 
-Puedes usar ZedSearch para indexar y buscar cualquier dato. Estos son algunos ejemplos que la comunidad ha creado para indexar y buscar el conjunto de datos de correos de Enron usando zedsearch:
+Puedes usar ZedSearch para indexar y buscar cualquier dato. [examples/](../examples) tiene scripts de Python que indexan un documento, cargan archivos de Word y los buscan.
+
+Proyectos de la comunidad que indexan y buscan el conjunto de datos de correos de Enron con ZincSearch (ZedSearch mantiene sus endpoints `/api`):
 
 1. https://github.com/jorgeloaiza48/Enron-Email-DataSet
 1. https://github.com/jhojanperlaza/email_search_engine

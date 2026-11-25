@@ -22,7 +22,7 @@ ZedSearch — это поисковый движок с полнотекстов
 
 В отличие от Elasticsearch, где нужно разобраться и настроить пару десятков параметров, ZedSearch очень прост в эксплуатации. Его можно запустить за 1 минуту.
 
-Он является прямой заменой Elasticsearch, если вы только загружаете данные через API и ищете с помощью Kibana (Kibana не поддерживается ZedSearch. ZedSearch предоставляет собственный интерфейс).
+Он является прямой заменой Elasticsearch, если вы загружаете и ищете данные только через API. Kibana не поддерживается, ZedSearch предоставляет собственный интерфейс.
 
 <!-- Посмотрите видео ниже, чтобы увидеть краткую демонстрацию ZedSearch. -->
 <!-- [![Zed Youtube](../screenshots/zed-youtube.jpg)](https://www.youtube.com/watch?v=aZXtuVjt1ow) -->
@@ -70,8 +70,12 @@ docker run -d --name zed-etcd --network zed --restart unless-stopped \
     --data-dir /etcd-data
 
 # Node to node traffic, with the secret, is plain HTTP on the private network "zed",
-# so ports are published on localhost only. Across hosts, advertise https:// addresses
-# or use an encrypted network. --restart retries a node that started before etcd.
+# so ports are published on localhost only. Across hosts use an encrypted network, or
+# advertise https:// addresses and serve them: ZED_SERVER_TLS_CERTIFICATE_FILE and
+# ZED_SERVER_TLS_KEY_FILE on every node (or a TLS proxy in front of it), with a
+# certificate the other nodes trust (system roots, or a private CA added with
+# SSL_CERT_FILE / SSL_CERT_DIR as k8s/cluster.yaml does).
+# --restart retries a node that started before etcd.
 for i in 1 2 3; do
   docker run -d --name zed$i --network zed -p 127.0.0.1:408$i:4080 --restart unless-stopped \
     -v zed$i-data:/data -e ZED_DATA_PATH=/data \
@@ -84,10 +88,12 @@ done
 
 curl --retry 10 --retry-connrefused -u admin:"$ZED_PASSWORD" http://localhost:4081/api/cluster/nodes
 
-# Back up the shared metadata in zed-etcd-data; restore a snapshot into a new
-# volume with `etcdutl snapshot restore` before starting zed-etcd on it.
-docker exec zed-etcd etcdctl snapshot save /etcd-data/snapshot.db
-docker cp zed-etcd:/etcd-data/snapshot.db ./etcd-snapshot.db
+# Back up the shared metadata in zed-etcd-data; the copy runs only after a successful save.
+docker exec zed-etcd etcdctl snapshot save /etcd-data/snapshot.db &&
+  docker cp zed-etcd:/etcd-data/snapshot.db ./etcd-snapshot.db
+# Restore with every node stopped: `etcdutl snapshot restore` into a new volume, then
+# empty the in-sync sets before the nodes start, since a replica listed in an old
+# snapshot may have missed later writes. Steps: pkg/cluster/README.md, "Backup and restore".
 ```
 
 ### Kubernetes
@@ -95,21 +101,26 @@ docker cp zed-etcd:/etcd-data/snapshot.db ./etcd-snapshot.db
 [k8s/cluster.yaml](../k8s/cluster.yaml) запускает StatefulSet `zedsearch-cluster` из трёх узлов за Service `zedsearch` и etcd из одного узла (в продакшене запускайте три участника):
 
 ```sh
+# needs cert-manager for the node TLS certificates; nodes serve HTTPS
 kubectl create namespace zedsearch
 kubectl -n zedsearch create secret generic zedsearch-admin \
     --from-literal=ZED_FIRST_ADMIN_USER=admin --from-literal=ZED_FIRST_ADMIN_PASSWORD='your_password_zed#123'
 kubectl -n zedsearch create secret generic zedsearch-cluster \
     --from-literal=ZED_CLUSTER_SECRET="$(openssl rand -hex 32)"
 kubectl apply -f k8s/cluster.yaml
-kubectl -n zedsearch port-forward svc/zedsearch 4080:4080
+kubectl -n zedsearch wait --for=jsonpath='{.status.readyReplicas}'=3 statefulset/zedsearch-cluster --timeout=10m
+kubectl -n zedsearch port-forward svc/zedsearch 4080:4080 &
+kubectl -n zedsearch get secret zedsearch-tls -o jsonpath='{.data.ca\.crt}' | base64 -d > zedsearch-ca.crt
+
+curl --retry 10 --retry-connrefused --cacert zedsearch-ca.crt -u admin:'your_password_zed#123' https://localhost:4080/api/cluster/nodes
 ```
 
 # Почему ZedSearch
 
-Хотя Elasticsearch — очень хороший продукт, он сложен, требует много ресурсов, существует уже более десяти лет и потребляет много памяти и прочего.
-Я создал ZedSearch, чтобы полнотекстовую и векторную поисковую индексацию, наблюдаемость и анализ данных было проще использовать без лишних усилий.
+Elasticsearch и похожие движки — очень хорошие продукты, но они сложны, требуют много памяти и других ресурсов и несут за собой более десяти лет истории проектирования.
+Я создал ZedSearch, чтобы полнотекстовый и векторный поиск, наблюдаемость и анализ данных стали проще, быстрее и бесплатными без лишних усилий.
 
-# Возможности:
+# Возможности
 
 go + gin (или fiber v3 с `-tags fiber`) + react
 
@@ -121,15 +132,19 @@ go + gin (или fiber v3 с `-tags fiber`) + react
 6. Встроенная аутентификация
 7. Без схемы — не нужно заранее определять схему, а разные документы в одном индексе могут иметь разные поля.
 8. Хранение индексов на диске, в S3, MinIO и других хранилищах
-9. Поддержка агрегаций и полного набора возможностей Elasticsearch
-10. Многоязычная поддержка, включая CJK
+9. Агрегации и широкая совместимость с API Elasticsearch с поддержкой полного набора возможностей
+10. Многоязычный анализ, включая CJK
 11. Опциональные [индексы логов](../pkg/logs/README.md) с нормализацией времени событий и настройками по умолчанию для поиска по логам; приём JSON, Splunk HEC, Loki и OTLP/HTTP JSON (совместимо с OpenObserve), а также событий Logstash
 12. Векторный поиск kNN и геозапросы (`geo_distance`, `geo_bounding_box`, `geo_polygon`, `geo_shape`)
-13. Elasticsearch SQL API (`/es/_sql`, `/es/_sql/translate`) и [схемы MySQL `CREATE TABLE` в качестве маппингов](../docs/sql-mappings.md)
+13. SQL-запросы через Elasticsearch SQL API (`/es/_sql`, `/api/_sql`, `/es/_sql/translate`): `SELECT … WHERE` (`LIKE`, `IN`, `BETWEEN`, `IS NULL`, `MATCH()`, `QUERY()`), `COUNT`/`SUM`/`AVG`/`MIN`/`MAX`, `GROUP BY` (`HISTOGRAM`, `DATE_HISTOGRAM`), `HAVING`, `ORDER BY`, `LIMIT`, вывод в JSON, txt, csv или tsv; и [схемы MySQL `CREATE TABLE` в качестве маппингов](../docs/sql-mappings.md)
 14. Отказоустойчивый [кластер](../pkg/cluster/README.md): владение партициями через etcd, передача с fencing, реплики и scatter-gather поиск
 15. Трассировка OpenTelemetry через OTLP/HTTP (`zed_tracing_enable`); каждый запрос получает `X-Trace-Id`, который передаётся между узлами
 16. Fleet и `zedagent` (`agent/`): регистрация агентов, управление политиками, отправка лог-файлов и системных метрик или автономный режим агента
 17. [Веб-краулер](../pkg/crawler/README.md) с учётом robots.txt (`cmd/zedcrawl`), PageRank и bulk-индексацией в ZedSearch
+18. Уровни данных: hot (локальный диск), warm (объектное хранилище) и cold (объектное хранилище только для чтения, общее для всех узлов), переключаются через `/api/index/{index}/_tier` или жизненный цикл индекса (`warm_after`, `cold_after`, `delete_after`) и политики ILM (`/es/_ilm/policy`)
+19. Наборы синонимов (`/es/_synonyms`) с перезагрузкой поисковых анализаторов и правила запросов (`/es/_query_rules`), закрепляющие или исключающие документы
+20. Переранжирование [Learning to rank](../docs/learning-to-rank.md) линейными, древовидными и XGBoost-моделями (`/es/_ml/trained_models`) на чистом Go
+21. Другие API Elasticsearch: `_msearch`, `_count`, `_delete_by_query`, `_reindex`, `_field_caps`, алиасы, шаблоны индексов, `_cat/indices`, `_cat/health` и `_cluster/health`
 
 # Бенчмарки
 
@@ -175,6 +190,31 @@ Docker-образ (без сжатия), текстовый индекс тех 
 | Пиковая память                       | **388 MiB** |           858 MiB |         3,185 MiB |      3,191 MiB |        1,014 MiB |                  919 MiB |
 | CPU в среднем                        |    **134%** |              366% |              157% |           156% |             230% |                     140% |
 | Пиковый CPU                          |        553% |              710% |              620% |           529% |             545% |                 **519%** |
+
+### Векторный поиск
+
+20 000 косинусных векторов размерности 128, k=10, HNSW (M=16, ef_construction 100, 100 кандидатов), по HTTP на той же машине и том же корпусе. Для recall, QPS и загрузки больше — лучше; векторный индекс — прирост данных после загрузки, до `_flush`.
+
+| Метрика                     |        ZedSearch | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 | Qdrant 1.20 | Milvus 3.0 | Weaviate 1.40 |
+| --------------------------- | ---------------: | ----------------: | -------------: | ---------------: | ----------: | ---------: | ------------: |
+| Recall@10                   |            0.939 |         **0.956** |          0.823 |            0.485 |       0.891 |      0.685 |         0.595 |
+| Задержка, 1 клиент          |      **1.47 ms** |           2.56 ms |        2.09 ms |          4.71 ms |     1.84 ms |    2.70 ms |       2.28 ms |
+| QPS, 8 клиентов             |    **1,923 QPS** |           983 QPS |      1,385 QPS |        1,025 QPS |   1,653 QPS |  1,827 QPS |     1,706 QPS |
+| Загрузка + индексация       | **10,070 vec/s** |       3,004 vec/s |    1,770 vec/s |        377 vec/s | 4,609 vec/s |  999 vec/s |   3,103 vec/s |
+| Векторный индекс, 20k × 128 |          28.3 MB |           63.9 MB |        75.6 MB |      **25.8 MB** |     41.4 MB |    34.3 MB |       75.6 MB |
+
+### Векторный поиск, кластер из 3 узлов
+
+Медианы трёх запусков: три узла с 1 репликой на одной Docker VM с 8 vCPU, ZedSearch с etcd и репликацией `document`. Узлы делят CPU, поэтому здесь измеряются накладные расходы репликации, а не горизонтальное масштабирование.
+
+| Метрика                                   |     ZedSearch ×3 |     OpenSearch ×3 |
+| ----------------------------------------- | ---------------: | ----------------: |
+| Recall@10                                 |        **0.960** |             0.905 |
+| Задержка, 1 клиент                        |      **1.81 ms** |           3.59 ms |
+| QPS, 8 клиентов                           |    **1,611 QPS** |           970 QPS |
+| Загрузка + индексация                     |  **4,157 vec/s** |       1,451 vec/s |
+| Векторный индекс после `_flush`, все узлы |      **56.5 MB** |           70.4 MB |
+| Память в простое / пик, все узлы          | **78 / 902 MiB** | 4,517 / 5,360 MiB |
 
 # Документация
 
@@ -241,7 +281,9 @@ zed_shard_num = 3
 
 # Примеры
 
-ZedSearch можно использовать для индексации и поиска любых данных. Вот несколько примеров индексации и поиска по датасету писем Enron с помощью zedsearch:
+ZedSearch можно использовать для индексации и поиска любых данных. В [examples/](../examples) есть скрипты на Python, которые индексируют документ, загружают файлы Word и ищут по ним.
+
+Проекты сообщества, индексирующие и ищущие по датасету писем Enron с помощью ZincSearch (ZedSearch сохраняет его эндпоинты `/api`):
 
 1. https://github.com/jorgeloaiza48/Enron-Email-DataSet
 1. https://github.com/jhojanperlaza/email_search_engine

@@ -1,41 +1,33 @@
-import base64
-import json
+import os
+import sys
+from urllib.parse import urlparse
+
 import requests
 
-user = "admin"
-password = "Complexpass#123"
-bas64encoded_creds = base64.b64encode(
-    bytes(user + ":" + password, "utf-8")).decode("utf-8")
+zed_host = os.environ.get("ZED_HOST", "http://localhost:4080")
 
+# Basic auth would cross the network in cleartext over http:// to another host.
+if urlparse(zed_host).scheme != "https" and urlparse(zed_host).hostname not in ("localhost", "127.0.0.1", "::1"):
+    sys.exit("ZED_HOST must use https:// for a remote host")
+auth = (os.environ.get("ZED_USER", "admin"), os.environ.get("ZED_PASSWORD", "Complexpass#123"))
+index = "games3"
 
+# search_type: match, matchphrase, term, prefix, wildcard, fuzzy, querystring,
+# matchall; optional query.start_time / query.end_time filter on @timestamp.
 params = {
     "search_type": "match",
-    "query":
-    {
-        "term": "DEMTSCHENKO",
-        "start_time": "2021-06-02T14:28:31.894Z",
-        "end_time": "2021-12-02T15:28:31.894Z"
-    },
-    "fields": ["_all"]
+    "query": {"term": "DEMTSCHENKO", "field": "_all"},
+    "max_results": 10,
 }
 
 # params = {
 #     "search_type": "querystring",
-#     "query":
-#     {
-#         "term": "+City:Turin +Silver",
-#         "start_time": "2021-06-02T14:28:31.894Z",
-#         "end_time": "2021-12-02T15:28:31.894Z"
-#     },
-#     "fields": ["_all"]
+#     "query": {"term": "+City:Turin +Silver"},
 # }
 
-headers = {"Content-type": "application/json",
-           "Authorization": "Basic " + bas64encoded_creds}
-index = "games3"
-zed_host = "http://localhost:4080"
-zed_url = zed_host + "/api/" + index + "/_search"
-
-res = requests.post(zed_url, headers=headers, data=json.dumps(params))
-
+# a redirect is refused: it could resend the body over http://
+res = requests.post(zed_host + "/api/" + index + "/_search", json=params, auth=auth, timeout=(5, 30), allow_redirects=False)
+if res.is_redirect:
+    sys.exit("ZED_HOST answered with a redirect, the request was not sent again")
+res.raise_for_status()
 print(res.text)

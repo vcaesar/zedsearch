@@ -32,6 +32,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -198,14 +199,14 @@ func listen(addr string) (net.Listener, error) {
 		return net.Listen("tcp", addr)
 	}
 
-	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	certs, err := newCertReloader(certFile, keyFile)
 	if err != nil {
 		return nil, err
 	}
 	// set minimum TLS version (1.2) and intermediate cipher suites
 	return tls.Listen("tcp", addr, &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		MinVersion:   tls.VersionTLS12,
+		GetCertificate: certs.GetCertificate,
+		MinVersion:     tls.VersionTLS12,
 		CipherSuites: []uint16{
 			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
 			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
@@ -216,6 +217,86 @@ func listen(addr string) (net.Listener, error) {
 		},
 		NextProtos: zhttp.TLSNextProtos,
 	})
+}
+
+// certReloader serves the key pair of certFile and keyFile and loads it again
+// when either file changes, so a renewed certificate (cert-manager rewrites
+// the mounted Secret) is served without a restart.
+type certReloader struct {
+	certFile, keyFile string
+
+	mu       sync.Mutex
+	cert     *tls.Certificate
+	certInfo os.FileInfo
+	keyInfo  os.FileInfo
+	checked  time.Time
+	failed   string
+}
+
+// certCheckInterval bounds how often handshakes look at the files, so a burst
+// of connections or a broken rewrite does not stat or parse them on each one.
+var certCheckInterval = time.Second
+
+func newCertReloader(certFile, keyFile string) (*certReloader, error) {
+	r := &certReloader{certFile: certFile, keyFile: keyFile}
+	certInfo, keyInfo, err := r.stat()
+	if err != nil {
+		return nil, err
+	}
+	if err := r.load(certInfo, keyInfo); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+// GetCertificate is the tls.Config hook. A changed pair that fails to load,
+// such as one caught halfway through a rewrite, keeps the previous
+// certificate and is tried again at the next check.
+func (r *certReloader) GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if time.Since(r.checked) < certCheckInterval {
+		return r.cert, nil
+	}
+	r.checked = time.Now()
+	certInfo, keyInfo, err := r.stat()
+	if err == nil && (fileChanged(r.certInfo, certInfo) || fileChanged(r.keyInfo, keyInfo)) {
+		err = r.load(certInfo, keyInfo)
+	}
+	// log a failure once, not on every handshake until the files are fixed
+	if err == nil {
+		r.failed = ""
+	} else if err.Error() != r.failed {
+		r.failed = err.Error()
+		log.Warn().Err(err).Msg("Reload TLS certificate, serving the previous one")
+	}
+	return r.cert, nil
+}
+
+// fileChanged reports whether cur is another file than old, as a replaced
+// file (a Kubernetes Secret swaps its files in) is even with the same
+// modification time, or was rewritten in place.
+func fileChanged(old, cur os.FileInfo) bool {
+	return !os.SameFile(old, cur) || !old.ModTime().Equal(cur.ModTime()) || old.Size() != cur.Size()
+}
+
+func (r *certReloader) stat() (certInfo, keyInfo os.FileInfo, err error) {
+	if certInfo, err = os.Stat(r.certFile); err != nil {
+		return nil, nil, err
+	}
+	if keyInfo, err = os.Stat(r.keyFile); err != nil {
+		return nil, nil, err
+	}
+	return certInfo, keyInfo, nil
+}
+
+func (r *certReloader) load(certInfo, keyInfo os.FileInfo) error {
+	cert, err := tls.LoadX509KeyPair(r.certFile, r.keyFile)
+	if err != nil {
+		return err
+	}
+	r.cert, r.certInfo, r.keyInfo = &cert, certInfo, keyInfo
+	return nil
 }
 
 func telemetry() {
