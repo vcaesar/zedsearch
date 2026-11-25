@@ -91,6 +91,7 @@ curl --retry 10 --retry-connrefused -u admin:"$ZED_PASSWORD" http://localhost:40
 # Back up the shared metadata in zed-etcd-data; the copy runs only after a successful save.
 docker exec zed-etcd etcdctl snapshot save /etcd-data/snapshot.db &&
   docker cp zed-etcd:/etcd-data/snapshot.db ./etcd-snapshot.db
+
 # Restore with every node stopped: `etcdutl snapshot restore` into a new volume, then
 # empty the in-sync sets before the nodes start, since a replica listed in an old
 # snapshot may have missed later writes. Steps: pkg/cluster/README.md, "Backup and restore".
@@ -136,15 +137,16 @@ go + gin (`-tags fiber`로 fiber v3 사용 가능) + react
 10. CJK를 포함한 다국어 분석
 11. 이벤트 시간 정규화와 로그 검색 기본값을 갖추고 JSON, Splunk HEC, Loki, OTLP/HTTP JSON(OpenObserve 호환) 및 Logstash 이벤트를 수집하는 옵트인 [로그 인덱스](../pkg/logs/README.md)
 12. kNN 벡터 검색 및 지리 쿼리(`geo_distance`, `geo_bounding_box`, `geo_polygon`, `geo_shape`)
-13. Elasticsearch SQL API(`/es/_sql`, `/api/_sql`, `/es/_sql/translate`)를 통한 SQL 쿼리: `SELECT … WHERE` (`LIKE`, `IN`, `BETWEEN`, `IS NULL`, `MATCH()`, `QUERY()`), `COUNT`/`SUM`/`AVG`/`MIN`/`MAX`, `GROUP BY` (`HISTOGRAM`, `DATE_HISTOGRAM`), `HAVING`, `ORDER BY`, `LIMIT`, JSON·txt·csv·tsv 출력, MySQL `CREATE TABLE` [스키마를 매핑으로 사용](../docs/sql-mappings.md)
-14. 고가용성 [클러스터](../pkg/cluster/README.md): etcd로 조정되는 파티션 소유권, 펜싱 핸드오프, 레플리카, scatter-gather 검색
-15. OTLP/HTTP 기반 OpenTelemetry 추적(`zed_tracing_enable`). 모든 요청에 노드 간에 전달되는 `X-Trace-Id` 부여
-16. Fleet 및 `zedagent`(`agent/`): 에이전트 등록, 정책 관리, 로그 파일과 시스템 메트릭 전송, 단독 실행도 지원
-17. robots를 준수하는 [웹 크롤러](../pkg/crawler/README.md)(`cmd/zedcrawl`), PageRank 계산 및 ZedSearch 벌크 색인 지원
-18. 데이터 티어: hot(로컬 디스크), warm(오브젝트 스토리지), cold(모든 노드가 공유하는 읽기 전용 오브젝트 스토리지), `/api/index/{index}/_tier` 또는 인덱스 수명 주기(`warm_after`, `cold_after`, `delete_after`)와 ILM 정책(`/es/_ilm/policy`)으로 전환
-19. 검색 분석기 재로드를 지원하는 동의어 세트(`/es/_synonyms`), 문서를 고정하거나 제외하는 쿼리 규칙(`/es/_query_rules`)
-20. 선형, 트리, XGBoost 모델(`/es/_ml/trained_models`)을 사용하는 [Learning to rank](../docs/learning-to-rank.md) 재점수화, 순수 Go로 평가
-21. 추가 Elasticsearch API: `_msearch`, `_count`, `_delete_by_query`, `_reindex`, `_field_caps`, 별칭, 인덱스 템플릿, `_cat/indices`, `_cat/health`, `_cluster/health`
+13. 전문 검색과 kNN 결과를 융합하는 하이브리드 검색: Elasticsearch `rrf`·`linear` 리트리버(가중치, `minmax`/`l2_norm`), 레거시 `rank.rrf`, 인라인 `search_pipeline`(`normalization-processor`, `score-ranker-processor` RRF)을 사용하는 OpenSearch `hybrid` 쿼리
+14. Elasticsearch SQL API(`/es/_sql`, `/api/_sql`, `/es/_sql/translate`)를 통한 SQL 쿼리: `SELECT … WHERE` (`LIKE`, `IN`, `BETWEEN`, `IS NULL`, `MATCH()`, `QUERY()`), `COUNT`/`SUM`/`AVG`/`MIN`/`MAX`, `GROUP BY` (`HISTOGRAM`, `DATE_HISTOGRAM`), `HAVING`, `ORDER BY`, `LIMIT`, JSON·txt·csv·tsv 출력, MySQL `CREATE TABLE` [스키마를 매핑으로 사용](../docs/sql-mappings.md)
+15. 고가용성 [클러스터](../pkg/cluster/README.md): etcd로 조정되는 파티션 소유권, 펜싱 핸드오프, 레플리카, scatter-gather 검색
+16. OTLP/HTTP 기반 OpenTelemetry 추적(`zed_tracing_enable`). 모든 요청에 노드 간에 전달되는 `X-Trace-Id` 부여
+17. Fleet 및 `zedagent`(`agent/`): 에이전트 등록, 정책 관리, 로그 파일과 시스템 메트릭 전송, 단독 실행도 지원
+18. robots를 준수하는 [웹 크롤러](../pkg/crawler/README.md)(`cmd/zedcrawl`), PageRank 계산 및 ZedSearch 벌크 색인 지원
+19. 데이터 티어: hot(로컬 디스크), warm(오브젝트 스토리지), cold(모든 노드가 공유하는 읽기 전용 오브젝트 스토리지), `/api/index/{index}/_tier` 또는 인덱스 수명 주기(`warm_after`, `cold_after`, `delete_after`)와 ILM 정책(`/es/_ilm/policy`)으로 전환
+20. 검색 분석기 재로드를 지원하는 동의어 세트(`/es/_synonyms`), 문서를 고정하거나 제외하는 쿼리 규칙(`/es/_query_rules`)
+21. 선형, 트리, XGBoost 모델(`/es/_ml/trained_models`)을 사용하는 [Learning to rank](../docs/learning-to-rank.md) 재점수화, 순수 Go로 평가
+22. 추가 Elasticsearch API: `_msearch`, `_count`, `_delete_by_query`, `_reindex`, `_field_caps`, 별칭, 인덱스 템플릿, `_cat/indices`, `_cat/health`, `_cluster/health`
 
 # 벤치마크
 

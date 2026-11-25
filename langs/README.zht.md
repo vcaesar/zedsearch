@@ -91,6 +91,7 @@ curl --retry 10 --retry-connrefused -u admin:"$ZED_PASSWORD" http://localhost:40
 # Back up the shared metadata in zed-etcd-data; the copy runs only after a successful save.
 docker exec zed-etcd etcdctl snapshot save /etcd-data/snapshot.db &&
   docker cp zed-etcd:/etcd-data/snapshot.db ./etcd-snapshot.db
+
 # Restore with every node stopped: `etcdutl snapshot restore` into a new volume, then
 # empty the in-sync sets before the nodes start, since a replica listed in an old
 # snapshot may have missed later writes. Steps: pkg/cluster/README.md, "Backup and restore".
@@ -136,15 +137,16 @@ go + gin（或使用 `-tags fiber` 改用 fiber v3）+ react
 10. 多語言分析，包括中日韓（CJK）
 11. 可選擇啟用的[日誌索引](../pkg/logs/README.md)，支援事件時間正規化與日誌搜尋預設設定，可寫入 JSON、Splunk HEC、Loki、OTLP/HTTP JSON（相容 OpenObserve）及 Logstash 事件
 12. kNN 向量搜尋與地理查詢（`geo_distance`、`geo_bounding_box`、`geo_polygon`、`geo_shape`）
-13. 透過 Elasticsearch SQL API（`/es/_sql`, `/api/_sql`, `/es/_sql/translate`）執行 SQL 查詢：`SELECT … WHERE` (`LIKE`, `IN`, `BETWEEN`, `IS NULL`, `MATCH()`, `QUERY()`), `COUNT`/`SUM`/`AVG`/`MIN`/`MAX`, `GROUP BY` (`HISTOGRAM`, `DATE_HISTOGRAM`), `HAVING`, `ORDER BY`, `LIMIT`，輸出 JSON、txt、csv 或 tsv；並支援將 MySQL `CREATE TABLE` [schema 用作 mappings](../docs/sql-mappings.md)
-14. 高可用[叢集](../pkg/cluster/README.md)：以 etcd 協調的分區擁有權、具 fencing 的移交、副本以及 scatter-gather 搜尋
-15. 透過 OTLP/HTTP 匯出 OpenTelemetry 追蹤（`zed_tracing_enable`）；每個請求都有跨節點傳遞的 `X-Trace-Id`
-16. Fleet 與 `zedagent`（`agent/`）：註冊 agent、管理政策、收集日誌檔與系統指標，也可獨立執行 agent
-17. 遵循 robots 的[網頁爬蟲](../pkg/crawler/README.md)（`cmd/zedcrawl`），支援 PageRank 並批次寫入 ZedSearch
-18. 資料分層：hot（本機磁碟）、warm（物件儲存）和 cold（唯讀物件儲存，所有節點共用），可透過 `/api/index/{index}/_tier` 或索引生命週期（`warm_after`、`cold_after`、`delete_after`）及 ILM 策略（`/es/_ilm/policy`）切換
-19. 同義詞集（`/es/_synonyms`），支援重新載入搜尋分析器；查詢規則（`/es/_query_rules`）可置頂或排除文件
-20. [排序學習](../docs/learning-to-rank.md)（Learning to rank）重新評分，支援線性、樹和 XGBoost 模型（`/es/_ml/trained_models`），純 Go 實作
-21. 更多 Elasticsearch API：`_msearch`、`_count`、`_delete_by_query`、`_reindex`、`_field_caps`、別名、索引範本、`_cat/indices`、`_cat/health` 和 `_cluster/health`
+13. 融合全文與 kNN 命中的混合搜尋：Elasticsearch `rrf` 與 `linear` 檢索器（權重、`minmax`/`l2_norm`）、舊版 `rank.rrf`，以及帶內嵌 `search_pipeline`（`normalization-processor`、`score-ranker-processor` RRF）的 OpenSearch `hybrid` 查詢
+14. 透過 Elasticsearch SQL API（`/es/_sql`, `/api/_sql`, `/es/_sql/translate`）執行 SQL 查詢：`SELECT … WHERE` (`LIKE`, `IN`, `BETWEEN`, `IS NULL`, `MATCH()`, `QUERY()`), `COUNT`/`SUM`/`AVG`/`MIN`/`MAX`, `GROUP BY` (`HISTOGRAM`, `DATE_HISTOGRAM`), `HAVING`, `ORDER BY`, `LIMIT`，輸出 JSON、txt、csv 或 tsv；並支援將 MySQL `CREATE TABLE` [schema 用作 mappings](../docs/sql-mappings.md)
+15. 高可用[叢集](../pkg/cluster/README.md)：以 etcd 協調的分區擁有權、具 fencing 的移交、副本以及 scatter-gather 搜尋
+16. 透過 OTLP/HTTP 匯出 OpenTelemetry 追蹤（`zed_tracing_enable`）；每個請求都有跨節點傳遞的 `X-Trace-Id`
+17. Fleet 與 `zedagent`（`agent/`）：註冊 agent、管理政策、收集日誌檔與系統指標，也可獨立執行 agent
+18. 遵循 robots 的[網頁爬蟲](../pkg/crawler/README.md)（`cmd/zedcrawl`），支援 PageRank 並批次寫入 ZedSearch
+19. 資料分層：hot（本機磁碟）、warm（物件儲存）和 cold（唯讀物件儲存，所有節點共用），可透過 `/api/index/{index}/_tier` 或索引生命週期（`warm_after`、`cold_after`、`delete_after`）及 ILM 策略（`/es/_ilm/policy`）切換
+20. 同義詞集（`/es/_synonyms`），支援重新載入搜尋分析器；查詢規則（`/es/_query_rules`）可置頂或排除文件
+21. [排序學習](../docs/learning-to-rank.md)（Learning to rank）重新評分，支援線性、樹和 XGBoost 模型（`/es/_ml/trained_models`），純 Go 實作
+22. 更多 Elasticsearch API：`_msearch`、`_count`、`_delete_by_query`、`_reindex`、`_field_caps`、別名、索引範本、`_cat/indices`、`_cat/health` 和 `_cluster/health`
 
 # 效能測試
 

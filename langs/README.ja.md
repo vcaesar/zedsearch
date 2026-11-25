@@ -91,6 +91,7 @@ curl --retry 10 --retry-connrefused -u admin:"$ZED_PASSWORD" http://localhost:40
 # Back up the shared metadata in zed-etcd-data; the copy runs only after a successful save.
 docker exec zed-etcd etcdctl snapshot save /etcd-data/snapshot.db &&
   docker cp zed-etcd:/etcd-data/snapshot.db ./etcd-snapshot.db
+
 # Restore with every node stopped: `etcdutl snapshot restore` into a new volume, then
 # empty the in-sync sets before the nodes start, since a replica listed in an old
 # snapshot may have missed later writes. Steps: pkg/cluster/README.md, "Backup and restore".
@@ -136,15 +137,16 @@ go + gin（`-tags fiber` で fiber v3 に切り替え可能）+ react
 10. CJK を含む多言語の解析
 11. イベント時刻の正規化とログ検索のデフォルト設定を備え、JSON、Splunk HEC、Loki、OTLP/HTTP JSON（OpenObserve 互換）および Logstash のイベントを取り込める、オプトインの[ログインデックス](../pkg/logs/README.md)
 12. kNN ベクトル検索と地理クエリ（`geo_distance`、`geo_bounding_box`、`geo_polygon`、`geo_shape`）
-13. Elasticsearch SQL API（`/es/_sql`, `/api/_sql`, `/es/_sql/translate`）による SQL クエリ：`SELECT … WHERE` (`LIKE`, `IN`, `BETWEEN`, `IS NULL`, `MATCH()`, `QUERY()`), `COUNT`/`SUM`/`AVG`/`MIN`/`MAX`, `GROUP BY` (`HISTOGRAM`, `DATE_HISTOGRAM`), `HAVING`, `ORDER BY`, `LIMIT`、出力は JSON・txt・csv・tsv。MySQL の `CREATE TABLE` [スキーマをマッピングとして利用](../docs/sql-mappings.md)
-14. 高可用性[クラスター](../pkg/cluster/README.md)：etcd で調整されるパーティション所有権、フェンシング付きハンドオフ、レプリカ、scatter-gather 検索
-15. OTLP/HTTP による OpenTelemetry トレーシング（`zed_tracing_enable`）。すべてのリクエストにノードをまたいで引き継がれる `X-Trace-Id` を付与
-16. Fleet と `zedagent`（`agent/`）：エージェントの登録、ポリシー管理、ログファイルとシステムメトリクスの送信、スタンドアロン実行にも対応
-17. robots.txt を尊重する[Web クローラー](../pkg/crawler/README.md)（`cmd/zedcrawl`）、PageRank 計算と ZedSearch へのバルク投入に対応
-18. データティア：hot（ローカルディスク）、warm（オブジェクトストレージ）、cold（全ノードで共有する読み取り専用オブジェクトストレージ）。`/api/index/{index}/_tier`、またはインデックスライフサイクル（`warm_after`、`cold_after`、`delete_after`）と ILM ポリシー（`/es/_ilm/policy`）で切り替え
-19. シノニムセット（`/es/_synonyms`）と検索アナライザーの再読み込み、ドキュメントを固定・除外するクエリルール（`/es/_query_rules`）
-20. 線形・ツリー・XGBoost モデル（`/es/_ml/trained_models`）による[ランキング学習](../docs/learning-to-rank.md)のリスコア、純 Go で評価
-21. その他の Elasticsearch API：`_msearch`、`_count`、`_delete_by_query`、`_reindex`、`_field_caps`、エイリアス、インデックステンプレート、`_cat/indices`、`_cat/health`、`_cluster/health`
+13. 全文検索と kNN のヒットを融合するハイブリッド検索：Elasticsearch の `rrf`・`linear` リトリーバー（重み、`minmax`/`l2_norm`）、従来の `rank.rrf`、インライン `search_pipeline`（`normalization-processor`、`score-ranker-processor` RRF）付きの OpenSearch `hybrid` クエリ
+14. Elasticsearch SQL API（`/es/_sql`, `/api/_sql`, `/es/_sql/translate`）による SQL クエリ：`SELECT … WHERE` (`LIKE`, `IN`, `BETWEEN`, `IS NULL`, `MATCH()`, `QUERY()`), `COUNT`/`SUM`/`AVG`/`MIN`/`MAX`, `GROUP BY` (`HISTOGRAM`, `DATE_HISTOGRAM`), `HAVING`, `ORDER BY`, `LIMIT`、出力は JSON・txt・csv・tsv。MySQL の `CREATE TABLE` [スキーマをマッピングとして利用](../docs/sql-mappings.md)
+15. 高可用性[クラスター](../pkg/cluster/README.md)：etcd で調整されるパーティション所有権、フェンシング付きハンドオフ、レプリカ、scatter-gather 検索
+16. OTLP/HTTP による OpenTelemetry トレーシング（`zed_tracing_enable`）。すべてのリクエストにノードをまたいで引き継がれる `X-Trace-Id` を付与
+17. Fleet と `zedagent`（`agent/`）：エージェントの登録、ポリシー管理、ログファイルとシステムメトリクスの送信、スタンドアロン実行にも対応
+18. robots.txt を尊重する[Web クローラー](../pkg/crawler/README.md)（`cmd/zedcrawl`）、PageRank 計算と ZedSearch へのバルク投入に対応
+19. データティア：hot（ローカルディスク）、warm（オブジェクトストレージ）、cold（全ノードで共有する読み取り専用オブジェクトストレージ）。`/api/index/{index}/_tier`、またはインデックスライフサイクル（`warm_after`、`cold_after`、`delete_after`）と ILM ポリシー（`/es/_ilm/policy`）で切り替え
+20. シノニムセット（`/es/_synonyms`）と検索アナライザーの再読み込み、ドキュメントを固定・除外するクエリルール（`/es/_query_rules`）
+21. 線形・ツリー・XGBoost モデル（`/es/_ml/trained_models`）による[ランキング学習](../docs/learning-to-rank.md)のリスコア、純 Go で評価
+22. その他の Elasticsearch API：`_msearch`、`_count`、`_delete_by_query`、`_reindex`、`_field_caps`、エイリアス、インデックステンプレート、`_cat/indices`、`_cat/health`、`_cluster/health`
 
 # ベンチマーク
 

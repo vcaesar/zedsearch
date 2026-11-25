@@ -43,6 +43,16 @@ import (
 )
 
 func MultiSearch(indexNames []string, query *meta.ZedQuery) (*meta.SearchResponse, error) {
+	fusion, err := uquery.Hybrid(query)
+	if err != nil {
+		return nil, err
+	}
+	if fusion != nil {
+		return searchHybrid(query, fusion, func(q *meta.ZedQuery) (*meta.SearchResponse, error) {
+			return MultiSearch(indexNames, q)
+		})
+	}
+
 	var readers []*riot.Reader
 	var shardNum int64
 	indexes := make(map[string]*Index)

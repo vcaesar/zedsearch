@@ -91,6 +91,7 @@ curl --retry 10 --retry-connrefused -u admin:"$ZED_PASSWORD" http://localhost:40
 # Back up the shared metadata in zed-etcd-data; the copy runs only after a successful save.
 docker exec zed-etcd etcdctl snapshot save /etcd-data/snapshot.db &&
   docker cp zed-etcd:/etcd-data/snapshot.db ./etcd-snapshot.db
+
 # Restore with every node stopped: `etcdutl snapshot restore` into a new volume, then
 # empty the in-sync sets before the nodes start, since a replica listed in an old
 # snapshot may have missed later writes. Steps: pkg/cluster/README.md, "Backup and restore".
@@ -136,15 +137,16 @@ go + gin (или fiber v3 с `-tags fiber`) + react
 10. Многоязычный анализ, включая CJK
 11. Опциональные [индексы логов](../pkg/logs/README.md) с нормализацией времени событий и настройками по умолчанию для поиска по логам; приём JSON, Splunk HEC, Loki и OTLP/HTTP JSON (совместимо с OpenObserve), а также событий Logstash
 12. Векторный поиск kNN и геозапросы (`geo_distance`, `geo_bounding_box`, `geo_polygon`, `geo_shape`)
-13. SQL-запросы через Elasticsearch SQL API (`/es/_sql`, `/api/_sql`, `/es/_sql/translate`): `SELECT … WHERE` (`LIKE`, `IN`, `BETWEEN`, `IS NULL`, `MATCH()`, `QUERY()`), `COUNT`/`SUM`/`AVG`/`MIN`/`MAX`, `GROUP BY` (`HISTOGRAM`, `DATE_HISTOGRAM`), `HAVING`, `ORDER BY`, `LIMIT`, вывод в JSON, txt, csv или tsv; и [схемы MySQL `CREATE TABLE` в качестве маппингов](../docs/sql-mappings.md)
-14. Отказоустойчивый [кластер](../pkg/cluster/README.md): владение партициями через etcd, передача с fencing, реплики и scatter-gather поиск
-15. Трассировка OpenTelemetry через OTLP/HTTP (`zed_tracing_enable`); каждый запрос получает `X-Trace-Id`, который передаётся между узлами
-16. Fleet и `zedagent` (`agent/`): регистрация агентов, управление политиками, отправка лог-файлов и системных метрик или автономный режим агента
-17. [Веб-краулер](../pkg/crawler/README.md) с учётом robots.txt (`cmd/zedcrawl`), PageRank и bulk-индексацией в ZedSearch
-18. Уровни данных: hot (локальный диск), warm (объектное хранилище) и cold (объектное хранилище только для чтения, общее для всех узлов), переключаются через `/api/index/{index}/_tier` или жизненный цикл индекса (`warm_after`, `cold_after`, `delete_after`) и политики ILM (`/es/_ilm/policy`)
-19. Наборы синонимов (`/es/_synonyms`) с перезагрузкой поисковых анализаторов и правила запросов (`/es/_query_rules`), закрепляющие или исключающие документы
-20. Переранжирование [Learning to rank](../docs/learning-to-rank.md) линейными, древовидными и XGBoost-моделями (`/es/_ml/trained_models`) на чистом Go
-21. Другие API Elasticsearch: `_msearch`, `_count`, `_delete_by_query`, `_reindex`, `_field_caps`, алиасы, шаблоны индексов, `_cat/indices`, `_cat/health` и `_cluster/health`
+13. Гибридный поиск, объединяющий полнотекстовые и kNN-результаты: ретриверы Elasticsearch `rrf` и `linear` (веса, `minmax`/`l2_norm`), устаревший `rank.rrf` и запрос OpenSearch `hybrid` со встроенным `search_pipeline` (`normalization-processor`, `score-ranker-processor` RRF)
+14. SQL-запросы через Elasticsearch SQL API (`/es/_sql`, `/api/_sql`, `/es/_sql/translate`): `SELECT … WHERE` (`LIKE`, `IN`, `BETWEEN`, `IS NULL`, `MATCH()`, `QUERY()`), `COUNT`/`SUM`/`AVG`/`MIN`/`MAX`, `GROUP BY` (`HISTOGRAM`, `DATE_HISTOGRAM`), `HAVING`, `ORDER BY`, `LIMIT`, вывод в JSON, txt, csv или tsv; и [схемы MySQL `CREATE TABLE` в качестве маппингов](../docs/sql-mappings.md)
+15. Отказоустойчивый [кластер](../pkg/cluster/README.md): владение партициями через etcd, передача с fencing, реплики и scatter-gather поиск
+16. Трассировка OpenTelemetry через OTLP/HTTP (`zed_tracing_enable`); каждый запрос получает `X-Trace-Id`, который передаётся между узлами
+17. Fleet и `zedagent` (`agent/`): регистрация агентов, управление политиками, отправка лог-файлов и системных метрик или автономный режим агента
+18. [Веб-краулер](../pkg/crawler/README.md) с учётом robots.txt (`cmd/zedcrawl`), PageRank и bulk-индексацией в ZedSearch
+19. Уровни данных: hot (локальный диск), warm (объектное хранилище) и cold (объектное хранилище только для чтения, общее для всех узлов), переключаются через `/api/index/{index}/_tier` или жизненный цикл индекса (`warm_after`, `cold_after`, `delete_after`) и политики ILM (`/es/_ilm/policy`)
+20. Наборы синонимов (`/es/_synonyms`) с перезагрузкой поисковых анализаторов и правила запросов (`/es/_query_rules`), закрепляющие или исключающие документы
+21. Переранжирование [Learning to rank](../docs/learning-to-rank.md) линейными, древовидными и XGBoost-моделями (`/es/_ml/trained_models`) на чистом Go
+22. Другие API Elasticsearch: `_msearch`, `_count`, `_delete_by_query`, `_reindex`, `_field_caps`, алиасы, шаблоны индексов, `_cat/indices`, `_cat/health` и `_cluster/health`
 
 # Бенчмарки
 
