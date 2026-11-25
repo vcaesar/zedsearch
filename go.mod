@@ -29,9 +29,9 @@ require (
 	github.com/swaggo/swag v1.16.6
 	github.com/temoto/robotstxt v1.1.2
 	github.com/vcaesar/bluge_segment_api v1.2.2
-	github.com/vcaesar/ice v1.6.1
+	github.com/vcaesar/ice v1.6.2
 	github.com/vcaesar/query_string v0.6.0
-	github.com/vcaesar/riot v1.80.2
+	github.com/vcaesar/riot v1.80.3
 	github.com/zedsearch/mmap-go v1.3.0
 	github.com/zedsearch/wal v1.3.0
 	go.etcd.io/bbolt v1.5.0

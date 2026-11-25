@@ -343,7 +343,7 @@ func DeleteRule(c zhttp.Context) {
 // @Accept  json
 // @Produce json
 // @Param   id   path string                 true "Ruleset id"
-// @Param   body body rules.TestRequest true "Criteria to match, e.g. {\"match_criteria\":{\"query_string\":\"boots\"}}"
+// @Param   body body rules.TestRequest true "Criteria to match, e.g. match_criteria.query_string"
 // @Success 200 {object} rules.TestResponse
 // @Failure 400 {object} map[string]interface{}
 // @Failure 404 {object} map[string]interface{}

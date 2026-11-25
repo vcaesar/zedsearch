@@ -70,8 +70,11 @@ docker run -d --name zed-etcd --network zed --restart unless-stopped \
     --data-dir /etcd-data
 
 # Node to node traffic, with the secret, is plain HTTP on the private network "zed",
-# so ports are published on localhost only. Across hosts, advertise https:// addresses
-# or use an encrypted network. --restart retries a node that started before etcd.
+# so ports are published on localhost only. Across hosts use an encrypted network, or
+# advertise https:// addresses and serve them: ZED_SERVER_TLS_CERTIFICATE_FILE and
+# ZED_SERVER_TLS_KEY_FILE on every node (or a TLS proxy in front of it), with a
+# certificate the system roots of the other nodes trust.
+# --restart retries a node that started before etcd.
 for i in 1 2 3; do
   docker run -d --name zed$i --network zed -p 127.0.0.1:408$i:4080 --restart unless-stopped \
     -v zed$i-data:/data -e ZED_DATA_PATH=/data \
@@ -84,10 +87,12 @@ done
 
 curl --retry 10 --retry-connrefused -u admin:"$ZED_PASSWORD" http://localhost:4081/api/cluster/nodes
 
-# Back up the shared metadata in zed-etcd-data; restore a snapshot into a new
-# volume with `etcdutl snapshot restore` before starting zed-etcd on it.
-docker exec zed-etcd etcdctl snapshot save /etcd-data/snapshot.db
-docker cp zed-etcd:/etcd-data/snapshot.db ./etcd-snapshot.db
+# Back up the shared metadata in zed-etcd-data; the copy runs only after a successful save.
+docker exec zed-etcd etcdctl snapshot save /etcd-data/snapshot.db &&
+  docker cp zed-etcd:/etcd-data/snapshot.db ./etcd-snapshot.db
+# Restore with every node stopped: `etcdutl snapshot restore` into a new volume, then
+# empty the in-sync sets before the nodes start, a replica an old snapshot lists may
+# have missed writes since. Steps: pkg/cluster/README.md, "Backup and restore".
 ```
 
 ### Kubernetes
@@ -95,19 +100,24 @@ docker cp zed-etcd:/etcd-data/snapshot.db ./etcd-snapshot.db
 [k8s/cluster.yaml](../k8s/cluster.yaml) 在 Service `zedsearch` 之後執行一個三節點 StatefulSet `zedsearch-cluster`，並附帶單節點 etcd（正式環境請執行三個成員）：
 
 ```sh
+# needs cert-manager for the node TLS certificates; nodes serve HTTPS
 kubectl create namespace zedsearch
 kubectl -n zedsearch create secret generic zedsearch-admin \
     --from-literal=ZED_FIRST_ADMIN_USER=admin --from-literal=ZED_FIRST_ADMIN_PASSWORD='your_password_zed#123'
 kubectl -n zedsearch create secret generic zedsearch-cluster \
     --from-literal=ZED_CLUSTER_SECRET="$(openssl rand -hex 32)"
 kubectl apply -f k8s/cluster.yaml
-kubectl -n zedsearch port-forward svc/zedsearch 4080:4080
+kubectl -n zedsearch rollout status statefulset/zedsearch-cluster
+kubectl -n zedsearch port-forward svc/zedsearch 4080:4080 &
+kubectl -n zedsearch get secret zedsearch-tls -o jsonpath='{.data.ca\.crt}' | base64 -d > zedsearch-ca.crt
+
+curl --cacert zedsearch-ca.crt -u admin:'your_password_zed#123' https://localhost:4080/api/cluster/nodes
 ```
 
 # 為什麼選擇 ZedSearch
 
-雖然 Elasticsearch 是一款非常優秀的產品，但它複雜、需要大量資源，已有十多年歷史，並且佔用大量記憶體等資源。
-我打造 ZedSearch 是為了讓大家無需做大量工作就能更輕鬆地使用全文與向量搜尋索引、可觀測性與資料分析。
+雖然 Elasticsearch 等都是非常優秀的產品，但它們複雜、需要大量資源，已有十多年歷史，並且佔用大量記憶體等資源。
+我打造 ZedSearch 是為了讓大家無需做大量工作就能更輕鬆、更快速且免費地使用全文與向量搜尋索引、可觀測性與資料分析。
 
 # 功能：
 
@@ -121,15 +131,19 @@ go + gin（或使用 `-tags fiber` 改用 fiber v3）+ react
 6. 開箱即用的身分驗證
 7. 無結構描述（Schema less）—— 無需預先定義 schema，同一索引中的不同文件可以擁有不同的欄位。
 8. 索引可儲存於磁碟、S3、MinIO 等
-9. 支援聚合及完整的 Elasticsearch 功能
+9. 支援聚合及完整的 Elasticsearch 功能，並相容其 API
 10. 多語言支援，支援中日韓（CJK）
 11. 可選擇啟用的[日誌索引](../pkg/logs/README.md)，支援事件時間正規化與日誌搜尋預設設定，可寫入 JSON、Splunk HEC、Loki、OTLP/HTTP JSON（相容 OpenObserve）及 Logstash 事件
 12. kNN 向量搜尋與地理查詢（`geo_distance`、`geo_bounding_box`、`geo_polygon`、`geo_shape`）
-13. Elasticsearch SQL API（`/es/_sql`、`/es/_sql/translate`），並支援將 MySQL `CREATE TABLE` [schema 用作 mappings](../docs/sql-mappings.md)
+13. 透過 Elasticsearch SQL API（`/es/_sql`, `/api/_sql`, `/es/_sql/translate`）執行 SQL 查詢：`SELECT … WHERE` (`LIKE`, `IN`, `BETWEEN`, `IS NULL`, `MATCH()`, `QUERY()`), `COUNT`/`SUM`/`AVG`/`MIN`/`MAX`, `GROUP BY` (`HISTOGRAM`, `DATE_HISTOGRAM`), `HAVING`, `ORDER BY`, `LIMIT`，輸出 JSON、txt、csv 或 tsv；並支援將 MySQL `CREATE TABLE` [schema 用作 mappings](../docs/sql-mappings.md)
 14. 高可用[叢集](../pkg/cluster/README.md)：以 etcd 協調的分區擁有權、具 fencing 的移交、副本以及 scatter-gather 搜尋
 15. 透過 OTLP/HTTP 匯出 OpenTelemetry 追蹤（`zed_tracing_enable`）；每個請求都有跨節點傳遞的 `X-Trace-Id`
 16. Fleet 與 `zedagent`（`agent/`）：註冊 agent、管理政策、收集日誌檔與系統指標，也可獨立執行 agent
 17. 遵循 robots 的[網頁爬蟲](../pkg/crawler/README.md)（`cmd/zedcrawl`），支援 PageRank 並批次寫入 ZedSearch
+18. 資料分層：hot（本機磁碟）、warm（物件儲存）和 cold（唯讀物件儲存，所有節點共用），可透過 `/api/index/{index}/_tier` 或索引生命週期（`warm_after`、`cold_after`、`delete_after`）及 ILM 策略（`/es/_ilm/policy`）切換
+19. 同義詞集（`/es/_synonyms`），支援重新載入搜尋分析器；查詢規則（`/es/_query_rules`）可置頂或排除文件
+20. [排序學習](../docs/learning-to-rank.md)（Learning to rank）重新評分，支援線性、樹和 XGBoost 模型（`/es/_ml/trained_models`），純 Go 實作
+21. 更多 Elasticsearch API：`_msearch`、`_count`、`_delete_by_query`、`_reindex`、`_field_caps`、別名、索引範本、`_cat/indices`、`_cat/health` 和 `_cluster/health`
 
 # 效能測試
 
@@ -175,6 +189,31 @@ Docker 映像（未壓縮）、同樣 50,000 篇文件的文字索引（`_flush`
 | 峰值記憶體           | **388 MiB** |           858 MiB |         3,185 MiB |      3,191 MiB |        1,014 MiB |               919 MiB |
 | 平均 CPU             |    **134%** |              366% |              157% |           156% |             230% |                  140% |
 | 峰值 CPU             |        553% |              710% |              620% |           529% |             545% |              **519%** |
+
+### 向量搜尋
+
+20,000 筆 128 維餘弦向量，k=10，HNSW（M=16，ef_construction 100，100 個候選），透過 HTTP 在同一台機器與同一語料上測試。召回率、QPS 與上傳速度越高越好；向量索引為上傳後、`_flush` 前的資料增長量。
+
+| 指標                    |        ZedSearch | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 | Qdrant 1.20 | Milvus 3.0 | Weaviate 1.40 |
+| ----------------------- | ---------------: | ----------------: | -------------: | ---------------: | ----------: | ---------: | ------------: |
+| Recall@10               |            0.939 |         **0.956** |          0.823 |            0.485 |       0.891 |      0.685 |         0.595 |
+| 延遲，1 個用戶端        |      **1.47 ms** |           2.56 ms |        2.09 ms |          4.71 ms |     1.84 ms |    2.70 ms |       2.28 ms |
+| QPS，8 個用戶端         |    **1,923 QPS** |           983 QPS |      1,385 QPS |        1,025 QPS |   1,653 QPS |  1,827 QPS |     1,706 QPS |
+| 上傳 + 建立索引         | **10,070 vec/s** |       3,004 vec/s |    1,770 vec/s |        377 vec/s | 4,609 vec/s |  999 vec/s |   3,103 vec/s |
+| 向量索引，2 萬 × 128 維 |          28.3 MB |           63.9 MB |        75.6 MB |      **25.8 MB** |     41.4 MB |    34.3 MB |       75.6 MB |
+
+### 向量搜尋，3 節點叢集
+
+三次執行的中位數：三個節點、1 個副本，執行於同一台 8 vCPU 的 Docker 虛擬機，ZedSearch 使用 etcd 與 `document` 複製。各節點共用 CPU，因此衡量的是複製開銷，而非水平擴充。
+
+| 指標                          |     ZedSearch ×3 |     OpenSearch ×3 |
+| ----------------------------- | ---------------: | ----------------: |
+| Recall@10                     |        **0.960** |             0.905 |
+| 延遲，1 個用戶端              |      **1.81 ms** |           3.59 ms |
+| QPS，8 個用戶端               |    **1,611 QPS** |           970 QPS |
+| 上傳 + 建立索引               |  **4,157 vec/s** |       1,451 vec/s |
+| `_flush` 後向量索引，所有節點 |      **56.5 MB** |           70.4 MB |
+| 閒置 / 峰值記憶體，所有節點   | **78 / 902 MiB** | 4,517 / 5,360 MiB |
 
 # 文件
 

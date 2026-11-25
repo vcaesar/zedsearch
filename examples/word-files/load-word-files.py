@@ -5,7 +5,7 @@ from os import walk
 folder = "sample-files"
 
 def main():
-    zed_server = "https://playground.dev.zincsearch.com/api/books/document"
+    zed_server = "http://localhost:4080"
     zed_uid = "admin"
     zed_pwd = "Complexpass#123"
 

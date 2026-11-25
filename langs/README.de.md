@@ -70,8 +70,11 @@ docker run -d --name zed-etcd --network zed --restart unless-stopped \
     --data-dir /etcd-data
 
 # Node to node traffic, with the secret, is plain HTTP on the private network "zed",
-# so ports are published on localhost only. Across hosts, advertise https:// addresses
-# or use an encrypted network. --restart retries a node that started before etcd.
+# so ports are published on localhost only. Across hosts use an encrypted network, or
+# advertise https:// addresses and serve them: ZED_SERVER_TLS_CERTIFICATE_FILE and
+# ZED_SERVER_TLS_KEY_FILE on every node (or a TLS proxy in front of it), with a
+# certificate the system roots of the other nodes trust.
+# --restart retries a node that started before etcd.
 for i in 1 2 3; do
   docker run -d --name zed$i --network zed -p 127.0.0.1:408$i:4080 --restart unless-stopped \
     -v zed$i-data:/data -e ZED_DATA_PATH=/data \
@@ -84,10 +87,12 @@ done
 
 curl --retry 10 --retry-connrefused -u admin:"$ZED_PASSWORD" http://localhost:4081/api/cluster/nodes
 
-# Back up the shared metadata in zed-etcd-data; restore a snapshot into a new
-# volume with `etcdutl snapshot restore` before starting zed-etcd on it.
-docker exec zed-etcd etcdctl snapshot save /etcd-data/snapshot.db
-docker cp zed-etcd:/etcd-data/snapshot.db ./etcd-snapshot.db
+# Back up the shared metadata in zed-etcd-data; the copy runs only after a successful save.
+docker exec zed-etcd etcdctl snapshot save /etcd-data/snapshot.db &&
+  docker cp zed-etcd:/etcd-data/snapshot.db ./etcd-snapshot.db
+# Restore with every node stopped: `etcdutl snapshot restore` into a new volume, then
+# empty the in-sync sets before the nodes start, a replica an old snapshot lists may
+# have missed writes since. Steps: pkg/cluster/README.md, "Backup and restore".
 ```
 
 ### Kubernetes
@@ -95,19 +100,24 @@ docker cp zed-etcd:/etcd-data/snapshot.db ./etcd-snapshot.db
 [k8s/cluster.yaml](../k8s/cluster.yaml) startet ein StatefulSet `zedsearch-cluster` mit drei Knoten hinter dem Service `zedsearch`, mit einem etcd aus einem Knoten (in Produktion drei Mitglieder betreiben):
 
 ```sh
+# needs cert-manager for the node TLS certificates; nodes serve HTTPS
 kubectl create namespace zedsearch
 kubectl -n zedsearch create secret generic zedsearch-admin \
     --from-literal=ZED_FIRST_ADMIN_USER=admin --from-literal=ZED_FIRST_ADMIN_PASSWORD='your_password_zed#123'
 kubectl -n zedsearch create secret generic zedsearch-cluster \
     --from-literal=ZED_CLUSTER_SECRET="$(openssl rand -hex 32)"
 kubectl apply -f k8s/cluster.yaml
-kubectl -n zedsearch port-forward svc/zedsearch 4080:4080
+kubectl -n zedsearch rollout status statefulset/zedsearch-cluster
+kubectl -n zedsearch port-forward svc/zedsearch 4080:4080 &
+kubectl -n zedsearch get secret zedsearch-tls -o jsonpath='{.data.ca\.crt}' | base64 -d > zedsearch-ca.crt
+
+curl --cacert zedsearch-ca.crt -u admin:'your_password_zed#123' https://localhost:4080/api/cluster/nodes
 ```
 
 # Warum ZedSearch
 
-Elasticsearch ist zwar ein sehr gutes Produkt, aber es ist komplex, benötigt viele Ressourcen, ist über ein Jahrzehnt alt und verbraucht viel Speicher und mehr.
-Ich habe ZedSearch entwickelt, damit man Volltext- und Vektor-Suchindizierung, Observability und Datenanalyse ohne viel Aufwand einfacher nutzen kann.
+Elasticsearch und andere sind zwar sehr gute Produkte, aber sie sind komplex, benötigen viele Ressourcen, sind über ein Jahrzehnt alt und verbrauchen viel Speicher und mehr.
+Ich habe ZedSearch entwickelt, damit man Volltext- und Vektor-Suchindizierung, Observability und Datenanalyse ohne viel Aufwand einfacher, schneller und kostenlos nutzen kann.
 
 # Funktionen:
 
@@ -121,15 +131,19 @@ go + gin (oder fiber v3 mit `-tags fiber`) + react
 6. Authentifizierung ab Werk
 7. Schemalos – kein Schema muss vorab definiert werden, und verschiedene Dokumente im selben Index können unterschiedliche Felder haben.
 8. Indexspeicherung auf Festplatte, S3, MinIO und mehr
-9. Unterstützung für Aggregationen und den vollen Elasticsearch-Funktionsumfang
+9. Unterstützung für Aggregationen und den vollen Elasticsearch-Funktionsumfang, API-kompatibel
 10. Mehrsprachige Unterstützung, inklusive CJK
 11. Optionale [Log-Indizes](../pkg/logs/README.md) mit Normalisierung der Ereigniszeit und Standardeinstellungen für die Log-Suche; Aufnahme von JSON, Splunk HEC, Loki und OTLP/HTTP JSON (OpenObserve-kompatibel) sowie Logstash-Ereignissen
 12. kNN-Vektorsuche und Geo-Abfragen (`geo_distance`, `geo_bounding_box`, `geo_polygon`, `geo_shape`)
-13. Elasticsearch-SQL-API (`/es/_sql`, `/es/_sql/translate`) und [MySQL-`CREATE TABLE`-Schemas als Mappings](../docs/sql-mappings.md)
+13. SQL-Abfragen über die Elasticsearch-SQL-API (`/es/_sql`, `/api/_sql`, `/es/_sql/translate`): `SELECT … WHERE` (`LIKE`, `IN`, `BETWEEN`, `IS NULL`, `MATCH()`, `QUERY()`), `COUNT`/`SUM`/`AVG`/`MIN`/`MAX`, `GROUP BY` (`HISTOGRAM`, `DATE_HISTOGRAM`), `HAVING`, `ORDER BY`, `LIMIT`, Ausgabe als JSON, txt, csv oder tsv; und [MySQL-`CREATE TABLE`-Schemas als Mappings](../docs/sql-mappings.md)
 14. Hochverfügbarer [Cluster](../pkg/cluster/README.md): über etcd koordinierter Partitionsbesitz, Übergabe mit Fencing, Replikate und Scatter-Gather-Suche
 15. OpenTelemetry-Tracing über OTLP/HTTP (`zed_tracing_enable`); jede Anfrage erhält eine `X-Trace-Id`, die ihr über alle Knoten folgt
 16. Fleet und `zedagent` (`agent/`): Agents registrieren, Richtlinien verwalten, Logdateien und Systemmetriken senden oder den Agent eigenständig betreiben
 17. robots-konformer [Web-Crawler](../pkg/crawler/README.md) (`cmd/zedcrawl`) mit PageRank und Bulk-Indizierung in ZedSearch
+18. Daten-Tiers: hot (lokale Festplatte), warm (Objektspeicher) und cold (schreibgeschützter, von allen Knoten geteilter Objektspeicher), umgeschaltet über `/api/index/{index}/_tier` oder den Index-Lebenszyklus (`warm_after`, `cold_after`, `delete_after`) und ILM-Richtlinien (`/es/_ilm/policy`)
+19. Synonym-Sets (`/es/_synonyms`) mit Neuladen der Such-Analyzer sowie Query-Regeln (`/es/_query_rules`), die Dokumente anheften oder ausschließen
+20. [Learning to rank](../docs/learning-to-rank.md)-Rescoring mit linearen, Baum- und XGBoost-Modellen (`/es/_ml/trained_models`), in reinem Go ausgewertet
+21. Weitere Elasticsearch-APIs: `_msearch`, `_count`, `_delete_by_query`, `_reindex`, `_field_caps`, Aliase, Index-Templates, `_cat/indices`, `_cat/health` und `_cluster/health`
 
 # Benchmarks
 
@@ -175,6 +189,31 @@ Docker-Image (unkomprimiert), Textindex derselben 50.000 Dokumente (nach `_flush
 | Speicher-Spitze          | **388 MiB** |           858 MiB |         3,185 MiB |      3,191 MiB |        1,014 MiB |                   919 MiB |
 | CPU Mittel               |    **134%** |              366% |              157% |           156% |             230% |                      140% |
 | CPU Spitze               |        553% |              710% |              620% |           529% |             545% |                  **519%** |
+
+### Vektorsuche
+
+20.000 Kosinus-Vektoren mit 128 Dimensionen, k=10, HNSW (M=16, ef_construction 100, 100 Kandidaten), über HTTP auf derselben Maschine und demselben Korpus. Höher ist besser bei Recall, QPS und Upload; der Vektorindex ist das Datenwachstum nach dem Upload, vor `_flush`.
+
+| Kennzahl                 |        ZedSearch | Elasticsearch 9.5 | OpenSearch 3.9 | Meilisearch 1.56 | Qdrant 1.20 | Milvus 3.0 | Weaviate 1.40 |
+| ------------------------ | ---------------: | ----------------: | -------------: | ---------------: | ----------: | ---------: | ------------: |
+| Recall@10                |            0.939 |         **0.956** |          0.823 |            0.485 |       0.891 |      0.685 |         0.595 |
+| Latenz, 1 Client         |      **1.47 ms** |           2.56 ms |        2.09 ms |          4.71 ms |     1.84 ms |    2.70 ms |       2.28 ms |
+| QPS, 8 Clients           |    **1,923 QPS** |           983 QPS |      1,385 QPS |        1,025 QPS |   1,653 QPS |  1,827 QPS |     1,706 QPS |
+| Upload + Indexierung     | **10,070 vec/s** |       3,004 vec/s |    1,770 vec/s |        377 vec/s | 4,609 vec/s |  999 vec/s |   3,103 vec/s |
+| Vektorindex, 20k × 128-d |          28.3 MB |           63.9 MB |        75.6 MB |      **25.8 MB** |     41.4 MB |    34.3 MB |       75.6 MB |
+
+### Vektorsuche, 3-Knoten-Cluster
+
+Mediane dreier Läufe: drei Knoten mit 1 Replik auf einer 8-vCPU-Docker-VM, ZedSearch mit etcd und `document`-Replikation. Die Knoten teilen sich die CPUs, gemessen wird also der Replikationsaufwand, nicht Scale-out.
+
+| Kennzahl                                |     ZedSearch ×3 |     OpenSearch ×3 |
+| --------------------------------------- | ---------------: | ----------------: |
+| Recall@10                               |        **0.960** |             0.905 |
+| Latenz, 1 Client                        |      **1.81 ms** |           3.59 ms |
+| QPS, 8 Clients                          |    **1,611 QPS** |           970 QPS |
+| Upload + Indexierung                    |  **4,157 vec/s** |       1,451 vec/s |
+| Vektorindex nach `_flush`, alle Knoten  |      **56.5 MB** |           70.4 MB |
+| Speicher Leerlauf / Spitze, alle Knoten | **78 / 902 MiB** | 4,517 / 5,360 MiB |
 
 # Dokumentation
 
