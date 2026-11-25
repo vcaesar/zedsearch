@@ -22,7 +22,7 @@ Il utilise [vcaesar/riot](https://github.com/vcaesar/riot) comme bibliothèque d
 
 Il est très simple et facile à exploiter, contrairement à Elasticsearch qui nécessite de comprendre et d'ajuster une vingtaine de paramètres. Vous pouvez démarrer ZedSearch en 1 minute.
 
-C'est un remplacement direct d'Elasticsearch si vous vous contentez d'ingérer des données via les API et de rechercher avec Kibana (Kibana n'est pas pris en charge par ZedSearch. ZedSearch fournit sa propre interface).
+C'est un remplacement direct d'Elasticsearch si vous ingérez et recherchez des données uniquement via ses API. Kibana n'est pas pris en charge, ZedSearch fournit sa propre interface.
 
 <!-- Regardez la vidéo ci-dessous pour une démonstration rapide de ZedSearch. -->
 <!-- [![Zed Youtube](../screenshots/zed-youtube.jpg)](https://www.youtube.com/watch?v=aZXtuVjt1ow) -->
@@ -73,7 +73,8 @@ docker run -d --name zed-etcd --network zed --restart unless-stopped \
 # so ports are published on localhost only. Across hosts use an encrypted network, or
 # advertise https:// addresses and serve them: ZED_SERVER_TLS_CERTIFICATE_FILE and
 # ZED_SERVER_TLS_KEY_FILE on every node (or a TLS proxy in front of it), with a
-# certificate the system roots of the other nodes trust.
+# certificate the other nodes trust (system roots, or a private CA added with
+# SSL_CERT_FILE / SSL_CERT_DIR as k8s/cluster.yaml does).
 # --restart retries a node that started before etcd.
 for i in 1 2 3; do
   docker run -d --name zed$i --network zed -p 127.0.0.1:408$i:4080 --restart unless-stopped \
@@ -91,8 +92,8 @@ curl --retry 10 --retry-connrefused -u admin:"$ZED_PASSWORD" http://localhost:40
 docker exec zed-etcd etcdctl snapshot save /etcd-data/snapshot.db &&
   docker cp zed-etcd:/etcd-data/snapshot.db ./etcd-snapshot.db
 # Restore with every node stopped: `etcdutl snapshot restore` into a new volume, then
-# empty the in-sync sets before the nodes start, a replica an old snapshot lists may
-# have missed writes since. Steps: pkg/cluster/README.md, "Backup and restore".
+# empty the in-sync sets before the nodes start, since a replica listed in an old
+# snapshot may have missed later writes. Steps: pkg/cluster/README.md, "Backup and restore".
 ```
 
 ### Kubernetes
@@ -111,15 +112,15 @@ kubectl -n zedsearch rollout status statefulset/zedsearch-cluster
 kubectl -n zedsearch port-forward svc/zedsearch 4080:4080 &
 kubectl -n zedsearch get secret zedsearch-tls -o jsonpath='{.data.ca\.crt}' | base64 -d > zedsearch-ca.crt
 
-curl --cacert zedsearch-ca.crt -u admin:'your_password_zed#123' https://localhost:4080/api/cluster/nodes
+curl --retry 10 --retry-connrefused --cacert zedsearch-ca.crt -u admin:'your_password_zed#123' https://localhost:4080/api/cluster/nodes
 ```
 
 # Pourquoi ZedSearch
 
-Bien qu'Elasticsearch et d'autres soient de très bons produits, ils sont complexes, exigent beaucoup de ressources, ont plus de dix ans et consomment beaucoup de mémoire, entre autres.
-J'ai créé ZedSearch pour qu'il soit plus facile, plus rapide et gratuit d'utiliser l'indexation de recherche plein texte et vectorielle, l'observabilité et l'analyse de données sans trop d'efforts.
+Elasticsearch et les moteurs similaires sont de très bons produits, mais ils sont complexes, demandent beaucoup de mémoire et d'autres ressources, et portent plus de dix ans d'historique de conception.
+J'ai créé ZedSearch pour que la recherche plein texte et vectorielle, l'observabilité et l'analyse de données deviennent plus simples, plus rapides et gratuites, sans trop d'efforts.
 
-# Fonctionnalités :
+# Fonctionnalités
 
 go + gin (ou fiber v3 avec `-tags fiber`) + react
 
@@ -131,8 +132,8 @@ go + gin (ou fiber v3 avec `-tags fiber`) + react
 6. Authentification prête à l'emploi
 7. Sans schéma - inutile de définir un schéma à l'avance, et différents documents d'un même index peuvent avoir des champs différents.
 8. Stockage des index sur disque, S3, MinIO et autres
-9. Prise en charge des agrégations et de l'ensemble des fonctionnalités Elasticsearch, avec compatibilité API
-10. Prise en charge multilingue, y compris CJK
+9. Agrégations et large compatibilité avec l'API Elasticsearch, avec prise en charge complète des fonctionnalités
+10. Analyse multilingue, y compris CJK
 11. [Index de logs](../pkg/logs/README.md) optionnels avec normalisation de l'horodatage des événements et paramètres par défaut pour la recherche de logs, ingérant JSON, Splunk HEC, Loki et OTLP/HTTP JSON (compatible OpenObserve) ainsi que les événements Logstash
 12. Recherche vectorielle kNN et requêtes géographiques (`geo_distance`, `geo_bounding_box`, `geo_polygon`, `geo_shape`)
 13. Requêtes SQL via l'API SQL Elasticsearch (`/es/_sql`, `/api/_sql`, `/es/_sql/translate`) : `SELECT … WHERE` (`LIKE`, `IN`, `BETWEEN`, `IS NULL`, `MATCH()`, `QUERY()`), `COUNT`/`SUM`/`AVG`/`MIN`/`MAX`, `GROUP BY` (`HISTOGRAM`, `DATE_HISTOGRAM`), `HAVING`, `ORDER BY`, `LIMIT`, sortie JSON, txt, csv ou tsv ; et [schémas MySQL `CREATE TABLE` comme mappings](../docs/sql-mappings.md)
@@ -280,7 +281,9 @@ zed_shard_num = 3
 
 # Exemples
 
-Vous pouvez utiliser ZedSearch pour indexer et rechercher n'importe quelles données. Voici quelques exemples créés par la communauté pour indexer et rechercher le jeu de données d'e-mails Enron avec zedsearch :
+Vous pouvez utiliser ZedSearch pour indexer et rechercher n'importe quelles données. [examples/](../examples) contient des scripts Python qui indexent un document, chargent des fichiers Word et les recherchent.
+
+Projets de la communauté qui indexent et recherchent le jeu de données d'e-mails Enron avec ZincSearch (ZedSearch conserve ses endpoints `/api`) :
 
 1. https://github.com/jorgeloaiza48/Enron-Email-DataSet
 1. https://github.com/jhojanperlaza/email_search_engine

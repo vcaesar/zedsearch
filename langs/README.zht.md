@@ -22,7 +22,7 @@ ZedSearch 是一個進行全文索引與向量索引的搜尋引擎，也是一�
 
 相較於需要理解與調整數十個參數的 Elasticsearch，它非常簡單且容易維運。你可以在 1 分鐘內啟動並執行 ZedSearch。
 
-如果你只是透過 API 寫入資料並使用 Kibana 進行搜尋，它可以直接取代 Elasticsearch（ZedSearch 不支援 Kibana，ZedSearch 提供自己的 UI）。
+如果你只透過 API 寫入與搜尋資料，它可以直接取代 Elasticsearch。ZedSearch 不支援 Kibana，但提供自己的 UI。
 
 <!-- 觀看下方影片，快速了解 ZedSearch 的展示。 -->
 <!-- [![Zed Youtube](../screenshots/zed-youtube.jpg)](https://www.youtube.com/watch?v=aZXtuVjt1ow) -->
@@ -73,7 +73,8 @@ docker run -d --name zed-etcd --network zed --restart unless-stopped \
 # so ports are published on localhost only. Across hosts use an encrypted network, or
 # advertise https:// addresses and serve them: ZED_SERVER_TLS_CERTIFICATE_FILE and
 # ZED_SERVER_TLS_KEY_FILE on every node (or a TLS proxy in front of it), with a
-# certificate the system roots of the other nodes trust.
+# certificate the other nodes trust (system roots, or a private CA added with
+# SSL_CERT_FILE / SSL_CERT_DIR as k8s/cluster.yaml does).
 # --restart retries a node that started before etcd.
 for i in 1 2 3; do
   docker run -d --name zed$i --network zed -p 127.0.0.1:408$i:4080 --restart unless-stopped \
@@ -91,8 +92,8 @@ curl --retry 10 --retry-connrefused -u admin:"$ZED_PASSWORD" http://localhost:40
 docker exec zed-etcd etcdctl snapshot save /etcd-data/snapshot.db &&
   docker cp zed-etcd:/etcd-data/snapshot.db ./etcd-snapshot.db
 # Restore with every node stopped: `etcdutl snapshot restore` into a new volume, then
-# empty the in-sync sets before the nodes start, a replica an old snapshot lists may
-# have missed writes since. Steps: pkg/cluster/README.md, "Backup and restore".
+# empty the in-sync sets before the nodes start, since a replica listed in an old
+# snapshot may have missed later writes. Steps: pkg/cluster/README.md, "Backup and restore".
 ```
 
 ### Kubernetes
@@ -111,15 +112,15 @@ kubectl -n zedsearch rollout status statefulset/zedsearch-cluster
 kubectl -n zedsearch port-forward svc/zedsearch 4080:4080 &
 kubectl -n zedsearch get secret zedsearch-tls -o jsonpath='{.data.ca\.crt}' | base64 -d > zedsearch-ca.crt
 
-curl --cacert zedsearch-ca.crt -u admin:'your_password_zed#123' https://localhost:4080/api/cluster/nodes
+curl --retry 10 --retry-connrefused --cacert zedsearch-ca.crt -u admin:'your_password_zed#123' https://localhost:4080/api/cluster/nodes
 ```
 
 # 為什麼選擇 ZedSearch
 
-雖然 Elasticsearch 等都是非常優秀的產品，但它們複雜、需要大量資源，已有十多年歷史，並且佔用大量記憶體等資源。
-我打造 ZedSearch 是為了讓大家無需做大量工作就能更輕鬆、更快速且免費地使用全文與向量搜尋索引、可觀測性與資料分析。
+Elasticsearch 及同類引擎都是非常優秀的產品，但它們複雜，需要大量記憶體與其他資源，並背負著十多年的設計歷史。
+我打造 ZedSearch，是為了讓全文與向量搜尋、可觀測性與資料分析無需大量工作就能更輕鬆、更快速且免費地使用。
 
-# 功能：
+# 功能
 
 go + gin（或使用 `-tags fiber` 改用 fiber v3）+ react
 
@@ -131,8 +132,8 @@ go + gin（或使用 `-tags fiber` 改用 fiber v3）+ react
 6. 開箱即用的身分驗證
 7. 無結構描述（Schema less）—— 無需預先定義 schema，同一索引中的不同文件可以擁有不同的欄位。
 8. 索引可儲存於磁碟、S3、MinIO 等
-9. 支援聚合及完整的 Elasticsearch 功能，並相容其 API
-10. 多語言支援，支援中日韓（CJK）
+9. 聚合以及廣泛的 Elasticsearch API 相容性，支援完整功能
+10. 多語言分析，包括中日韓（CJK）
 11. 可選擇啟用的[日誌索引](../pkg/logs/README.md)，支援事件時間正規化與日誌搜尋預設設定，可寫入 JSON、Splunk HEC、Loki、OTLP/HTTP JSON（相容 OpenObserve）及 Logstash 事件
 12. kNN 向量搜尋與地理查詢（`geo_distance`、`geo_bounding_box`、`geo_polygon`、`geo_shape`）
 13. 透過 Elasticsearch SQL API（`/es/_sql`, `/api/_sql`, `/es/_sql/translate`）執行 SQL 查詢：`SELECT … WHERE` (`LIKE`, `IN`, `BETWEEN`, `IS NULL`, `MATCH()`, `QUERY()`), `COUNT`/`SUM`/`AVG`/`MIN`/`MAX`, `GROUP BY` (`HISTOGRAM`, `DATE_HISTOGRAM`), `HAVING`, `ORDER BY`, `LIMIT`，輸出 JSON、txt、csv 或 tsv；並支援將 MySQL `CREATE TABLE` [schema 用作 mappings](../docs/sql-mappings.md)
@@ -280,7 +281,9 @@ zed_shard_num = 3
 
 # 範例
 
-你可以使用 ZedSearch 索引與搜尋任何資料。以下是一些社群成員使用 zedsearch 索引與搜尋 Enron 電子郵件資料集的範例：
+你可以使用 ZedSearch 索引與搜尋任何資料。[examples/](../examples) 中有索引單一文件、載入 Word 檔案並進行搜尋的 Python 腳本。
+
+使用 ZincSearch 索引與搜尋 Enron 電子郵件資料集的社群專案（ZedSearch 保留了其 `/api` 端點）：
 
 1. https://github.com/jorgeloaiza48/Enron-Email-DataSet
 1. https://github.com/jhojanperlaza/email_search_engine

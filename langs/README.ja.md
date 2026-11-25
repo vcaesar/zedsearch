@@ -22,7 +22,7 @@ Elasticsearch、OpenSearch、Datadog、Splunk の軽量な代替であり、わ�
 
 理解や調整に何十ものパラメータを必要とする Elasticsearch とは異なり、非常にシンプルで運用が簡単です。ZedSearch は 1 分で起動して動かすことができます。
 
-API でデータを取り込み、Kibana で検索するだけであれば、Elasticsearch のドロップイン置き換えとして使えます（ZedSearch は Kibana をサポートしていません。ZedSearch は独自の UI を提供します）。
+API だけでデータを取り込んで検索するのであれば、Elasticsearch のドロップイン置き換えとして使えます。Kibana はサポートしていませんが、ZedSearch は独自の UI を提供します。
 
 <!-- ZedSearch の簡単なデモは以下の動画をご覧ください。 -->
 <!-- [![Zed Youtube](../screenshots/zed-youtube.jpg)](https://www.youtube.com/watch?v=aZXtuVjt1ow) -->
@@ -73,7 +73,8 @@ docker run -d --name zed-etcd --network zed --restart unless-stopped \
 # so ports are published on localhost only. Across hosts use an encrypted network, or
 # advertise https:// addresses and serve them: ZED_SERVER_TLS_CERTIFICATE_FILE and
 # ZED_SERVER_TLS_KEY_FILE on every node (or a TLS proxy in front of it), with a
-# certificate the system roots of the other nodes trust.
+# certificate the other nodes trust (system roots, or a private CA added with
+# SSL_CERT_FILE / SSL_CERT_DIR as k8s/cluster.yaml does).
 # --restart retries a node that started before etcd.
 for i in 1 2 3; do
   docker run -d --name zed$i --network zed -p 127.0.0.1:408$i:4080 --restart unless-stopped \
@@ -91,8 +92,8 @@ curl --retry 10 --retry-connrefused -u admin:"$ZED_PASSWORD" http://localhost:40
 docker exec zed-etcd etcdctl snapshot save /etcd-data/snapshot.db &&
   docker cp zed-etcd:/etcd-data/snapshot.db ./etcd-snapshot.db
 # Restore with every node stopped: `etcdutl snapshot restore` into a new volume, then
-# empty the in-sync sets before the nodes start, a replica an old snapshot lists may
-# have missed writes since. Steps: pkg/cluster/README.md, "Backup and restore".
+# empty the in-sync sets before the nodes start, since a replica listed in an old
+# snapshot may have missed later writes. Steps: pkg/cluster/README.md, "Backup and restore".
 ```
 
 ### Kubernetes
@@ -111,15 +112,15 @@ kubectl -n zedsearch rollout status statefulset/zedsearch-cluster
 kubectl -n zedsearch port-forward svc/zedsearch 4080:4080 &
 kubectl -n zedsearch get secret zedsearch-tls -o jsonpath='{.data.ca\.crt}' | base64 -d > zedsearch-ca.crt
 
-curl --cacert zedsearch-ca.crt -u admin:'your_password_zed#123' https://localhost:4080/api/cluster/nodes
+curl --retry 10 --retry-connrefused --cacert zedsearch-ca.crt -u admin:'your_password_zed#123' https://localhost:4080/api/cluster/nodes
 ```
 
 # なぜ ZedSearch なのか
 
-Elasticsearch などは非常に優れた製品ですが、複雑で多くのリソースを必要とし、10 年以上前から存在しており、大量のメモリなどを消費します。
-ZedSearch は、多くの手間をかけずに全文・ベクトル検索インデックス、オブザーバビリティ、データ分析を誰もがより簡単・高速に、無料で使えるようにするために作りました。
+Elasticsearch や同種のエンジンは非常に優れた製品ですが、複雑で、多くのメモリやその他のリソースを必要とし、10 年以上にわたる設計の歴史を抱えています。
+ZedSearch は、全文検索とベクトル検索、オブザーバビリティ、データ分析を、手間をかけずにより簡単・高速・無料で使えるようにするために作りました。
 
-# 機能：
+# 機能
 
 go + gin（`-tags fiber` で fiber v3 に切り替え可能）+ react
 
@@ -131,8 +132,8 @@ go + gin（`-tags fiber` で fiber v3 に切り替え可能）+ react
 6. すぐに使える認証機能
 7. スキーマレス - 事前にスキーマを定義する必要がなく、同じインデックス内の異なるドキュメントが異なるフィールドを持てます。
 8. インデックスはディスク、S3、MinIO などに保存可能
-9. 集計（aggregation）と Elasticsearch の豊富な機能をサポートし、API 互換
-10. 多言語対応、CJK（中国語・日本語・韓国語）をサポート
+9. アグリゲーションと幅広い Elasticsearch API 互換性、フル機能のサポート
+10. CJK を含む多言語の解析
 11. イベント時刻の正規化とログ検索のデフォルト設定を備え、JSON、Splunk HEC、Loki、OTLP/HTTP JSON（OpenObserve 互換）および Logstash のイベントを取り込める、オプトインの[ログインデックス](../pkg/logs/README.md)
 12. kNN ベクトル検索と地理クエリ（`geo_distance`、`geo_bounding_box`、`geo_polygon`、`geo_shape`）
 13. Elasticsearch SQL API（`/es/_sql`, `/api/_sql`, `/es/_sql/translate`）による SQL クエリ：`SELECT … WHERE` (`LIKE`, `IN`, `BETWEEN`, `IS NULL`, `MATCH()`, `QUERY()`), `COUNT`/`SUM`/`AVG`/`MIN`/`MAX`, `GROUP BY` (`HISTOGRAM`, `DATE_HISTOGRAM`), `HAVING`, `ORDER BY`, `LIMIT`、出力は JSON・txt・csv・tsv。MySQL の `CREATE TABLE` [スキーマをマッピングとして利用](../docs/sql-mappings.md)
@@ -280,7 +281,9 @@ zed_shard_num = 3
 
 # 例
 
-ZedSearch を使ってあらゆるデータをインデックス化・検索できます。以下は、zedsearch を使って Enron メールデータセットをインデックス化・検索した例です：
+ZedSearch ではあらゆるデータをインデックスして検索できます。[examples/](../examples) には、ドキュメントのインデックス、Word ファイルの読み込み、検索を行う Python スクリプトがあります。
+
+ZincSearch で Enron メールデータセットをインデックス・検索するコミュニティプロジェクト（ZedSearch はその `/api` エンドポイントを維持しています）：
 
 1. https://github.com/jorgeloaiza48/Enron-Email-DataSet
 1. https://github.com/jhojanperlaza/email_search_engine

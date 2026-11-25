@@ -18,11 +18,11 @@ English | [简体中文](langs/README.zh.md) | [繁體中文](langs/README.zht.m
 
 ZedSearch is a search engine that does full text and vector indexing, and cloud-native platform for observability logs, metrics, traces, analytics, monitoring, AI.
 It is a lightweight alternative to Elasticsearch, OpenSearch, Datadog, Splunk and runs using a fraction of the resources.
-It uses the [vcaesar/riot](https://github.com/vcaesar/riot) as the underlying indexing library.
+It uses [vcaesar/riot](https://github.com/vcaesar/riot) as the underlying indexing library.
 
-It is very simple and easy to operate as opposed to Elasticsearch which requires a couple dozen knobs to understand and tune. You can get ZedSearch up and running in 1 minutes.
+It is very simple and easy to operate as opposed to Elasticsearch which requires a couple dozen knobs to understand and tune. You can get ZedSearch up and running in a minute.
 
-It is a drop-in replacement for Elasticsearch if you are just ingesting data using APIs and searching using kibana (Kibana is not supported with ZedSearch. ZedSearch provides its own UI).
+It is a drop-in replacement for Elasticsearch if you only ingest and search data through its APIs. Kibana is not supported, ZedSearch provides its own UI.
 
 <!-- Check the below video for a quick demo of ZedSearch. -->
 <!-- [![Zed Youtube](./screenshots/zed-youtube.jpg)](https://www.youtube.com/watch?v=aZXtuVjt1ow) -->
@@ -73,7 +73,8 @@ docker run -d --name zed-etcd --network zed --restart unless-stopped \
 # so ports are published on localhost only. Across hosts use an encrypted network, or
 # advertise https:// addresses and serve them: ZED_SERVER_TLS_CERTIFICATE_FILE and
 # ZED_SERVER_TLS_KEY_FILE on every node (or a TLS proxy in front of it), with a
-# certificate the system roots of the other nodes trust.
+# certificate the other nodes trust (system roots, or a private CA added with
+# SSL_CERT_FILE / SSL_CERT_DIR as k8s/cluster.yaml does).
 # --restart retries a node that started before etcd.
 for i in 1 2 3; do
   docker run -d --name zed$i --network zed -p 127.0.0.1:408$i:4080 --restart unless-stopped \
@@ -92,8 +93,8 @@ docker exec zed-etcd etcdctl snapshot save /etcd-data/snapshot.db &&
   docker cp zed-etcd:/etcd-data/snapshot.db ./etcd-snapshot.db
 
 # Restore with every node stopped: `etcdutl snapshot restore` into a new volume, then
-# empty the in-sync sets before the nodes start, a replica an old snapshot lists may
-# have missed writes since. Steps: pkg/cluster/README.md, "Backup and restore".
+# empty the in-sync sets before the nodes start, since a replica listed in an old
+# snapshot may have missed later writes. Steps: pkg/cluster/README.md, "Backup and restore".
 ```
 
 ### Kubernetes
@@ -112,15 +113,15 @@ kubectl -n zedsearch rollout status statefulset/zedsearch-cluster
 kubectl -n zedsearch port-forward svc/zedsearch 4080:4080 &
 kubectl -n zedsearch get secret zedsearch-tls -o jsonpath='{.data.ca\.crt}' | base64 -d > zedsearch-ca.crt
 
-curl --cacert zedsearch-ca.crt -u admin:'your_password_zed#123' https://localhost:4080/api/cluster/nodes
+curl --retry 10 --retry-connrefused --cacert zedsearch-ca.crt -u admin:'your_password_zed#123' https://localhost:4080/api/cluster/nodes
 ```
 
 # Why ZedSearch
 
-While Elasticsearch and others is a very good product, it is complex and requires lots of resources and is more than a decade old, so many memory and others.
-I built ZedSearch so it becomes easier, faster and free for folks to use full text and vector search indexing, observability and data analytics without doing a lot of work.
+Elasticsearch and similar engines are very good products, but they are complex, need a lot of memory and other resources, and carry more than a decade of design history.
+I built ZedSearch so that full text and vector search, observability and data analytics become easier, faster and free to use without a lot of work.
 
-# Features:
+# Features
 
 go + gin (or fiber v3 with `-tags fiber`) + react
 
@@ -132,8 +133,8 @@ go + gin (or fiber v3 with `-tags fiber`) + react
 1. Out of the box authentication
 1. Schema less - No need to define schema upfront and different documents in the same index can have different fields.
 1. Index storage in disk, s3, minio and others
-1. aggregation and full Elasticsearch features support, and API compatibility
-1. multi languages support, support CJK
+1. Aggregations and broad Elasticsearch API compatibility and full features support
+1. Multi-language analysis, including CJK
 1. Opt-in [logs indexes](./pkg/logs/README.md) with event-time normalization and log search defaults, ingesting JSON, Splunk HEC, Loki and OTLP/HTTP JSON (OpenObserve-compatible) and Logstash events
 1. kNN vector search and geo queries (`geo_distance`, `geo_bounding_box`, `geo_polygon`, `geo_shape`)
 1. SQL queries through the Elasticsearch SQL API (`/es/_sql`, `/api/_sql`, `/es/_sql/translate`): `SELECT` with `WHERE` (`LIKE`, `IN`, `BETWEEN`, `IS NULL`, `MATCH()`, `QUERY()`), `COUNT`/`SUM`/`AVG`/`MIN`/`MAX`, `GROUP BY` (`HISTOGRAM`, `DATE_HISTOGRAM`), `HAVING`, `ORDER BY`, `LIMIT`, with JSON, txt, csv or tsv output; and MySQL `CREATE TABLE` [schemas as mappings](./docs/sql-mappings.md)
@@ -281,7 +282,9 @@ zed_shard_num = 3
 
 # Examples
 
-You can use ZedSearch to index and search any data. Here are some examples that folks have created to index and search enron email dataset using zedsearch:
+You can use ZedSearch to index and search any data. [examples/](./examples) has Python scripts that index a document, load Word files and search them.
+
+Community projects that index and search the Enron email dataset with ZincSearch (ZedSearch keeps its `/api` endpoints):
 
 1. https://github.com/jorgeloaiza48/Enron-Email-DataSet
 1. https://github.com/jhojanperlaza/email_search_engine

@@ -1,14 +1,80 @@
 # Three-node ZedSearch cluster (pkg/cluster) with a single-node etcd.
-# Create the Secrets first, see admin-secret.yaml and:
+# Needs cert-manager (https://cert-manager.io) for the node to node TLS
+# certificates and a CNI that enforces NetworkPolicy. Create the Secrets
+# first, see admin-secret.yaml and:
 #
 #   kubectl -n zedsearch create secret generic zedsearch-cluster \
-#     --from-literal=ZED_CLUSTER_SECRET='...'
+#     --from-literal=ZED_CLUSTER_SECRET="$(openssl rand -hex 32)"
 #
-# Run three etcd members for production.
+# Run three etcd members with auth and TLS for production.
 apiVersion: v1
 kind: Namespace
 metadata:
   name: zedsearch
+
+---
+
+# Private CA for the node certificates: a self-signed root issues the CA,
+# the CA issues zedsearch-tls.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: zedsearch-selfsigned
+  namespace: zedsearch
+spec:
+  selfSigned: {}
+
+---
+
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: zedsearch-ca
+  namespace: zedsearch
+spec:
+  isCA: true
+  commonName: zedsearch-ca
+  secretName: zedsearch-ca
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: zedsearch-selfsigned
+    kind: Issuer
+
+---
+
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: zedsearch-ca
+  namespace: zedsearch
+spec:
+  ca:
+    secretName: zedsearch-ca
+
+---
+
+# Serving certificate of every node: the advertised pod names and the
+# client Service. Its ca.crt is the root the nodes verify each other with.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: zedsearch-tls
+  namespace: zedsearch
+spec:
+  secretName: zedsearch-tls
+  dnsNames:
+    - "*.zedsearch-cluster.zedsearch.svc"
+    - zedsearch.zedsearch.svc
+    - zedsearch
+    - localhost
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: zedsearch-ca
+    kind: Issuer
 
 ---
 
@@ -66,6 +132,29 @@ spec:
       resources:
         requests:
           storage: 1Gi
+
+---
+
+# etcd holds membership and ownership and has no auth here: only the
+# ZedSearch pods may reach it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: etcd
+  namespace: zedsearch
+spec:
+  podSelector:
+    matchLabels:
+      app: etcd
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: zedsearch-cluster
+      ports:
+        - port: client
 
 ---
 
@@ -131,6 +220,8 @@ spec:
           type: RuntimeDefault
       containers:
         - name: zedsearch
+          # every node must run the same version: a new release reaches the
+          # nodes with `kubectl rollout restart statefulset/zedsearch-cluster`
           image: riotgo/zedsearch:latest
           envFrom:
             - secretRef:
@@ -150,10 +241,19 @@ spec:
               value: prod
             - name: ZED_CLUSTER_NODE_ID
               value: $(POD_NAME)
+            # https: the cluster secret and forwarded credentials never
+            # cross the pod network in cleartext
             - name: ZED_CLUSTER_ADVERTISE_ADDR
-              value: http://$(POD_NAME).zedsearch-cluster.zedsearch.svc:4080
+              value: https://$(POD_NAME).zedsearch-cluster.zedsearch.svc:4080
             - name: ZED_ETCD_ENDPOINTS
               value: http://etcd.zedsearch.svc:2379
+            - name: ZED_SERVER_TLS_CERTIFICATE_FILE
+              value: /etc/zedsearch/tls/tls.crt
+            - name: ZED_SERVER_TLS_KEY_FILE
+              value: /etc/zedsearch/tls/tls.key
+            # trust the private CA next to the system roots
+            - name: SSL_CERT_DIR
+              value: /etc/ssl/certs:/etc/zedsearch/ca
           imagePullPolicy: Always
           securityContext:
             allowPrivilegeEscalation: false
@@ -174,17 +274,26 @@ spec:
             httpGet:
               path: /healthz
               port: http
+              scheme: HTTPS
             periodSeconds: 5
             failureThreshold: 60
+          # /readyz also fails while the membership lease may have expired,
+          # so the Service stops sending writes the node would reject. Switch
+          # to it once the image serves it: an older one answers 404 and
+          # would never be ready.
           readinessProbe:
             httpGet:
               path: /healthz
               port: http
+              scheme: HTTPS
             periodSeconds: 10
+          # liveness stays independent of etcd: an etcd outage must not
+          # restart every node
           livenessProbe:
             httpGet:
               path: /healthz
               port: http
+              scheme: HTTPS
             periodSeconds: 20
             failureThreshold: 3
           volumeMounts:
@@ -192,9 +301,29 @@ spec:
             mountPath: /data
           - name: tmp
             mountPath: /tmp
+          - name: tls
+            mountPath: /etc/zedsearch/tls
+            readOnly: true
+          - name: ca
+            mountPath: /etc/zedsearch/ca
+            readOnly: true
       volumes:
       - name: tmp
         emptyDir: {}
+      - name: tls
+        secret:
+          secretName: zedsearch-tls
+          items:
+          - key: tls.crt
+            path: tls.crt
+          - key: tls.key
+            path: tls.key
+      - name: ca
+        secret:
+          secretName: zedsearch-tls
+          items:
+          - key: ca.crt
+            path: ca.crt
   volumeClaimTemplates:
   - metadata:
       name: data
