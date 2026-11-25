@@ -1,6 +1,10 @@
 // Run: node search.mjs (Node.js 18+, no dependencies)
 
 const zedHost = process.env.ZED_HOST || "http://localhost:4080";
+const zedUrl = new URL(zedHost);
+if (zedUrl.protocol !== "https:" && !["localhost", "127.0.0.1", "[::1]"].includes(zedUrl.hostname)) {
+  throw new Error("ZED_HOST must use https:// for a remote host");
+}
 const user = process.env.ZED_USER || "admin";
 const password = process.env.ZED_PASSWORD || "Complexpass#123";
 const index = "games3";
