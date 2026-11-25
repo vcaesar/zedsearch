@@ -100,3 +100,21 @@ func TestTransportReusesConnections(t *testing.T) {
 		return dialed.Load() == before
 	}, 10*time.Second, 10*time.Millisecond, "a later burst must not dial")
 }
+
+// A node to node client hands a redirect back instead of following it.
+func TestNoRedirect(t *testing.T) {
+	var followed atomic.Bool
+	trap := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { followed.Store(true) }))
+	t.Cleanup(trap.Close)
+	server := httptest.NewServer(http.RedirectHandler(trap.URL, http.StatusFound))
+	t.Cleanup(server.Close)
+
+	client := &http.Client{Transport: Transport(), CheckRedirect: NoRedirect}
+	resp, err := client.Get(server.URL)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	assert.Equal(t, http.StatusFound, resp.StatusCode)
+	assert.Equal(t, trap.URL, resp.Header.Get("Location"))
+	assert.False(t, followed.Load())
+	assert.ErrorIs(t, NoRedirect(nil, nil), http.ErrUseLastResponse)
+}

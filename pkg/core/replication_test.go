@@ -107,6 +107,32 @@ func TestIdempotentEntry(t *testing.T) {
 		require.NoError(t, err)
 		assert.NotSame(t, &entry[0], &out[0])
 	})
+	t.Run("escaped action is decoded", func(t *testing.T) {
+		tests := []struct {
+			name, entry, wantAction string
+			passes                  bool
+		}{
+			{name: "escaped insert", entry: `{"@_action":"\u0069nsert","@_id":"1","@_shard":3}`, wantAction: `"update"`},
+			{name: "escaped update", entry: `{"@_action":"upd\u0061te","@_id":"1","@_shard":-2}`, wantAction: `"upd\u0061te"`, passes: true},
+			{name: "non-string action", entry: `{"@_action":1,"@_id":"1","@_shard":3}`, wantAction: `1`},
+			{name: "object action", entry: `{"@_action":{"a":"insert"},"@_shard":3}`, wantAction: `{"a":"insert"}`},
+			{name: "missing action", entry: `{"@_id":"1","@_shard":3}`},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				entry := []byte(tt.entry)
+				out, err := idempotentEntry(entry)
+				require.NoError(t, err)
+				if tt.passes {
+					assert.Same(t, &entry[0], &out[0])
+				}
+				doc := map[string]json.RawMessage{}
+				require.NoError(t, json.Unmarshal(out, &doc))
+				assert.Equal(t, tt.wantAction, string(doc[meta.ActionFieldName]))
+				assert.Equal(t, "-2", string(doc[meta.ShardFieldName]))
+			})
+		}
+	})
 	t.Run("invalid", func(t *testing.T) {
 		for _, entry := range []string{
 			"{",
@@ -128,7 +154,7 @@ func TestIdempotentEntry(t *testing.T) {
 			require.NoError(t, err)
 			doc := map[string]json.RawMessage{}
 			require.NoError(t, json.Unmarshal([]byte(entry), &doc))
-			if string(doc[meta.ActionFieldName]) == insertAction {
+			if entryAction(doc[meta.ActionFieldName]) == meta.ActionTypeInsert {
 				doc[meta.ActionFieldName] = json.RawMessage(updateAction)
 			}
 			doc[meta.ShardFieldName] = json.RawMessage("-2")

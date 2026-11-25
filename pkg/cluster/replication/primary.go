@@ -73,6 +73,9 @@ type primary struct {
 	// unreachable are the replicas a preship failed to call since the last
 	// commit, which fails them without waiting on a second call
 	unreachable []string
+	// outOfSync are the replicas a preship found on another history since
+	// the last commit: later preships skip them, the commit recovers them
+	outOfSync []string
 	uploaded    uint64   // remote: last operation in the bucket
 	sums        sumCache // of the owned segments, for incremental snapshots
 
@@ -199,7 +202,8 @@ func (m *manager) preship(p *primary) {
 	target := p.seq
 	p.sent = target
 	nodes := slices.DeleteFunc(replicas, func(node string) bool {
-		return node == local || !slices.Contains(p.insync, node) || slices.Contains(p.unreachable, node)
+		return node == local || !slices.Contains(p.insync, node) ||
+			slices.Contains(p.unreachable, node) || slices.Contains(p.outOfSync, node)
 	})
 	p.mu.Unlock()
 	defer func() {
@@ -228,11 +232,13 @@ func (m *manager) preship(p *primary) {
 			ack, err := m.transport.Replicate(m.ctx, node, &Batch{Index: p.index, Term: p.term, From: from, Ops: ops, Mappings: mappings})
 			if err != nil {
 				log.Debug().Err(err).Str("index", p.index).Str("replica", node).Msg("replication: preship")
-				if !errors.Is(err, ErrOutOfSync) {
-					p.mu.Lock()
+				p.mu.Lock()
+				if errors.Is(err, ErrOutOfSync) {
+					p.outOfSync = append(p.outOfSync, node)
+				} else {
 					p.unreachable = append(p.unreachable, node)
-					p.mu.Unlock()
 				}
+				p.mu.Unlock()
 				return
 			}
 			p.mu.Lock()
@@ -391,6 +397,7 @@ func (m *manager) commit(ctx context.Context, p *primary, probe bool) error {
 	insync := append([]string(nil), p.insync...)
 	unreachable := p.unreachable
 	p.unreachable = nil
+	p.outOfSync = nil
 	// a caught up replica is sent no operations, unless a probe finds it lost some
 	ships := probe || slices.ContainsFunc(replicas, func(node string) bool { return p.acked[node] < target })
 	p.mu.Unlock()

@@ -62,39 +62,55 @@ func (s *failingKeepAlive) KeepAlive(ctx context.Context, id zcluster.LeaseID) e
 }
 
 func TestReady(t *testing.T) {
-	ready := func() (int, string) {
+	ready := func(t *testing.T) (int, string) {
 		c, w := utils.NewContext()
 		Ready(c)
 		resp := new(meta.HealthzResponse)
 		require.NoError(t, json.Unmarshal(w.Body.Bytes(), resp))
 		return w.Code, resp.Status
 	}
+	// join starts a cluster named after the subtest on a store whose lease
+	// renewals fail once fail is set
+	join := func(t *testing.T) *failingKeepAlive {
+		previous := config.Global.Cluster
+		t.Cleanup(func() { config.Global.Cluster = previous })
+		config.Global.Cluster.Name = t.Name()
+		config.Global.Cluster.NodeID = "node-a"
+		config.Global.Cluster.AdvertiseAddr = "http://127.0.0.1:1"
+		config.Global.Cluster.Partitions = testPartitions
+		config.Global.Cluster.HeartbeatTTL = 300 * time.Millisecond
+		config.Global.Cluster.HeartbeatInterval = 50 * time.Millisecond
 
-	code, status := ready()
-	assert.Equal(t, http.StatusOK, code, "a single node is always ready")
-	assert.Equal(t, "ok", status)
+		store := &failingKeepAlive{MemoryStore: zcluster.NewMemoryStore()}
+		require.NoError(t, zcluster.StartWith(context.Background(), store))
+		t.Cleanup(zcluster.Stop)
+		return store
+	}
 
-	previous := config.Global.Cluster
-	t.Cleanup(func() { config.Global.Cluster = previous })
-	config.Global.Cluster.Name = t.Name()
-	config.Global.Cluster.NodeID = "node-a"
-	config.Global.Cluster.AdvertiseAddr = "http://127.0.0.1:1"
-	config.Global.Cluster.Partitions = testPartitions
-	config.Global.Cluster.HeartbeatTTL = 300 * time.Millisecond
-	config.Global.Cluster.HeartbeatInterval = 50 * time.Millisecond
-
-	store := &failingKeepAlive{MemoryStore: zcluster.NewMemoryStore()}
-	require.NoError(t, zcluster.StartWith(context.Background(), store))
-	t.Cleanup(zcluster.Stop)
-	code, _ = ready()
-	assert.Equal(t, http.StatusOK, code, "a member with a live lease is ready")
-
-	store.fail.Store(true)
-	require.Eventually(t, func() bool {
-		code, status = ready()
-		return code == http.StatusServiceUnavailable
-	}, 10*time.Second, 10*time.Millisecond, "a lease that may have expired is not ready")
-	assert.Equal(t, "not live", status)
+	tests := []struct {
+		name       string
+		setup      func(t *testing.T)
+		wantCode   int
+		wantStatus string
+	}{
+		{name: "single node", setup: func(*testing.T) {}, wantCode: http.StatusOK, wantStatus: "ok"},
+		{name: "live lease", setup: func(t *testing.T) { join(t) }, wantCode: http.StatusOK, wantStatus: "ok"},
+		{name: "expired lease", setup: func(t *testing.T) {
+			join(t).fail.Store(true)
+			require.Eventually(t, func() bool {
+				code, _ := ready(t)
+				return code == http.StatusServiceUnavailable
+			}, 10*time.Second, 10*time.Millisecond, "a lease that may have expired is not ready")
+		}, wantCode: http.StatusServiceUnavailable, wantStatus: "not live"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.setup(t)
+			code, status := ready(t)
+			assert.Equal(t, tt.wantCode, code)
+			assert.Equal(t, tt.wantStatus, status)
+		})
+	}
 }
 
 func TestPartitions(t *testing.T) {

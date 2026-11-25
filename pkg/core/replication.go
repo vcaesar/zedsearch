@@ -128,15 +128,25 @@ func idempotentEntry(entry []byte) ([]byte, error) {
 		return nil, err
 	}
 	allShards := strconv.FormatInt(ShardIDNeedUpdate, 10)
-	action := string(doc[meta.ActionFieldName])
-	if (action == updateAction || action == deleteAction) && string(doc[meta.ShardFieldName]) == allShards {
+	action := entryAction(doc[meta.ActionFieldName])
+	if (action == meta.ActionTypeUpdate || action == meta.ActionTypeDelete) && string(doc[meta.ShardFieldName]) == allShards {
 		return entry, nil
 	}
-	if action == insertAction {
+	if action == meta.ActionTypeInsert {
 		doc[meta.ActionFieldName] = json.RawMessage(updateAction)
 	}
 	doc[meta.ShardFieldName] = json.RawMessage(allShards)
 	return appendObject(make([]byte, 0, len(entry)+len(allShards)), doc)
+}
+
+// entryAction decodes the action token, escapes included; empty when it
+// is not a string, which leaves the action as it is.
+func entryAction(raw json.RawMessage) string {
+	var action string
+	if err := json.Unmarshal(raw, &action); err != nil {
+		return ""
+	}
+	return action
 }
 
 // appendObject encodes doc in key order with its values as they are: they
@@ -173,12 +183,8 @@ func appendKey(out []byte, k string) ([]byte, error) {
 	return append(append(append(out, '"'), k...), '"'), nil
 }
 
-// The actions of a WAL entry as encoded.
-const (
-	insertAction = `"` + meta.ActionTypeInsert + `"`
-	updateAction = `"` + meta.ActionTypeUpdate + `"`
-	deleteAction = `"` + meta.ActionTypeDelete + `"`
-)
+// updateAction is the update action of a WAL entry as encoded.
+const updateAction = `"` + meta.ActionTypeUpdate + `"`
 
 // WaitApplied waits until every WAL entry written before the call has been
 // applied to the writers.

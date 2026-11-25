@@ -286,6 +286,194 @@ func TestHTTPTransport(t *testing.T) {
 	})
 }
 
+func TestCheckSecret(t *testing.T) {
+	tests := []struct {
+		name, header, secret string
+		want                 bool
+	}{
+		{name: "match", header: "s3cret", secret: "s3cret", want: true},
+		{name: "mismatch", header: "other", secret: "s3cret"},
+		{name: "prefix", header: "s3c", secret: "s3cret"},
+		{name: "missing header", secret: "s3cret"},
+		{name: "no secret configured", header: "", secret: ""},
+		{name: "header without secret", header: "s3cret", secret: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, CheckSecret(tt.header, tt.secret))
+		})
+	}
+}
+
+// What each call puts on the wire: method, path, headers and body.
+func TestHTTPTransportRequests(t *testing.T) {
+	type call struct {
+		method, path, query, secret, contentType string
+		body                                     []byte
+	}
+	calls := make(chan call, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		calls <- call{
+			method: r.Method, path: r.URL.Path, query: r.URL.Query().Get("index"),
+			secret: r.Header.Get(SecretHeader), contentType: r.Header.Get("Content-Type"), body: body,
+		}
+		switch r.URL.Path {
+		case ReplicatePath:
+			_, _ = io.WriteString(w, `{"term":"t","seq":2}`)
+		case SnapshotPath:
+			w.WriteHeader(http.StatusNotModified)
+		}
+	}))
+	t.Cleanup(server.Close)
+	startLocalCluster(t, server.URL)
+	transport := NewHTTPTransport("s3cret")
+	ctx := context.Background()
+
+	t.Run("replicate", func(t *testing.T) {
+		batch := &Batch{Index: "x", Term: "t", From: 1, Ops: []Op{{Seq: 1, Shard: "0", Entry: json.RawMessage(`{"a":1}`)}}}
+		ack, err := transport.Replicate(ctx, "node-a", batch)
+		require.NoError(t, err)
+		assert.Equal(t, Ack{Term: "t", Seq: 2}, ack)
+		got := <-calls
+		want, err := batch.encode()
+		require.NoError(t, err)
+		assert.Equal(t, call{method: http.MethodPost, path: ReplicatePath, secret: "s3cret", contentType: "application/json", body: want}, got)
+	})
+	t.Run("recover escapes the index", func(t *testing.T) {
+		require.NoError(t, transport.Recover(ctx, "node-a", "a&b=c d"))
+		got := <-calls
+		assert.Equal(t, RecoverPath, got.path)
+		assert.Equal(t, "a&b=c d", got.query)
+		assert.Empty(t, got.body)
+		assert.Equal(t, "s3cret", got.secret)
+	})
+	t.Run("snapshot sends the request", func(t *testing.T) {
+		req := &SnapshotRequest{Index: "x", Have: Checkpoint{Term: "t", Seq: 3}, Files: []FileSum{{}}}
+		_, err := transport.Snapshot(ctx, "node-a", req, t.TempDir())
+		require.ErrorIs(t, err, ErrNotModified)
+		got := <-calls
+		assert.Equal(t, SnapshotPath, got.path)
+		var sent SnapshotRequest
+		require.NoError(t, json.Unmarshal(got.body, &sent))
+		assert.Equal(t, *req, sent)
+	})
+	t.Run("canceled context", func(t *testing.T) {
+		canceled, cancel := context.WithCancel(ctx)
+		cancel()
+		_, err := transport.Replicate(canceled, "node-a", &Batch{Index: "x"})
+		assert.ErrorIs(t, err, context.Canceled)
+		assert.ErrorIs(t, transport.Recover(canceled, "node-a", "x"), context.Canceled)
+		_, err = transport.Snapshot(canceled, "node-a", &SnapshotRequest{Index: "x"}, t.TempDir())
+		assert.ErrorIs(t, err, context.Canceled)
+	})
+}
+
+// Answers cut short or not an archive are errors, not empty results.
+func TestHTTPTransportBrokenAnswers(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case ReplicatePath:
+			// promises more than it sends: the server drops the connection
+			w.Header().Set("Content-Length", "100")
+			_, _ = io.WriteString(w, `{"term"`)
+		case SnapshotPath:
+			_, _ = io.WriteString(w, "not a tar archive")
+		}
+	}))
+	t.Cleanup(server.Close)
+	startLocalCluster(t, server.URL)
+	transport := NewHTTPTransport("s3cret")
+	ctx := context.Background()
+
+	_, err := transport.Replicate(ctx, "node-a", &Batch{Index: "x"})
+	assert.ErrorIs(t, err, io.ErrUnexpectedEOF)
+	_, err = transport.Snapshot(ctx, "node-a", &SnapshotRequest{Index: "x"}, t.TempDir())
+	assert.Error(t, err)
+}
+
+type closeFailer struct{ io.Reader }
+
+func (closeFailer) Close() error { return errors.New("close failed") }
+
+func TestCloseBodyLogsFailure(t *testing.T) {
+	assert.NotPanics(t, func() { closeBody(&http.Response{Body: closeFailer{bytes.NewReader(nil)}}) })
+	assert.NotPanics(t, func() { closeBody(&http.Response{Body: http.NoBody}) })
+}
+
+// encode writes exactly the documented wire format.
+func TestBatchEncodeBytes(t *testing.T) {
+	tests := []struct {
+		name  string
+		batch Batch
+		want  string
+	}{
+		{name: "probe", batch: Batch{Index: "x", Term: "t", From: 4}, want: `{"index":"x","term":"t","from":4,"ops":[]}`},
+		{name: "ops and mappings", batch: Batch{Index: "x", Term: "t", From: 1, Ops: []Op{
+			{Seq: 1, Shard: "0", Entry: json.RawMessage(`{"a":1}`)}, {Seq: 2, Shard: "1", Entry: json.RawMessage(`{}`)},
+		}, Mappings: json.RawMessage(`{"p":{}}`)},
+			want: `{"index":"x","term":"t","from":1,"ops":[{"seq":1,"shard":"0","entry":{"a":1}},{"seq":2,"shard":"1","entry":{}}],"mappings":{"p":{}}}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := tt.batch.encode()
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, string(data))
+		})
+	}
+}
+
+func BenchmarkBatchEncode(b *testing.B) {
+	entry := json.RawMessage(`{"@_action":"update","@_id":"1","@_shard":-2,"name":"some text"}`)
+	batch := &Batch{Index: "logs", Term: "0001-0002", From: 1}
+	for i := range 4096 {
+		batch.Ops = append(batch.Ops, Op{Seq: uint64(i + 1), Shard: "0", Entry: entry})
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := batch.encode(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// A snapshot keeps nested paths and its metadata through the archive.
+func TestSnapshotRoundTrip(t *testing.T) {
+	src := t.TempDir()
+	files := map[string]string{"s0/000000/1.seg": "one", "s0/000001/2.seg": "two", "top.seg": "top"}
+	for rel, data := range files {
+		path := filepath.Join(src, filepath.FromSlash(rel))
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o750))
+		require.NoError(t, os.WriteFile(path, []byte(data), 0o640))
+	}
+	info := &SnapshotInfo{Checkpoint: Checkpoint{Term: "t", Seq: 7}, Index: json.RawMessage(`{"name":"x"}`), Reused: []string{"top.seg"}}
+	var buf bytes.Buffer
+	require.NoError(t, WriteSnapshot(&buf, info, src))
+
+	dst := t.TempDir()
+	got, err := ReadSnapshot(&buf, dst)
+	require.NoError(t, err)
+	assert.Equal(t, info.Checkpoint, got.Checkpoint)
+	assert.JSONEq(t, string(info.Index), string(got.Index))
+	assert.Equal(t, info.Reused, got.Reused)
+	for rel, data := range files {
+		read, err := os.ReadFile(filepath.Join(dst, filepath.FromSlash(rel)))
+		if rel == "top.seg" {
+			assert.ErrorIs(t, err, os.ErrNotExist, "a reused file is not sent")
+			continue
+		}
+		require.NoError(t, err)
+		assert.Equal(t, data, string(read))
+	}
+
+	_, err = ReadSnapshot(bytes.NewReader(tarOf(t, map[string]string{"1.seg": "x"})), t.TempDir())
+	assert.ErrorContains(t, err, "without metadata")
+}
+
 // failWriter fails every write after limit bytes.
 type failWriter struct{ limit int }
 

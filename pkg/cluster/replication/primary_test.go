@@ -1088,6 +1088,75 @@ func TestPreshipLeavesTheCommitNothing(t *testing.T) {
 	assert.Equal(t, uint64(4*preshipOps), p.acked["node-b"])
 }
 
+// A replica that follows another history refuses every preship: later
+// preships of the write skip it instead of sending the growing prefix
+// again, its commit calls it and asks it to recover, and the next write
+// preships to it again.
+func TestPreshipSkipsOutOfSyncUntilCommit(t *testing.T) {
+	name := "TestPreshipSkipsOutOfSyncUntilCommit.index_1"
+	newDiskIndex(t, name)
+	topo := newFakeTopology("node-a")
+	topo.set(name, "node-a", "node-b")
+	var mu sync.Mutex
+	calls, recovers := 0, 0
+	transport := &funcTransport{
+		replicate: func(string, *Batch) (Ack, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			calls++
+			return Ack{Term: "previous"}, ErrOutOfSync
+		},
+		recover: func(string, string) error {
+			mu.Lock()
+			defer mu.Unlock()
+			recovers++
+			return nil
+		},
+	}
+	state := func() (int, int) {
+		mu.Lock()
+		defer mu.Unlock()
+		return calls, recovers
+	}
+	m := newManager(t, ModeDocument, topo, transport)
+	ctx := context.Background()
+	p, err := m.prepare(ctx, name)
+	require.NoError(t, err)
+	require.NoError(t, topo.UpdateInSync(ctx, name, []string{"node-b"}, p.epoch))
+	p.insync = []string{"node-b"}
+
+	for range 3 {
+		for range preshipOps {
+			m.record(name, "0", []byte(testEntry))
+		}
+		m.wg.Wait()
+	}
+	got, _ := state()
+	assert.Equal(t, 1, got, "only the first preship calls the replica")
+	p.mu.Lock()
+	assert.Equal(t, []string{"node-b"}, p.outOfSync)
+	assert.Empty(t, p.unreachable, "an answering replica is not unreachable")
+	p.mu.Unlock()
+
+	require.NoError(t, m.commit(ctx, p, false))
+	after, recovered := state()
+	assert.Equal(t, got+1, after, "the commit calls the replica")
+	assert.Equal(t, 1, recovered, "and asks it to recover")
+	nodes, _ := topo.inSyncOf(name)
+	assert.Empty(t, nodes)
+	p.mu.Lock()
+	assert.Empty(t, p.outOfSync, "the next write preships again")
+	p.insync = []string{"node-b"}
+	p.mu.Unlock()
+
+	for range preshipOps {
+		m.record(name, "0", []byte(testEntry))
+	}
+	m.wg.Wait()
+	again, _ := state()
+	assert.Equal(t, after+1, again)
+}
+
 // A remote index uploads its operations at commit, nothing is preshipped;
 // a preship of an index deleted meanwhile sends nothing.
 func TestPreshipSkips(t *testing.T) {
