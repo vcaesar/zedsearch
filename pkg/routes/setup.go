@@ -12,7 +12,16 @@
 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 * See the License for the specific language governing permissions and
 * limitations under the License.
- */
+*
+Part of this work fall under the AtomAI Enterprise Edition (EE)
+and are licensed under the Business Source License 1.1,
+if you are the Cloud companies or your companies with revenue greater than $1M,
+please refer to [AGPL-3.0](./LICENSE-AGPL)) and [LICENSE-EE](./LICENSE-EE) for details,
+and production use of the Licensed Work requires a commercial license agreement with Zedsearch.
+Contact info@atomai.cc for licensing.
+
+The other parts of this work are licensed under the [Apache license](./LICENSE).
+*/
 
 package routes
 
@@ -39,5 +48,6 @@ func Setup(app *zhttp.Engine) {
 	// SetFleetRoutes(app)      // zedagent fleet endpoints.
 	SetSynonymsRoutes(app)   // Synonyms sets endpoints.
 	SetQueryRulesRoutes(app) // Query rules endpoints.
+	SetLTRRoutes(app)        // Learning to rank model endpoints.
 	setRoutes(app)           // Set up all API routes, CORS already installed.
 }

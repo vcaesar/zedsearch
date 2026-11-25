@@ -11,6 +11,7 @@ The original [ZincSearch roadmap](https://zincsearch-docs.zinc.dev/roadmap/) is 
 Also shipped since the fork:
 
 - [x] Vector fields and `knn` search
+- [x] Learning to rank at query time, pure Go: `learning_to_rank` and `sltr` rescorers with linear, tree ensemble and XGBoost models ([learning-to-rank](../learning-to-rank.md))
 - [x] Nested and join (`has_child`, `has_parent`, `parent_id`) queries
 - [x] SQL search (`/api/_sql`, `/es/_sql`, `/es/_sql/translate`) and MySQL `CREATE TABLE` mappings ([sql-mappings](../sql-mappings.md))
 - [x] Pipeline aggregations (`bucket_script`, `bucket_sort`, `derivative`, `moving_fn`, ...)

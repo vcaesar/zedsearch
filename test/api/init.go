@@ -91,6 +91,7 @@ func server() *zhttp.Engine {
 			routes.SetRoutes(r) // installs CORS, so it goes first
 			routes.SetSynonymsRoutes(r)
 			routes.SetQueryRulesRoutes(r)
+			routes.SetLTRRoutes(r)
 		})
 	}
 
