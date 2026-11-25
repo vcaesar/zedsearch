@@ -137,6 +137,7 @@ go + gin (or fiber v3 with `-tags fiber`) + react
 1. Multi-language analysis, including CJK
 1. Opt-in [logs indexes](./pkg/logs/README.md) with event-time normalization and log search defaults, ingesting JSON, Splunk HEC, Loki and OTLP/HTTP JSON (OpenObserve-compatible) and Logstash events
 1. kNN vector search and geo queries (`geo_distance`, `geo_bounding_box`, `geo_polygon`, `geo_shape`)
+1. Hybrid search fusing full text and kNN hits: Elasticsearch `rrf` and `linear` retrievers (weights, `minmax`/`l2_norm`), legacy `rank.rrf`, and the OpenSearch `hybrid` query with an inline `search_pipeline` (`normalization-processor`, `score-ranker-processor` RRF)
 1. SQL queries through the Elasticsearch SQL API (`/es/_sql`, `/api/_sql`, `/es/_sql/translate`): `SELECT` with `WHERE` (`LIKE`, `IN`, `BETWEEN`, `IS NULL`, `MATCH()`, `QUERY()`), `COUNT`/`SUM`/`AVG`/`MIN`/`MAX`, `GROUP BY` (`HISTOGRAM`, `DATE_HISTOGRAM`), `HAVING`, `ORDER BY`, `LIMIT`, with JSON, txt, csv or tsv output; and MySQL `CREATE TABLE` [schemas as mappings](./docs/sql-mappings.md)
 1. High-availability [cluster](./pkg/cluster/README.md): etcd-coordinated partition ownership, fenced handoff, replicas and scatter-gather search
 1. OpenTelemetry tracing over OTLP/HTTP (`zed_tracing_enable`); every request gets an `X-Trace-Id` that follows it across nodes

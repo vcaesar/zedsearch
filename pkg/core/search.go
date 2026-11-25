@@ -49,6 +49,14 @@ import (
 )
 
 func (index *Index) Search(query *meta.ZedQuery) (*meta.SearchResponse, error) {
+	fusion, err := uquery.Hybrid(query)
+	if err != nil {
+		return nil, err
+	}
+	if fusion != nil {
+		return searchHybrid(query, fusion, index.Search)
+	}
+
 	mappings := index.GetMappings()
 	analyzers := index.GetAnalyzers()
 

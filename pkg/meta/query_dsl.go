@@ -41,8 +41,11 @@ type ZedQuery struct {
 	Size           int                     `json:"size"`
 	Timeout        int                     `json:"timeout"`
 	TrackTotalHits bool                    `json:"track_total_hits"`
-	Rescore        interface{}             `json:"rescore,omitempty"` // one rescorer or an array, applied in order
-	Suggest        map[string]interface{}  `json:"suggest,omitempty"` // {"text": global, "name": {term|phrase|completion}}
+	Rescore        interface{}             `json:"rescore,omitempty"`         // one rescorer or an array, applied in order
+	Suggest        map[string]interface{}  `json:"suggest,omitempty"`         // {"text": global, "name": {term|phrase|completion}}
+	Retriever      interface{}             `json:"retriever,omitempty"`       // Elasticsearch retriever: standard, knn, rrf or linear
+	Rank           interface{}             `json:"rank,omitempty"`            // legacy Elasticsearch {"rrf": {...}} fusing query and knn
+	SearchPipeline interface{}             `json:"search_pipeline,omitempty"` // inline OpenSearch pipeline of a hybrid query
 }
 
 type ZedQueryForSDK struct {
