@@ -1,4 +1,6 @@
 import os
+import sys
+from urllib.parse import urlparse
 
 import docx
 import requests
@@ -24,7 +26,11 @@ def text_of(container):
 
 
 def main():
-    zed_url = os.environ.get("ZED_HOST", "http://localhost:4080") + "/api/books/_doc"
+    zed_host = os.environ.get("ZED_HOST", "http://localhost:4080")
+    # Basic auth would cross the network in cleartext over http:// to another host.
+    if urlparse(zed_host).scheme != "https" and urlparse(zed_host).hostname not in ("localhost", "127.0.0.1", "::1"):
+        sys.exit("ZED_HOST must use https:// for a remote host")
+    zed_url = zed_host + "/api/books/_doc"
     auth = (os.environ.get("ZED_USER", "admin"), os.environ.get("ZED_PASSWORD", "Complexpass#123"))
 
     for file in sorted(os.listdir(folder)):

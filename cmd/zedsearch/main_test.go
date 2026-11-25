@@ -416,19 +416,46 @@ func TestCertReloader(t *testing.T) {
 		assert.Equal(t, int64(2), servedSerial(t, r))
 	})
 
+	t.Run("reloads replaced files with unchanged modification times", func(t *testing.T) {
+		dir := t.TempDir()
+		certFile, keyFile := writeCertSerial(t, dir, 1)
+		r, err := newCertReloader(certFile, keyFile)
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), servedSerial(t, r))
+
+		next := t.TempDir()
+		newCert, newKey := writeCertSerial(t, next, 2)
+		for src, dst := range map[string]string{newCert: certFile, newKey: keyFile} {
+			info, err := os.Stat(dst)
+			require.NoError(t, err)
+			touch(t, info.ModTime(), src)
+			require.NoError(t, os.Rename(src, dst))
+		}
+		assert.Equal(t, int64(2), servedSerial(t, r))
+	})
+
 	t.Run("keeps the previous certificate when a rewrite fails", func(t *testing.T) {
 		dir := t.TempDir()
 		certFile, keyFile := writeCertSerial(t, dir, 1)
 		r, err := newCertReloader(certFile, keyFile)
 		require.NoError(t, err)
 
+		keyInfo, err := os.Stat(keyFile)
+		require.NoError(t, err)
+		failedAt := time.Now().Add(time.Minute)
 		require.NoError(t, os.WriteFile(certFile, []byte("half written"), 0o600))
-		touch(t, time.Now().Add(time.Minute), certFile)
+		touch(t, failedAt, certFile)
 		assert.Equal(t, int64(1), servedSerial(t, r))
-		assert.Equal(t, int64(1), servedSerial(t, r), "the failure is retried, not cached")
+
+		// the repaired pair keeps the times seen at the failure: only a retry,
+		// not a cached failed state, serves it
+		writeCertSerial(t, dir, 2)
+		touch(t, failedAt, certFile)
+		touch(t, keyInfo.ModTime(), keyFile)
+		assert.Equal(t, int64(2), servedSerial(t, r), "the failure is retried, not cached")
 
 		require.NoError(t, os.Rename(keyFile, keyFile+".old"))
-		assert.Equal(t, int64(1), servedSerial(t, r), "a missing file keeps the pair")
+		assert.Equal(t, int64(2), servedSerial(t, r), "a missing file keeps the pair")
 		require.NoError(t, os.Rename(keyFile+".old", keyFile))
 
 		writeCertSerial(t, dir, 3)

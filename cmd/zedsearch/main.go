@@ -225,20 +225,20 @@ func listen(addr string) (net.Listener, error) {
 type certReloader struct {
 	certFile, keyFile string
 
-	mu      sync.Mutex
-	cert    *tls.Certificate
-	certMod time.Time
-	keyMod  time.Time
-	failed  string
+	mu       sync.Mutex
+	cert     *tls.Certificate
+	certInfo os.FileInfo
+	keyInfo  os.FileInfo
+	failed   string
 }
 
 func newCertReloader(certFile, keyFile string) (*certReloader, error) {
 	r := &certReloader{certFile: certFile, keyFile: keyFile}
-	certMod, keyMod, err := r.modTimes()
+	certInfo, keyInfo, err := r.stat()
 	if err != nil {
 		return nil, err
 	}
-	if err := r.load(certMod, keyMod); err != nil {
+	if err := r.load(certInfo, keyInfo); err != nil {
 		return nil, err
 	}
 	return r, nil
@@ -250,9 +250,9 @@ func newCertReloader(certFile, keyFile string) (*certReloader, error) {
 func (r *certReloader) GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	certMod, keyMod, err := r.modTimes()
-	if err == nil && (!certMod.Equal(r.certMod) || !keyMod.Equal(r.keyMod)) {
-		err = r.load(certMod, keyMod)
+	certInfo, keyInfo, err := r.stat()
+	if err == nil && (fileChanged(r.certInfo, certInfo) || fileChanged(r.keyInfo, keyInfo)) {
+		err = r.load(certInfo, keyInfo)
 	}
 	// log a failure once, not on every handshake until the files are fixed
 	if err == nil {
@@ -264,24 +264,29 @@ func (r *certReloader) GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate, e
 	return r.cert, nil
 }
 
-func (r *certReloader) modTimes() (certMod, keyMod time.Time, err error) {
-	ci, err := os.Stat(r.certFile)
-	if err != nil {
-		return certMod, keyMod, err
-	}
-	ki, err := os.Stat(r.keyFile)
-	if err != nil {
-		return certMod, keyMod, err
-	}
-	return ci.ModTime(), ki.ModTime(), nil
+// fileChanged reports whether cur is another file than old, as a replaced
+// file (a Kubernetes Secret swaps its files in) is even with the same
+// modification time, or was rewritten in place.
+func fileChanged(old, cur os.FileInfo) bool {
+	return !os.SameFile(old, cur) || !old.ModTime().Equal(cur.ModTime()) || old.Size() != cur.Size()
 }
 
-func (r *certReloader) load(certMod, keyMod time.Time) error {
+func (r *certReloader) stat() (certInfo, keyInfo os.FileInfo, err error) {
+	if certInfo, err = os.Stat(r.certFile); err != nil {
+		return nil, nil, err
+	}
+	if keyInfo, err = os.Stat(r.keyFile); err != nil {
+		return nil, nil, err
+	}
+	return certInfo, keyInfo, nil
+}
+
+func (r *certReloader) load(certInfo, keyInfo os.FileInfo) error {
 	cert, err := tls.LoadX509KeyPair(r.certFile, r.keyFile)
 	if err != nil {
 		return err
 	}
-	r.cert, r.certMod, r.keyMod = &cert, certMod, keyMod
+	r.cert, r.certInfo, r.keyInfo = &cert, certInfo, keyInfo
 	return nil
 }
 
