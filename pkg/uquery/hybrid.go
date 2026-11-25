@@ -101,6 +101,9 @@ func Hybrid(q *meta.ZedQuery) (*Retriever, error) {
 		return parseRank(q)
 	}
 	if body, ok := hybridQuery(q.Query); ok {
+		if q.Knn != nil {
+			return nil, parseError("[knn] cannot be used with a [hybrid] query, add it to [hybrid.queries]")
+		}
 		return parseHybridQuery(body, q.SearchPipeline)
 	}
 	return nil, nil
@@ -132,7 +135,7 @@ func object(v interface{}, name string) (map[string]interface{}, error) {
 
 func positiveInt(v interface{}, name string) (int, error) {
 	n, err := zutils.ToInt(v)
-	if err != nil || n <= 0 {
+	if f, ok := v.(float64); err != nil || n <= 0 || ok && f != math.Trunc(f) {
 		return 0, parseError(fmt.Sprintf("[%s] must be a positive integer, got %v", name, v))
 	}
 	return n, nil
@@ -146,13 +149,47 @@ func weight(v interface{}, name string) (float64, error) {
 	return w, nil
 }
 
-// withFilters returns filters and the filters of v, one or an array, in a
-// new slice: siblings must not share the backing array.
-func withFilters(filters []interface{}, v interface{}) []interface{} {
-	if list, ok := v.([]interface{}); ok {
-		return append(slices.Clip(filters), list...)
+// withFilters returns filters and the filters of v, one query or an array
+// of queries, in a new slice: siblings must not share the backing array.
+func withFilters(filters []interface{}, v interface{}) ([]interface{}, error) {
+	list, ok := v.([]interface{})
+	if !ok {
+		list = []interface{}{v}
 	}
-	return append(slices.Clip(filters), v)
+	for _, f := range list {
+		if _, err := object(f, "filter"); err != nil {
+			return nil, err
+		}
+	}
+	return append(slices.Clip(filters), list...), nil
+}
+
+// knnWithFilters returns the knn options with filters joining their filter,
+// applied before neighbor selection. Field-keyed options keep their one key.
+func knnWithFilters(knn map[string]interface{}, filters []interface{}) (map[string]interface{}, error) {
+	if len(filters) == 0 {
+		return knn, nil
+	}
+	if len(knn) == 1 {
+		for field, v := range knn {
+			if opts, ok := v.(map[string]interface{}); ok && field != "filter" && field != "method_parameters" {
+				opts, err := knnWithFilters(opts, filters)
+				return map[string]interface{}{field: opts}, err
+			}
+		}
+	}
+	out := make(map[string]interface{}, len(knn)+1)
+	for k, v := range knn {
+		out[k] = v
+	}
+	if f, ok := knn["filter"]; ok {
+		var err error
+		if filters, err = withFilters(filters, f); err != nil {
+			return nil, err
+		}
+	}
+	out["filter"] = filters
+	return out, nil
 }
 
 // filtered returns query restricted to filters.

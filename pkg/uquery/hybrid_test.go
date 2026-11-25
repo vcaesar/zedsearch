@@ -65,6 +65,25 @@ func TestHybrid_Retriever(t *testing.T) {
 		assert.Equal(t, []interface{}{term}, r.Retrievers[2].Query["knn"].(map[string]interface{})["filter"])
 	})
 
+	t.Run("filters join field-keyed knn options", func(t *testing.T) {
+		r, err := Hybrid(hybridZedQuery(t, `{"retriever": {"rrf": {"filter": {"term": {"tag": "x"}}, "retrievers": [
+			{"knn": {"emb": {"vector": [1, 0], "filter": {"match_all": {}}}}},
+			{"knn": {"emb": {"vector": [0, 1]}}}]}}}`))
+		require.NoError(t, err)
+		all := map[string]interface{}{"match_all": map[string]interface{}{}}
+		for i, want := range [][]interface{}{{term, all}, {term}} {
+			knn := r.Retrievers[i].Query["knn"].(map[string]interface{})
+			require.Len(t, knn, 1, "the field stays the only key")
+			assert.Equal(t, want, knn["emb"].(map[string]interface{})["filter"])
+		}
+	})
+
+	t.Run("knn without parent filters is unchanged", func(t *testing.T) {
+		r, err := Hybrid(hybridZedQuery(t, `{"retriever": {"rrf": {"retrievers": [{"knn": {"emb": {"vector": [1, 0]}}}]}}}`))
+		require.NoError(t, err)
+		assert.Equal(t, map[string]interface{}{"emb": map[string]interface{}{"vector": []interface{}{1.0, 0.0}}}, r.Retrievers[0].Query["knn"])
+	})
+
 	t.Run("weighted linear with normalizers", func(t *testing.T) {
 		r, err := Hybrid(hybridZedQuery(t, `{"retriever": {"linear": {"normalizer": "l2_norm", "min_score": 0.5, "retrievers": [
 			{"retriever": {"standard": {"query": {"match": {"title": "fox"}}}}, "weight": 2, "normalizer": "MinMax"},
@@ -97,9 +116,11 @@ func TestHybrid_Retriever(t *testing.T) {
 	})
 
 	t.Run("a plain search has no fusion", func(t *testing.T) {
-		r, err := Hybrid(hybridZedQuery(t, `{"query": {"match": {"title": "fox"}}}`))
-		require.NoError(t, err)
-		assert.Nil(t, r)
+		for _, body := range []string{`{"query": {"match": {"title": "fox"}}}`, `{}`, `{"query": {"hybrid": {}, "match_all": {}}}`} {
+			r, err := Hybrid(hybridZedQuery(t, body))
+			require.NoError(t, err, body)
+			assert.Nil(t, r, body)
+		}
 	})
 }
 
@@ -117,6 +138,11 @@ func TestHybrid_RetrieverErrors(t *testing.T) {
 		{"rrf without retrievers", `{"retriever": {"rrf": {}}}`, "requires at least one retriever"},
 		{"rrf retrievers not array", `{"retriever": {"rrf": {"retrievers": {}}}}`, "retrievers must be an array"},
 		{"rrf bad window", `{"retriever": {"rrf": {"rank_window_size": 0, "retrievers": [{"standard": {}}]}}}`, "rrf.rank_window_size] must be a positive integer"},
+		{"rrf fractional window", `{"retriever": {"rrf": {"rank_window_size": 2.5, "retrievers": [{"standard": {}}]}}}`, "must be a positive integer, got 2.5"},
+		{"standard filter not object", `{"retriever": {"standard": {"filter": [1]}}}`, "[filter] must be an object"},
+		{"rrf filter not object", `{"retriever": {"rrf": {"filter": "x", "retrievers": [{"standard": {}}]}}}`, "[filter] must be an object"},
+		{"knn filter not object", `{"retriever": {"rrf": {"filter": {"match_all": {}}, "retrievers": [{"knn": {"field": "emb", "filter": [1]}}]}}}`, "[filter] must be an object"},
+		{"field-keyed knn filter not object", `{"retriever": {"rrf": {"filter": {"match_all": {}}, "retrievers": [{"knn": {"emb": {"filter": 1}}}]}}}`, "[filter] must be an object"},
 		{"rrf bad constant", `{"retriever": {"rrf": {"rank_constant": -1, "retrievers": [{"standard": {}}]}}}`, "[rrf.rank_constant] must be a positive integer"},
 		{"rrf normalizer", `{"retriever": {"rrf": {"normalizer": "minmax", "retrievers": [{"standard": {}}]}}}`, "[rrf] unknown field [normalizer]"},
 		{"linear rank constant", `{"retriever": {"linear": {"rank_constant": 1, "retrievers": [{"standard": {}}]}}}`, "[linear] unknown field [rank_constant]"},
@@ -151,6 +177,10 @@ func TestHybrid_Rank(t *testing.T) {
 	assert.Equal(t, 3, r.WindowSize)
 	assert.Equal(t, DefaultRankConstant, r.RankConstant)
 
+	r, err = Hybrid(hybridZedQuery(t, `{"query": {"match_all": {}}, "knn": {"field": "emb", "query_vector": [1, 0]}, "rank": {"rrf": {"window_size": 4, "rank_window_size": 4}}}`))
+	require.NoError(t, err)
+	assert.Equal(t, 4, r.WindowSize, "equal aliases agree")
+
 	tests := []struct {
 		name, body, err string
 	}{
@@ -159,6 +189,7 @@ func TestHybrid_Rank(t *testing.T) {
 		{"rrf not object", `{"rank": {"rrf": 1}}`, "[rank.rrf] must be an object"},
 		{"unknown field", `{"rank": {"rrf": {"x": 1}}}`, "[rrf] unknown field [x]"},
 		{"bad window", `{"rank": {"rrf": {"rank_window_size": "x"}}}`, "must be a positive integer"},
+		{"conflicting windows", `{"rank": {"rrf": {"window_size": 10, "rank_window_size": 30}}}`, "conflicts with"},
 		{"query not object", `{"query": "x", "knn": {}, "rank": {"rrf": {}}}`, "[query] must be an object"},
 		{"knn not object", `{"query": {"match_all": {}}, "knn": [1], "rank": {"rrf": {}}}`, "[knn] must be an object"},
 		{"one search", `{"query": {"match_all": {}}, "rank": {"rrf": {}}}`, "requires a [query] and a [knn]"},
@@ -181,6 +212,16 @@ func TestHybrid_OpenSearch(t *testing.T) {
 		assert.Equal(t, 40, r.WindowSize)
 		assert.Equal(t, []float64{1, 1}, r.Weights)
 		assert.Equal(t, []string{NormalizeMinMax, NormalizeMinMax}, r.Normalizers)
+		assert.Contains(t, r.Retrievers[0].Query, "bool")
+		knn := r.Retrievers[1].Query["knn"].(map[string]interface{})
+		require.Len(t, knn, 1)
+		assert.Equal(t, []interface{}{map[string]interface{}{"term": map[string]interface{}{"tag": "x"}}},
+			knn["emb"].(map[string]interface{})["filter"], "a knn query filters before neighbor selection")
+	})
+
+	t.Run("knn with other keys is a bool filter", func(t *testing.T) {
+		r, err := Hybrid(hybridZedQuery(t, `{"query": {"hybrid": {"filter": {"term": {"tag": "x"}}, "queries": [{"knn": 1, "boost": 2}]}}}`))
+		require.NoError(t, err)
 		assert.Contains(t, r.Retrievers[0].Query, "bool")
 	})
 
@@ -216,6 +257,12 @@ func TestHybrid_OpenSearch(t *testing.T) {
 		name, body, err string
 	}{
 		{"not object", `{"query": {"hybrid": 1}}`, "[hybrid] must be an object"},
+		{"top-level knn", `{"query": {"hybrid": {` + queries + `}}, "knn": {"field": "emb", "query_vector": [1, 0]}}`, "[knn] cannot be used with a [hybrid] query"},
+		{"filter not object", `{"query": {"hybrid": {"filter": [{}, 1], ` + queries + `}}}`, "[filter] must be an object"},
+		{"knn filter not object", `{"query": {"hybrid": {"filter": {"match_all": {}}, "queries": [{"knn": {"emb": {"filter": 1}}}]}}}`, "[filter] must be an object"},
+		{"fractional depth", `{"query": {"hybrid": {"pagination_depth": 1.5, ` + queries + `}}}`, "pagination_depth] must be a positive integer"},
+		{"technique with unknown field", pipeline(`{"normalization-processor": {"normalization": {"technique": "l2", "x": 1}}}`), "[normalization] unknown field [x]"},
+		{"empty weights", pipeline(`{"normalization-processor": {"combination": {"parameters": {"weights": []}}}}`), "number of weights [0] must match the number of queries [2]"},
 		{"queries not array", `{"query": {"hybrid": {"queries": {}}}}`, "queries must be an array"},
 		{"no queries", `{"query": {"hybrid": {"queries": []}}}`, "requires 1 to 5 queries, got 0"},
 		{"too many queries", `{"query": {"hybrid": {"queries": [{}, {}, {}, {}, {}, {}]}}}`, "got 6"},
@@ -325,6 +372,8 @@ func TestRetriever_Fuse(t *testing.T) {
 			for _, h := range r.Fuse(means, 10) {
 				got[h.ID] = h.Score
 			}
+			require.Len(t, got, 3)
+			require.Contains(t, got, "z", "a zero score hit is kept")
 			assert.InDelta(t, tt.a, got["a"], 1e-12)
 			assert.InDelta(t, tt.b, got["b"], 1e-12)
 			assert.InDelta(t, tt.z, got["z"], 1e-12)
@@ -335,5 +384,26 @@ func TestRetriever_Fuse(t *testing.T) {
 		r := &Retriever{Combination: CombineRRF, RankConstant: 60, Weights: []float64{1, 1}, Normalizers: none}
 		got := r.Fuse([][]RankedHit{{{Index: "x", ID: "a"}}, {{Index: "y", ID: "a"}}}, 10)
 		assert.Len(t, got, 2)
+	})
+
+	t.Run("no hits", func(t *testing.T) {
+		r := &Retriever{Combination: CombineRRF, RankConstant: 60, Weights: []float64{1, 1}, Normalizers: none}
+		assert.Empty(t, r.Fuse([][]RankedHit{nil, nil}, 10))
+	})
+
+	t.Run("zero weights", func(t *testing.T) {
+		for _, combination := range []string{CombineArithmetic, CombineGeometric, CombineHarmonic, CombineSum, CombineRRF} {
+			r := &Retriever{Combination: combination, RankConstant: 60, Weights: []float64{0, 0}, Normalizers: none}
+			got := r.Fuse(means, 10)
+			require.Len(t, got, 3, combination)
+			for _, h := range got {
+				assert.Equal(t, 0.0, h.Score, combination)
+			}
+		}
+	})
+
+	t.Run("ties keep the first seen order", func(t *testing.T) {
+		r := &Retriever{Combination: CombineSum, Weights: []float64{1}, Normalizers: []string{NormalizeNone}}
+		assert.Equal(t, []string{"b", "a", "c"}, ids(r.Fuse([][]RankedHit{hits("b", 1.0, "a", 1.0, "c", 1.0)}, 10)))
 	})
 }

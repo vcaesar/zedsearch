@@ -59,7 +59,7 @@ func parseNamedRetriever(name string, body interface{}, filters []interface{}) (
 	case "standard":
 		return parseStandard(b, filters)
 	case "knn":
-		return parseKnnRetriever(b, filters), nil
+		return parseKnnRetriever(b, filters)
 	case "rrf", "linear":
 		return parseFusion(name, b, filters)
 	}
@@ -68,15 +68,17 @@ func parseNamedRetriever(name string, body interface{}, filters []interface{}) (
 
 func parseStandard(b map[string]interface{}, filters []interface{}) (*Retriever, error) {
 	query := map[string]interface{}{"match_all": map[string]interface{}{}}
+	var err error
 	for k, v := range b {
 		switch k {
 		case "query":
-			var err error
 			if query, err = object(v, "standard.query"); err != nil {
 				return nil, err
 			}
 		case "filter":
-			filters = withFilters(filters, v)
+			if filters, err = withFilters(filters, v); err != nil {
+				return nil, err
+			}
 		case "_name":
 		default:
 			return nil, parseError(fmt.Sprintf("[standard] unknown field [%s]", k))
@@ -88,18 +90,12 @@ func parseStandard(b map[string]interface{}, filters []interface{}) (*Retriever,
 // parseKnnRetriever returns the knn query of an Elasticsearch knn retriever,
 // whose options are the ones of the top-level knn. The parent filters join
 // the knn filter, applied before ranking.
-func parseKnnRetriever(b map[string]interface{}, filters []interface{}) *Retriever {
-	knn := make(map[string]interface{}, len(b)+1)
-	for k, v := range b {
-		knn[k] = v
+func parseKnnRetriever(b map[string]interface{}, filters []interface{}) (*Retriever, error) {
+	knn, err := knnWithFilters(b, filters)
+	if err != nil {
+		return nil, err
 	}
-	if len(filters) > 0 {
-		if f, ok := knn["filter"]; ok {
-			filters = withFilters(filters, f)
-		}
-		knn["filter"] = filters
-	}
-	return &Retriever{Query: map[string]interface{}{"knn": knn}}
+	return &Retriever{Query: map[string]interface{}{"knn": knn}}, nil
 }
 
 func parseFusion(name string, b map[string]interface{}, filters []interface{}) (*Retriever, error) {
@@ -136,7 +132,9 @@ func parseFusion(name string, b map[string]interface{}, filters []interface{}) (
 			}
 			r.MinScore = &min
 		case k == "filter":
-			filters = withFilters(filters, v)
+			if filters, err = withFilters(filters, v); err != nil {
+				return nil, err
+			}
 		case k == "_name":
 		default:
 			return nil, parseError(fmt.Sprintf("[%s] unknown field [%s]", name, k))

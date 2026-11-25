@@ -53,10 +53,15 @@ func parseRank(q *meta.ZedQuery) (*Retriever, error) {
 		return nil, err
 	}
 	r := &Retriever{Combination: CombineRRF, RankConstant: DefaultRankConstant}
+	windowKey := ""
 	for k, v := range b {
 		switch k {
 		case "rank_window_size", "window_size":
-			r.WindowSize, err = positiveInt(v, "rrf."+k)
+			var window int
+			if window, err = positiveInt(v, "rrf."+k); err == nil && windowKey != "" && window != r.WindowSize {
+				err = parseError(fmt.Sprintf("[rrf] [%s] conflicts with [%s]", k, windowKey))
+			}
+			r.WindowSize, windowKey = window, k
 		case "rank_constant":
 			r.RankConstant, err = positiveInt(v, "rrf.rank_constant")
 		default:
@@ -123,7 +128,9 @@ func parseHybridQuery(v, pipeline interface{}) (*Retriever, error) {
 				return nil, parseError(fmt.Sprintf("[hybrid] queries must be an array, got %T", item))
 			}
 		case "filter":
-			filters = withFilters(nil, item)
+			if filters, err = withFilters(nil, item); err != nil {
+				return nil, err
+			}
 		case "pagination_depth":
 			if r.WindowSize, err = positiveInt(item, "hybrid.pagination_depth"); err != nil {
 				return nil, err
@@ -150,13 +157,30 @@ func parseHybridQuery(v, pipeline interface{}) (*Retriever, error) {
 		if err != nil {
 			return nil, err
 		}
-		r.Retrievers = append(r.Retrievers, &Retriever{Query: filtered(query, filters)})
+		if query, err = hybridFiltered(query, filters); err != nil {
+			return nil, err
+		}
+		r.Retrievers = append(r.Retrievers, &Retriever{Query: query})
 		r.Normalizers = append(r.Normalizers, normalizer)
 		if len(r.Weights) <= i {
 			r.Weights = append(r.Weights, 1)
 		}
 	}
 	return r, nil
+}
+
+// hybridFiltered returns a hybrid sub-query restricted to filters: a knn
+// query filters before neighbor selection, as in OpenSearch.
+func hybridFiltered(query map[string]interface{}, filters []interface{}) (map[string]interface{}, error) {
+	knn, ok := query["knn"].(map[string]interface{})
+	if !ok || len(query) != 1 {
+		return filtered(query, filters), nil
+	}
+	knn, err := knnWithFilters(knn, filters)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{"knn": knn}, nil
 }
 
 // parsePipeline parses an inline OpenSearch search pipeline with one phase
@@ -234,19 +258,20 @@ func parseTechnique(v interface{}) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	normalizer := NormalizeMinMax
 	for k, item := range m {
 		if k != "technique" {
 			return "", parseError(fmt.Sprintf("[normalization] unknown field [%s]", k))
 		}
 		switch item {
 		case "min_max":
-			return NormalizeMinMax, nil
 		case "l2":
-			return NormalizeL2, nil
+			normalizer = NormalizeL2
+		default:
+			return "", parseError(fmt.Sprintf("[normalization] unsupported technique [%v]", item))
 		}
-		return "", parseError(fmt.Sprintf("[normalization] unsupported technique [%v]", item))
 	}
-	return NormalizeMinMax, nil
+	return normalizer, nil
 }
 
 func parseCombination(name string, v interface{}, r *Retriever) error {
@@ -291,6 +316,7 @@ func parseWeights(v interface{}, name string) ([]float64, error) {
 		if k != "weights" || !ok {
 			return nil, parseError(fmt.Sprintf("[%s] parameters supports only an array of [weights]", name))
 		}
+		weights = make([]float64, 0, len(list))
 		for _, w := range list {
 			f, err := weight(w, name)
 			if err != nil {

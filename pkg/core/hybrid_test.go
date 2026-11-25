@@ -17,7 +17,9 @@ package core
 
 import (
 	"context"
+	"strconv"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -110,6 +112,32 @@ func TestSearch_Hybrid(t *testing.T) {
 		assert.Equal(t, []string{"b", "a"}, hitIDs(resp))
 	})
 
+	t.Run("the default window does not grow with from", func(t *testing.T) {
+		var pages []string
+		for from := 0; from < 3; from++ {
+			resp, err := index.Search(hybridRequest(t, `{"from": `+strconv.Itoa(from)+`, "size": 1, "retriever": {"rrf": {"retrievers": [
+				{"standard": {"query": `+hybridMatch+`}}, {"knn": `+hybridKnn+`}]}}}`))
+			require.NoError(t, err)
+			pages = append(pages, hitIDs(resp)...)
+		}
+		assert.Equal(t, []string{"b", "a", "c"}, pages)
+	})
+
+	t.Run("min_score counts the fused hits", func(t *testing.T) {
+		resp, err := index.Search(hybridRequest(t, `{"retriever": {"rrf": {"min_score": 0.02, "retrievers": [
+			{"standard": {"query": `+hybridMatch+`}}, {"knn": `+hybridKnn+`}]}}}`))
+		require.NoError(t, err)
+		assert.Equal(t, []string{"b"}, hitIDs(resp), "only b is in both lists")
+		assert.Equal(t, 1, resp.Hits.Total.Value)
+	})
+
+	t.Run("knn filter of field-keyed options", func(t *testing.T) {
+		resp, err := index.Search(hybridRequest(t, `{"query": {"hybrid": {"filter": {"term": {"tag": "x"}},
+			"queries": [{"knn": {"emb": {"vector": [1, 0, 0], "k": 1}}}]}}}`))
+		require.NoError(t, err)
+		assert.Equal(t, []string{"a"}, hitIDs(resp), "the filter applies before the neighbor selection")
+	})
+
 	t.Run("linear retriever with filter", func(t *testing.T) {
 		resp, err := index.Search(hybridRequest(t, `{"retriever": {"linear": {"filter": {"term": {"tag": "y"}}, "retrievers": [
 			{"retriever": {"standard": {"query": `+hybridMatch+`}}, "weight": 2, "normalizer": "minmax"},
@@ -181,7 +209,8 @@ func TestSearch_Hybrid(t *testing.T) {
 			{"rescore", `{` + rrf + `, "rescore": {"query": {"rescore_query": {"match_all": {}}}}}`, "[rescore] cannot be used"},
 			{"sort", `{` + rrf + `, "sort": "-tag"}`, "[sort] other than [_score]"},
 			{"page", `{` + rrf + `, "from": -1}`, "from and size must be within [0, 100]"},
-			{"window", `{"from": 95, ` + rrf + `}`, "rank window must be less than or equal to [100] but was [105]"},
+			{"window", `{"from": 95, "retriever": {"rrf": {"rank_window_size": 105, "retrievers": [{"standard": {"query": ` + hybridMatch + `}}]}}}`,
+				"rank window must be less than or equal to [100] but was [105]"},
 			{"leaf query", `{"retriever": {"rrf": {"retrievers": [{"standard": {"query": {"bogus": {}}}}]}}}`, "bogus"},
 		}
 		for _, tt := range tests {
@@ -216,6 +245,19 @@ func TestSearchHybrid_Phases(t *testing.T) {
 		assert.Equal(t, 1, calls)
 	})
 
+	t.Run("phases share one deadline", func(t *testing.T) {
+		calls := 0
+		resp, err := searchHybrid(&meta.ZedQuery{Size: 10, Timeout: 1}, fusion, func(q *meta.ZedQuery) (*meta.SearchResponse, error) {
+			calls++
+			assert.Equal(t, 1, q.Timeout)
+			time.Sleep(1100 * time.Millisecond)
+			return &meta.SearchResponse{Hits: meta.Hits{Hits: []meta.Hit{{Index: "x", ID: "1"}}}}, nil
+		})
+		require.NoError(t, err)
+		assert.True(t, resp.TimedOut)
+		assert.Equal(t, 1, calls, "the union starts after the deadline")
+	})
+
 	t.Run("fetch keeps the ranked order, index and id", func(t *testing.T) {
 		phase := 0
 		resp, err := searchHybrid(&meta.ZedQuery{Size: 10}, fusion, func(q *meta.ZedQuery) (*meta.SearchResponse, error) {
@@ -226,7 +268,11 @@ func TestSearchHybrid_Phases(t *testing.T) {
 			case 2: // union
 				return &meta.SearchResponse{Took: 2, Hits: meta.Hits{Total: meta.Total{Value: 3}}}, nil
 			}
-			assert.Equal(t, 6, q.Size, "an id may be in both indexes")
+			assert.Equal(t, 3, q.Size, "the fetch matches the ranked pairs only")
+			filter := q.Query.(map[string]interface{})["bool"].(map[string]interface{})["filter"]
+			assert.Equal(t, map[string]interface{}{"bool": map[string]interface{}{"should": []interface{}{
+				pairQuery("x", "1", "gone"), pairQuery("y", "1"),
+			}}}, filter)
 			return &meta.SearchResponse{Took: 4, Hits: meta.Hits{Hits: []meta.Hit{{Index: "y", ID: "1"}, {Index: "x", ID: "1"}, {Index: "y", ID: "gone"}}}}, nil
 		})
 		require.NoError(t, err)
@@ -238,17 +284,27 @@ func TestSearchHybrid_Phases(t *testing.T) {
 		assert.Equal(t, 7, resp.Took)
 	})
 
-	t.Run("phase errors fail the search", func(t *testing.T) {
-		for fail := 1; fail <= 3; fail++ {
+	for _, tt := range []struct {
+		name string
+		fail int
+	}{{"rank", 1}, {"union", 2}, {"fetch", 3}} {
+		t.Run("a failed "+tt.name+" fails the search", func(t *testing.T) {
 			phase := 0
 			_, err := searchHybrid(&meta.ZedQuery{Size: 10}, fusion, func(*meta.ZedQuery) (*meta.SearchResponse, error) {
 				phase++
-				if phase == fail {
+				if phase == tt.fail {
 					return nil, assert.AnError
 				}
 				return &meta.SearchResponse{Hits: meta.Hits{Hits: []meta.Hit{{Index: "x", ID: "1"}}}}, nil
 			})
-			assert.ErrorIs(t, err, assert.AnError, "phase %d", fail)
-		}
-	})
+			assert.ErrorIs(t, err, assert.AnError)
+		})
+	}
+}
+
+func pairQuery(index string, ids ...interface{}) interface{} {
+	return map[string]interface{}{"bool": map[string]interface{}{"filter": []interface{}{
+		map[string]interface{}{"term": map[string]interface{}{"_index": index}},
+		map[string]interface{}{"ids": map[string]interface{}{"values": ids}},
+	}}}
 }

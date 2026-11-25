@@ -27,6 +27,8 @@ package core
 import (
 	"context"
 	"fmt"
+	"math"
+	"time"
 
 	"github.com/vcaesar/zedsearch/pkg/config"
 	"github.com/vcaesar/zedsearch/pkg/errors"
@@ -36,9 +38,10 @@ import (
 
 // hybridSearch runs the phases of a search fusing several retrievers.
 type hybridSearch struct {
-	query *meta.ZedQuery
-	run   func(*meta.ZedQuery) (*meta.SearchResponse, error)
-	took  int
+	query    *meta.ZedQuery
+	run      func(*meta.ZedQuery) (*meta.SearchResponse, error)
+	took     int
+	deadline time.Time // of all the phases, zero without timeout
 }
 
 // searchHybrid answers a search uquery.Hybrid fuses: run searches each leaf
@@ -57,9 +60,11 @@ func searchHybrid(query *meta.ZedQuery, r *uquery.Retriever, run func(*meta.ZedQ
 		return nil, errors.New(errors.ErrorTypeIllegalArgumentException,
 			fmt.Sprintf("[hybrid] from and size must be within [0, %d] but were [%d] and [%d]", maxResults, query.From, query.Size))
 	}
+	// the default window does not grow with from: pages of one search must
+	// rank the same hits, deeper pages need an explicit window
 	window := r.WindowSize
 	if window == 0 {
-		window = max(uquery.DefaultRankWindow, query.From+query.Size)
+		window = max(uquery.DefaultRankWindow, query.Size)
 	}
 	if window > maxResults {
 		return nil, errors.New(errors.ErrorTypeIllegalArgumentException,
@@ -67,6 +72,9 @@ func searchHybrid(query *meta.ZedQuery, r *uquery.Retriever, run func(*meta.ZedQ
 	}
 
 	h := &hybridSearch{query: query, run: run}
+	if query.Timeout > 0 {
+		h.deadline = time.Now().Add(time.Duration(query.Timeout) * time.Second)
+	}
 	ranked, err := h.retrieve(r, window)
 	if err != nil {
 		return searchFailed(err)
@@ -86,6 +94,10 @@ func searchHybrid(query *meta.ZedQuery, r *uquery.Retriever, run func(*meta.ZedQ
 	if err != nil {
 		return searchFailed(err)
 	}
+	if r.MinScore != nil {
+		// min_score leaves out hits of the union
+		resp.Hits.Total = meta.Total{Value: len(ranked)}
+	}
 	start := min(query.From, len(ranked))
 	page := ranked[start:min(start+query.Size, len(ranked))]
 	if resp.Hits.Hits, err = h.fetch(page, leaves); err != nil {
@@ -99,10 +111,17 @@ func searchHybrid(query *meta.ZedQuery, r *uquery.Retriever, run func(*meta.ZedQ
 	return resp, nil
 }
 
-// search runs q with the timeout of the hybrid search. A timed out phase
-// fails it with context.DeadlineExceeded.
+// search runs q within the deadline of the hybrid search, its timeout the
+// whole seconds left. A timed out phase fails it with
+// context.DeadlineExceeded.
 func (h *hybridSearch) search(q *meta.ZedQuery) (*meta.SearchResponse, error) {
-	q.Timeout = h.query.Timeout
+	if !h.deadline.IsZero() {
+		left := time.Until(h.deadline)
+		if left <= 0 {
+			return nil, context.DeadlineExceeded
+		}
+		q.Timeout = int(math.Ceil(left.Seconds()))
+	}
 	resp, err := h.run(q)
 	if err != nil {
 		return nil, err
@@ -148,20 +167,29 @@ func (h *hybridSearch) fetch(page []uquery.RankedHit, leaves []interface{}) ([]m
 	if len(page) == 0 {
 		return []meta.Hit{}, nil
 	}
-	ids := make([]interface{}, len(page))
-	indexes := make(map[string]struct{})
-	for i, hit := range page {
-		ids[i] = hit.ID
-		indexes[hit.Index] = struct{}{}
+	// the ids of each index: an id may be in other indexes too
+	idsByIndex := make(map[string][]interface{})
+	var indexes []string
+	for _, hit := range page {
+		if _, ok := idsByIndex[hit.Index]; !ok {
+			indexes = append(indexes, hit.Index)
+		}
+		idsByIndex[hit.Index] = append(idsByIndex[hit.Index], hit.ID)
 	}
-	body := map[string]interface{}{"filter": map[string]interface{}{"ids": map[string]interface{}{"values": ids}}}
+	pairs := make([]interface{}, len(indexes))
+	for i, index := range indexes {
+		pairs[i] = map[string]interface{}{"bool": map[string]interface{}{"filter": []interface{}{
+			map[string]interface{}{"term": map[string]interface{}{"_index": index}},
+			map[string]interface{}{"ids": map[string]interface{}{"values": idsByIndex[index]}},
+		}}}
+	}
+	body := map[string]interface{}{"filter": map[string]interface{}{"bool": map[string]interface{}{"should": pairs}}}
 	if h.query.Highlight != nil {
 		body["should"] = leaves
 	}
 	resp, err := h.search(&meta.ZedQuery{
-		Query: map[string]interface{}{"bool": body},
-		// an id may be in each index of the page
-		Size:      len(page) * len(indexes),
+		Query:     map[string]interface{}{"bool": body},
+		Size:      len(page),
 		Source:    h.query.Source,
 		Fields:    h.query.Fields,
 		Highlight: h.query.Highlight,

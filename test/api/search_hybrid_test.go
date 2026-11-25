@@ -60,17 +60,22 @@ func TestSearchHybrid(t *testing.T) {
 		return out
 	}
 
-	t.Run("elasticsearch rrf retriever", func(t *testing.T) {
-		assert.Equal(t, []string{"b", "a", "c"}, ids(t, `{"retriever": {"rrf": {"retrievers": [
+	tests := []struct {
+		name, body string
+		want       []string
+	}{
+		{"elasticsearch rrf retriever", `{"retriever": {"rrf": {"retrievers": [
 			{"standard": {"query": {"match": {"title": "fox"}}}},
-			{"knn": {"field": "embedding", "query_vector": [1, 0, 0], "k": 2}}]}}}`))
-	})
-
-	t.Run("opensearch hybrid query", func(t *testing.T) {
-		assert.Equal(t, []string{"b", "a", "c"}, ids(t, `{"query": {"hybrid": {"queries": [
+			{"knn": {"field": "embedding", "query_vector": [1, 0, 0], "k": 2}}]}}}`, []string{"b", "a", "c"}},
+		{"opensearch hybrid query", `{"query": {"hybrid": {"queries": [
 			{"match": {"title": "fox"}}, {"knn": {"embedding": {"vector": [1, 0, 0], "k": 2}}}]}},
-			"search_pipeline": {"phase_results_processors": [{"score-ranker-processor": {"combination": {"technique": "rrf"}}}]}}`))
-	})
+			"search_pipeline": {"phase_results_processors": [{"score-ranker-processor": {"combination": {"technique": "rrf"}}}]}}`, []string{"b", "a", "c"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, ids(t, tt.body))
+		})
+	}
 
 	t.Run("invalid retriever is a bad request", func(t *testing.T) {
 		resp := request("POST", "/es/"+index+"/_search", bytes.NewBufferString(`{"retriever": {"rrf": {}}}`))
