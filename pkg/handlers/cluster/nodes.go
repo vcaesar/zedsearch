@@ -30,6 +30,7 @@ import (
 
 	"github.com/vcaesar/zedsearch/pkg/cluster"
 	"github.com/vcaesar/zedsearch/pkg/config"
+	"github.com/vcaesar/zedsearch/pkg/meta"
 	"github.com/vcaesar/zedsearch/pkg/zhttp"
 	"github.com/vcaesar/zedsearch/pkg/zutils"
 )
@@ -77,6 +78,25 @@ func Nodes(c zhttp.Context) {
 		Enabled:     cluster.Enabled(),
 		Nodes:       cluster.Nodes(),
 	})
+}
+
+// Ready reports whether this node can serve writes
+//
+// Unlike /healthz it answers 503 while the cluster membership lease may have
+// expired, so a load balancer stops routing here until the lease recovers.
+//
+// @Id Readyz
+// @Summary Get readiness
+// @Produce json
+// @Success 200 {object} meta.HealthzResponse
+// @Failure 503 {object} meta.HealthzResponse
+// @Router /readyz [get]
+func Ready(c zhttp.Context) {
+	if !cluster.Live() {
+		c.JSON(http.StatusServiceUnavailable, meta.HealthzResponse{Status: "not live"})
+		return
+	}
+	c.JSON(http.StatusOK, meta.HealthzResponse{Status: "ok"})
 }
 
 // Partitions reports the index ownership map

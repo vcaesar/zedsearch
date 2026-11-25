@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -899,4 +900,238 @@ func TestCurrent(t *testing.T) {
 	assert.True(t, Current(disk))
 	r.seq = r.filesSeq + 1
 	assert.False(t, Current(disk), "operations kept beyond the installed files")
+}
+
+// A write that records preshipOps operations ships them to the in-sync
+// replica while it runs: its commit finds them acknowledged and makes no
+// call. A replica that is not in sync or behind is left to the commit; one
+// the preship could not reach is failed by it without a second call, which
+// would double the write's wait on a hanging replica.
+func TestPreship(t *testing.T) {
+	tests := []struct {
+		name   string
+		insync bool
+		fails  bool
+		// behind answers the preship out of sync, as a replica that lost operations
+		behind bool
+		// wantCalls are the replicate calls before the commit
+		wantCalls int
+	}{
+		{name: "in sync replica", insync: true, wantCalls: 1},
+		{name: "replica not in sync", wantCalls: 0},
+		{name: "failing replica stays for the commit", insync: true, fails: true, wantCalls: 1},
+		{name: "replica behind is caught up by the commit", insync: true, behind: true, wantCalls: 1},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			name := "TestPreship.index_" + strconv.Itoa(i+1)
+			newDiskIndex(t, name)
+			topo := newFakeTopology("node-a")
+			topo.set(name, "node-a", "node-b")
+			var mu sync.Mutex
+			var seq uint64 // what the replica holds
+			calls := 0
+			fails, behind := tt.fails, tt.behind
+			transport := &funcTransport{replicate: func(_ string, b *Batch) (Ack, error) {
+				mu.Lock()
+				defer mu.Unlock()
+				calls++
+				if fails {
+					return Ack{}, errors.New("connection refused")
+				}
+				if behind {
+					behind = false
+					return Ack{Term: b.Term, Seq: seq}, ErrOutOfSync
+				}
+				if b.From > seq+1 {
+					return Ack{Term: b.Term, Seq: seq}, ErrOutOfSync
+				}
+				seq = max(seq, b.From-1+uint64(len(b.Ops)))
+				return Ack{Term: b.Term, Seq: seq}, nil
+			}}
+			state := func() (int, uint64) {
+				mu.Lock()
+				defer mu.Unlock()
+				return calls, seq
+			}
+			m := newManager(t, ModeDocument, topo, transport)
+			ctx := context.Background()
+			p, err := m.prepare(ctx, name)
+			require.NoError(t, err)
+			if tt.insync {
+				require.NoError(t, topo.UpdateInSync(ctx, name, []string{"node-b"}, p.epoch))
+				p.insync = []string{"node-b"}
+			}
+
+			for range preshipOps {
+				m.record(name, "0", []byte(testEntry))
+			}
+			m.wg.Wait() // the preship, when one started
+			got, held := state()
+			assert.Equal(t, tt.wantCalls, got)
+			p.mu.Lock()
+			assert.False(t, p.preshipping)
+			assert.Equal(t, held, p.acked["node-b"])
+			p.mu.Unlock()
+
+			require.NoError(t, m.commit(ctx, p, false))
+			after, held := state()
+			nodes, _ := topo.inSyncOf(name)
+			switch {
+			case tt.fails:
+				assert.Empty(t, nodes, "the commit, not the preship, drops the replica")
+				assert.Equal(t, got, after, "the commit does not call an unreachable replica again")
+				p.mu.Lock()
+				assert.Empty(t, p.unreachable, "the next commit calls it again")
+				p.mu.Unlock()
+			case tt.behind:
+				assert.Equal(t, got+1, after, "the commit ships to a replica behind")
+				assert.Equal(t, uint64(preshipOps), held)
+				assert.Equal(t, []string{"node-b"}, nodes)
+			case tt.insync:
+				assert.Equal(t, got, after, "everything was acknowledged before the commit")
+				assert.Equal(t, uint64(preshipOps), held)
+				assert.Equal(t, []string{"node-b"}, nodes)
+			default:
+				assert.Equal(t, uint64(preshipOps), held, "the commit ships to a replica that is not in sync")
+			}
+		})
+	}
+}
+
+// Operations recorded while a preship is on its way are not sent twice:
+// the next shipment starts after what the replica acknowledged.
+func TestPreshipThenCommitShipsTheRest(t *testing.T) {
+	name := "TestPreshipThenCommitShipsTheRest.index_1"
+	newDiskIndex(t, name)
+	topo := newFakeTopology("node-a")
+	topo.set(name, "node-a", "node-b")
+	var mu sync.Mutex
+	var froms, sizes []uint64
+	release := make(chan struct{})
+	transport := &funcTransport{replicate: func(_ string, b *Batch) (Ack, error) {
+		mu.Lock()
+		first := len(froms) == 0
+		froms, sizes = append(froms, b.From), append(sizes, uint64(len(b.Ops)))
+		mu.Unlock()
+		if first {
+			<-release // the preship is in flight while more is recorded
+		}
+		return Ack{Term: b.Term, Seq: b.From - 1 + uint64(len(b.Ops))}, nil
+	}}
+	m := newManager(t, ModeDocument, topo, transport)
+	ctx := context.Background()
+	p, err := m.prepare(ctx, name)
+	require.NoError(t, err)
+	require.NoError(t, topo.UpdateInSync(ctx, name, []string{"node-b"}, p.epoch))
+	p.insync = []string{"node-b"}
+
+	for range preshipOps {
+		m.record(name, "0", []byte(testEntry))
+	}
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(froms) == 1
+	}, 5*time.Second, time.Millisecond)
+	// recorded once the preship took its target, so the commit has them left
+	for range 10 {
+		m.record(name, "0", []byte(testEntry))
+	}
+	done := make(chan error, 1)
+	go func() { done <- m.commit(ctx, p, false) }()
+	close(release)
+	require.NoError(t, <-done)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, froms, 2, "one preship, one commit")
+	assert.Equal(t, uint64(1), froms[0])
+	assert.Equal(t, froms[0]+sizes[0], froms[1], "the commit continues where the preship ended")
+	assert.Equal(t, uint64(preshipOps+10), sizes[0]+sizes[1])
+	assert.Equal(t, uint64(preshipOps+10), p.acked["node-b"])
+}
+
+// A write ships while it records, every preshipOps operations, so its
+// commit has nothing left to send when the last preship took everything.
+func TestPreshipLeavesTheCommitNothing(t *testing.T) {
+	name := "TestPreshipLeavesTheCommitNothing.index_1"
+	newDiskIndex(t, name)
+	topo := newFakeTopology("node-a")
+	topo.set(name, "node-a", "node-b")
+	var mu sync.Mutex
+	var sizes []int
+	transport := &funcTransport{replicate: func(_ string, b *Batch) (Ack, error) {
+		mu.Lock()
+		sizes = append(sizes, len(b.Ops))
+		mu.Unlock()
+		return Ack{Term: b.Term, Seq: b.From - 1 + uint64(len(b.Ops))}, nil
+	}}
+	m := newManager(t, ModeDocument, topo, transport)
+	ctx := context.Background()
+	p, err := m.prepare(ctx, name)
+	require.NoError(t, err)
+	require.NoError(t, topo.UpdateInSync(ctx, name, []string{"node-b"}, p.epoch))
+	p.insync = []string{"node-b"}
+
+	for range 4 {
+		for range preshipOps {
+			m.record(name, "0", []byte(testEntry))
+		}
+		m.wg.Wait() // the preship the last record started
+	}
+	require.NoError(t, m.commit(ctx, p, false))
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, []int{preshipOps, preshipOps, preshipOps, preshipOps}, sizes, "four preships, no commit batch")
+	assert.Equal(t, uint64(4*preshipOps), p.acked["node-b"])
+}
+
+// A remote index uploads its operations at commit, nothing is preshipped;
+// a preship of an index deleted meanwhile sends nothing.
+func TestPreshipSkips(t *testing.T) {
+	useObjectStore(t)
+	remote := "TestPreshipSkips.index_1"
+	newRemoteIndex(t, remote)
+	gone := "TestPreshipSkips.index_2"
+	newDiskIndex(t, gone)
+	topo := newFakeTopology("node-a")
+	topo.set(remote, "node-a", "node-b")
+	topo.set(gone, "node-a", "node-b")
+	transport := &funcTransport{replicate: func(string, *Batch) (Ack, error) {
+		t.Error("nothing may be shipped")
+		return Ack{}, nil
+	}}
+	m := newManager(t, ModeDocument, topo, transport)
+
+	p := m.primaryFor(remote)
+	require.NotNil(t, p)
+	require.True(t, p.remote)
+	p.insync = []string{"node-b"}
+	for range preshipOps {
+		m.record(remote, "0", []byte(testEntry))
+	}
+	m.wg.Wait()
+	assert.Zero(t, p.sent)
+
+	p = m.primaryFor(gone)
+	require.NotNil(t, p)
+	p.insync = []string{"node-b"}
+	core.ZED_INDEX_LIST.Delete(gone)
+	p.seq, p.ops = 1, []Op{{Seq: 1, Shard: "0", Entry: json.RawMessage(testEntry)}}
+	m.preship(p)
+	assert.False(t, p.preshipping)
+
+	// a partition that moved is not shipped under the old term
+	moved := "TestPreshipSkips.index_3"
+	newDiskIndex(t, moved)
+	topo.set(moved, "node-a", "node-b")
+	p = m.primaryFor(moved)
+	require.NotNil(t, p)
+	p.insync = []string{"node-b"}
+	p.seq, p.ops = 1, []Op{{Seq: 1, Shard: "0", Entry: json.RawMessage(testEntry)}}
+	topo.setEpoch(p.epoch + 1)
+	m.preship(p)
+	assert.Zero(t, p.acked["node-b"])
 }

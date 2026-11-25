@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -67,8 +68,92 @@ func TestIdempotentEntry(t *testing.T) {
 			assert.InDelta(t, float64(ShardIDNeedUpdate), doc[meta.ShardFieldName], 0)
 		})
 	}
-	_, err := idempotentEntry([]byte("{"))
-	assert.Error(t, err)
+
+	t.Run("idempotent entry passes through", func(t *testing.T) {
+		for _, action := range []string{meta.ActionTypeUpdate, meta.ActionTypeDelete} {
+			entry := []byte(`{"@_action":"` + action + `","@_id":"1","@_shard":-2,"emb":[0.25,1e-7]}`)
+			out, err := idempotentEntry(entry)
+			require.NoError(t, err)
+			assert.Same(t, &entry[0], &out[0], action)
+		}
+	})
+	t.Run("field values keep their encoding", func(t *testing.T) {
+		out, err := idempotentEntry([]byte(`{"@_action":"insert","@_id":"1","@_shard":-1,"@timestamp":1795200476377767001,"emb":[0.25,1e-7]}`))
+		require.NoError(t, err)
+		doc := map[string]json.RawMessage{}
+		require.NoError(t, json.Unmarshal(out, &doc))
+		assert.Equal(t, `"update"`, string(doc[meta.ActionFieldName]))
+		assert.Equal(t, "-2", string(doc[meta.ShardFieldName]))
+		assert.Equal(t, "1795200476377767001", string(doc[meta.TimeFieldName]))
+		assert.Equal(t, "[0.25,1e-7]", string(doc["emb"]))
+	})
+	t.Run("document fields spelled like the entry's own do not pass for them", func(t *testing.T) {
+		for _, entry := range []string{
+			`{"@_action":"insert","@_id":"1","@_shard":-1,"@_ACTION":"update","@_SHARD":-2}`,
+			`{"@_action":"update","@_id":"1","@_shard":3,"@_Shard":-2}`,
+			`{"@_ACTION":"delete","@_SHARD":-2,"@_action":"update","@_id":"1","@_shard":0}`,
+			`{"@_action":"noop","@_id":"1","@_shard":-2}`,
+		} {
+			out, err := idempotentEntry([]byte(entry))
+			require.NoError(t, err)
+			doc := map[string]json.RawMessage{}
+			require.NoError(t, json.Unmarshal(out, &doc))
+			assert.Equal(t, "-2", string(doc[meta.ShardFieldName]), entry)
+			assert.NotEqual(t, `"insert"`, string(doc[meta.ActionFieldName]), entry)
+		}
+		// rewritten, not passed through: the shard of the entry was not -2
+		entry := []byte(`{"@_action":"update","@_id":"1","@_shard":3,"@_Shard":-2}`)
+		out, err := idempotentEntry(entry)
+		require.NoError(t, err)
+		assert.NotSame(t, &entry[0], &out[0])
+	})
+	t.Run("invalid", func(t *testing.T) {
+		for _, entry := range []string{
+			"{",
+			`{"@_action":"update","@_shard":-2,"name":tru}`,
+			`{"@_action":"update","@_shard":-2,"emb":[1,}`,
+			`{"@_action":"insert","@_shard":-1,"name":"one"`,
+		} {
+			_, err := idempotentEntry([]byte(entry))
+			assert.Error(t, err, entry)
+		}
+	})
+	t.Run("rewrite encodes as json.Marshal", func(t *testing.T) {
+		for _, entry := range []string{
+			`{"@_action":"insert","@_id":"1","@_shard":-1,"name":"one","price":150.5}`,
+			`{"@_action":"insert","@_shard":0,"a\"b":1,"c\\d":2,"<x>&":3,"ü":4,"tab\t":5,"":6}`,
+			`{"@_shard":3}`,
+		} {
+			out, err := idempotentEntry([]byte(entry))
+			require.NoError(t, err)
+			doc := map[string]json.RawMessage{}
+			require.NoError(t, json.Unmarshal([]byte(entry), &doc))
+			if string(doc[meta.ActionFieldName]) == insertAction {
+				doc[meta.ActionFieldName] = json.RawMessage(updateAction)
+			}
+			doc[meta.ShardFieldName] = json.RawMessage("-2")
+			want, err := json.Marshal(doc)
+			require.NoError(t, err)
+			assert.Equal(t, string(want), string(out), entry)
+		}
+	})
+}
+
+func BenchmarkIdempotentEntry(b *testing.B) {
+	body := strings.Repeat("w1 w100 w3 w4000 w55 ", 20)
+	for name, entry := range map[string]string{
+		"insert":      `{"@_action":"insert","@_id":"1","@_shard":2,"@timestamp":1795200476377767001,"body":"` + body + `","price":150.5}`,
+		"passthrough": `{"@_action":"update","@_id":"1","@_shard":-2,"@timestamp":1795200476377767001,"body":"` + body + `","price":150.5}`,
+	} {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for range b.N {
+				if _, err := idempotentEntry([]byte(entry)); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
 }
 
 // WriteGuard rejects a write before the WAL; replica entries bypass it.

@@ -56,6 +56,7 @@ func SetRoutes(r *zhttp.Engine) {
 func setRoutes(r *zhttp.Engine) {
 	r.GET("/version", meta.GetVersion)
 	r.GET("/healthz", meta.GetHealthz)
+	r.GET("/readyz", cluster.Ready)
 
 	front, err := frontendAssets()
 	if err != nil {

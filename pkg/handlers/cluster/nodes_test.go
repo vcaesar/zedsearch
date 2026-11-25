@@ -18,6 +18,7 @@ package cluster
 import (
 	"context"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 
 	zcluster "github.com/vcaesar/zedsearch/pkg/cluster"
 	"github.com/vcaesar/zedsearch/pkg/config"
+	"github.com/vcaesar/zedsearch/pkg/meta"
 	"github.com/vcaesar/zedsearch/pkg/zutils/json"
 	"github.com/vcaesar/zedsearch/test/utils"
 )
@@ -44,6 +46,55 @@ func TestNodesSingleNode(t *testing.T) {
 	assert.True(t, resp.Nodes[0].Alive)
 	assert.True(t, resp.Nodes[0].IsLeader)
 	assert.NotEmpty(t, resp.Nodes[0].ID)
+}
+
+// failingKeepAlive is a store whose lease renewals fail once fail is set.
+type failingKeepAlive struct {
+	*zcluster.MemoryStore
+	fail atomic.Bool
+}
+
+func (s *failingKeepAlive) KeepAlive(ctx context.Context, id zcluster.LeaseID) error {
+	if s.fail.Load() {
+		return context.DeadlineExceeded
+	}
+	return s.MemoryStore.KeepAlive(ctx, id)
+}
+
+func TestReady(t *testing.T) {
+	ready := func() (int, string) {
+		c, w := utils.NewContext()
+		Ready(c)
+		resp := new(meta.HealthzResponse)
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), resp))
+		return w.Code, resp.Status
+	}
+
+	code, status := ready()
+	assert.Equal(t, http.StatusOK, code, "a single node is always ready")
+	assert.Equal(t, "ok", status)
+
+	previous := config.Global.Cluster
+	t.Cleanup(func() { config.Global.Cluster = previous })
+	config.Global.Cluster.Name = t.Name()
+	config.Global.Cluster.NodeID = "node-a"
+	config.Global.Cluster.AdvertiseAddr = "http://127.0.0.1:1"
+	config.Global.Cluster.Partitions = testPartitions
+	config.Global.Cluster.HeartbeatTTL = 300 * time.Millisecond
+	config.Global.Cluster.HeartbeatInterval = 50 * time.Millisecond
+
+	store := &failingKeepAlive{MemoryStore: zcluster.NewMemoryStore()}
+	require.NoError(t, zcluster.StartWith(context.Background(), store))
+	t.Cleanup(zcluster.Stop)
+	code, _ = ready()
+	assert.Equal(t, http.StatusOK, code, "a member with a live lease is ready")
+
+	store.fail.Store(true)
+	require.Eventually(t, func() bool {
+		code, status = ready()
+		return code == http.StatusServiceUnavailable
+	}, 10*time.Second, 10*time.Millisecond, "a lease that may have expired is not ready")
+	assert.Equal(t, "not live", status)
 }
 
 func TestPartitions(t *testing.T) {

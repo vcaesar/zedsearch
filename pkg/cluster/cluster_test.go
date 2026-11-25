@@ -308,11 +308,14 @@ func TestClusterReadFailures(t *testing.T) {
 
 func TestClusterNotLive(t *testing.T) {
 	// a long ttl keeps the heartbeat from re-joining during the test
+	assert.True(t, Live(), "without clustering the node is always live")
 	startFaultCluster(t, time.Hour, 30*time.Minute)
+	assert.True(t, Live())
 	require.NoError(t, get().membership.Leave(context.Background()))
 
 	assert.ErrorIs(t, CheckEpoch("logs", 0), ErrNotLive)
 	assert.False(t, IsLocalOwner("logs"))
+	assert.False(t, Live())
 }
 
 func TestClusterReplicasAndInSync(t *testing.T) {

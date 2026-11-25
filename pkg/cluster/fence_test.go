@@ -304,6 +304,57 @@ func TestFenceRefreshClearsAbsentInSync(t *testing.T) {
 	}
 }
 
+// A store restored from a snapshot holds the in-sync key at a lower revision
+// than the cached one: a Refresh takes the restored set, a replica it dropped
+// would otherwise stay in sync until the revisions catch up. A watch event
+// that lands during that read is newer than it and stays.
+func TestFenceRefreshTakesRestoredInSync(t *testing.T) {
+	tests := []struct {
+		name   string
+		during int64 // revision of an event applied while Refresh reads, 0 for none
+		want   bool
+	}{
+		{name: "restored store", want: false},
+		{name: "event during the read", during: 101, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := newFaultStore(nil)
+			fence, assigner := newTestFence(t, store, "node-b")
+			owned, ok, err := assigner.Set(ctx, PartitionOfN("logs", fencePartitions), "node-a", 0)
+			require.NoError(t, err)
+			require.True(t, ok)
+			require.NoError(t, assigner.UpdateInSync(ctx, "logs", []string{}, owned.Epoch))
+			_, restored, err := assigner.ListInSync(ctx)
+			require.NoError(t, err)
+			require.Less(t, restored, int64(100))
+
+			put := func(revision int64) Event {
+				return Event{Type: EventPut, KV: KV{Key: assigner.InSyncKey(), Value: []byte(`{"logs":["node-b"]}`), Revision: revision}}
+			}
+			fence.applyInSync(put(100))
+			require.True(t, fence.IsLocalInSync("logs"))
+			if tt.during > 0 {
+				store.setRule(func(op, key string) error {
+					if op == "Get" && key == assigner.InSyncKey() {
+						fence.applyInSync(put(tt.during))
+					}
+					return nil
+				})
+			}
+
+			require.NoError(t, fence.Refresh(ctx))
+			assert.Equal(t, tt.want, fence.IsLocalInSync("logs"))
+			store.setRule(nil)
+			fence.applyInSync(put(100))
+			assert.Equal(t, tt.want, fence.IsLocalInSync("logs"), "the queued add is from before the restore")
+			require.NoError(t, fence.Refresh(ctx))
+			assert.False(t, fence.IsLocalInSync("logs"), "the next read follows the store")
+		})
+	}
+}
+
 func TestFenceDefaultsAndError(t *testing.T) {
 	fence := NewFence(NewAssigner(NewMemoryStore(), "/test/", 0), "node-a", 0)
 	assert.Equal(t, DefaultPartitions, fence.partitions)

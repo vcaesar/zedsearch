@@ -65,10 +65,16 @@ type primary struct {
 	opsBytes int    // size of the retained entries
 	acked    map[string]uint64
 	insync   []string
-	last     uint64   // manager.recorded at the latest operation
-	shipped  uint64   // last operation a commit took to the replicas
-	uploaded uint64   // remote: last operation in the bucket
-	sums     sumCache // of the owned segments, for incremental snapshots
+	last     uint64 // manager.recorded at the latest operation
+	shipped  uint64 // last operation a commit took to the replicas
+	sent     uint64 // last operation a commit or preship set out with
+	// preshipping is set while a preship runs, one at a time
+	preshipping bool
+	// unreachable are the replicas a preship failed to call since the last
+	// commit, which fails them without waiting on a second call
+	unreachable []string
+	uploaded    uint64   // remote: last operation in the bucket
+	sums        sumCache // of the owned segments, for incremental snapshots
 
 	// commitMu serializes shipping, a commit that waited finds its
 	// operations already acknowledged by the one before it
@@ -166,7 +172,75 @@ func (m *manager) record(index, shard string, entry []byte) {
 	p.ops = append(p.ops, Op{Seq: p.seq, Shard: shard, Entry: append(json.RawMessage(nil), entry...)})
 	p.opsBytes += len(entry)
 	p.last = m.recorded.Add(1)
+	start := !p.remote && !p.preshipping && len(p.insync) > 0 && p.seq-p.sent >= preshipOps
+	if start {
+		p.preshipping = true
+		p.sent = p.seq
+	}
 	p.mu.Unlock()
+	if start && !m.spawn(func() { m.preship(p) }) {
+		p.mu.Lock()
+		p.preshipping = false
+		p.mu.Unlock()
+	}
+}
+
+// preship sends the operations recorded so far to the in-sync replicas
+// while the write recording them is still running, so its commit finds
+// most of them acknowledged and waits for the rest only. It moves
+// operations and nothing else: a replica that fails or lags is left to the
+// commit, which alone changes the in-sync set and answers the client.
+func (m *manager) preship(p *primary) {
+	p.commitMu.Lock()
+	defer p.commitMu.Unlock()
+	local := m.topo.LocalID()
+	replicas := m.topo.Replicas(p.index)
+	p.mu.Lock()
+	target := p.seq
+	p.sent = target
+	nodes := slices.DeleteFunc(replicas, func(node string) bool {
+		return node == local || !slices.Contains(p.insync, node) || slices.Contains(p.unreachable, node)
+	})
+	p.mu.Unlock()
+	defer func() {
+		p.mu.Lock()
+		p.preshipping = false
+		p.mu.Unlock()
+	}()
+
+	if m.topo.CheckEpoch(p.index, p.epoch) != nil {
+		return // the partition moved, the commit fails the write
+	}
+	mappings, err := m.mappings(p.index)
+	if err != nil {
+		return // deleted meanwhile, the commit says so
+	}
+	var group sync.WaitGroup
+	for _, node := range nodes {
+		group.Go(func() {
+			p.mu.Lock()
+			from := p.acked[node] + 1
+			ops, ok := p.opsFrom(from, target)
+			p.mu.Unlock()
+			if !ok || len(ops) == 0 {
+				return
+			}
+			ack, err := m.transport.Replicate(m.ctx, node, &Batch{Index: p.index, Term: p.term, From: from, Ops: ops, Mappings: mappings})
+			if err != nil {
+				log.Debug().Err(err).Str("index", p.index).Str("replica", node).Msg("replication: preship")
+				if !errors.Is(err, ErrOutOfSync) {
+					p.mu.Lock()
+					p.unreachable = append(p.unreachable, node)
+					p.mu.Unlock()
+				}
+				return
+			}
+			p.mu.Lock()
+			p.acked[node] = max(p.acked[node], ack.Seq)
+			p.mu.Unlock()
+		})
+	}
+	group.Wait()
 }
 
 // recordedSince reports whether p took an operation after mark.
@@ -267,7 +341,9 @@ func (m *manager) prepare(ctx context.Context, name string) (*primary, error) {
 func (m *manager) promote(ctx context.Context, p *primary) error {
 	m.mu.Lock()
 	r := m.replicas[p.index]
+	m.replicasMu.Lock()
 	delete(m.replicas, p.index)
+	m.replicasMu.Unlock()
 	m.mu.Unlock()
 	if r != nil {
 		if err := r.replayPending(p.index); err != nil {
@@ -311,7 +387,10 @@ func (m *manager) commit(ctx context.Context, p *primary, probe bool) error {
 	replicas := slices.DeleteFunc(m.topo.Replicas(p.index), func(node string) bool { return node == local })
 	p.mu.Lock()
 	target := p.seq
+	p.sent = target
 	insync := append([]string(nil), p.insync...)
+	unreachable := p.unreachable
+	p.unreachable = nil
 	// a caught up replica is sent no operations, unless a probe finds it lost some
 	ships := probe || slices.ContainsFunc(replicas, func(node string) bool { return p.acked[node] < target })
 	p.mu.Unlock()
@@ -327,6 +406,10 @@ func (m *manager) commit(ctx context.Context, p *primary, probe bool) error {
 	group, groupCtx := errgroup.WithContext(ctx)
 	for i, node := range replicas {
 		group.Go(func() error {
+			if slices.Contains(unreachable, node) {
+				log.Warn().Str("index", p.index).Str("replica", node).Msg("replication: replica failed")
+				return nil
+			}
 			synced[i] = m.ship(groupCtx, p, node, target, mappings, probe)
 			return nil
 		})

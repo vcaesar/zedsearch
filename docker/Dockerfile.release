@@ -1,20 +1,26 @@
 # Release image built by goreleaser (dockers_v2): the binary is prebuilt per
 # platform and copied from $TARGETPLATFORM/zedsearch in the build context.
 FROM alpine:3.22 AS base
-RUN apk add --no-cache ca-certificates \
+RUN apk add --no-cache ca-certificates tzdata \
     && addgroup -g 10001 zedsearch \
     && adduser -D -H -h /nonexistent -s /sbin/nologin -u 10001 -G zedsearch zedsearch \
-    && mkdir -p /var/lib/zedsearch /data \
-    && chown zedsearch:zedsearch /var/lib/zedsearch /data
+    && mkdir -p /var/lib/zedsearch /data /tmp \
+    && chown zedsearch:zedsearch /var/lib/zedsearch /data /tmp
 
 FROM scratch
 ARG TARGETPLATFORM
 COPY --from=base /etc/passwd /etc/passwd
 COPY --from=base /etc/group /etc/group
+# scratch has neither: the CA bundle is for outbound TLS (S3/GCS/OSS, etcd, OTLP,
+# Sentry), zoneinfo for named time zones ("time_zone": "Asia/Shanghai").
 COPY --from=base /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=base /usr/share/zoneinfo /usr/share/zoneinfo
 COPY --from=base --chown=zedsearch:zedsearch /var/lib/zedsearch /var/lib/zedsearch
 COPY --from=base --chown=zedsearch:zedsearch /data /data
+# os.TempDir: object storage spools segments here when zed_object_cache_size = 0.
+COPY --from=base --chown=zedsearch:zedsearch /tmp /tmp
 COPY $TARGETPLATFORM/zedsearch /go/bin/zedsearch
-USER zedsearch:zedsearch
+# Numeric, so Kubernetes runAsNonRoot can verify it; same user as zedsearch above.
+USER 10001:10001
 EXPOSE 4080
 ENTRYPOINT ["/go/bin/zedsearch"]

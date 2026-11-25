@@ -141,11 +141,14 @@ func TestSetup(t *testing.T) {
 
 			assert.Equal(t, tt.pprof, serve(r, httptest.NewRequest(http.MethodGet, "/debug/pprof/cmdline", nil)).Code)
 			assert.Equal(t, http.StatusOK, serve(r, httptest.NewRequest(http.MethodGet, "/healthz", nil)).Code)
+			assert.Equal(t, http.StatusOK, serve(r, httptest.NewRequest(http.MethodGet, "/readyz", nil)).Code)
 			for _, route := range []struct{ method, path string }{
 				{http.MethodGet, "/api/cluster/nodes"},
 				{http.MethodGet, "/api/index/logs/_tier"},
 				{http.MethodGet, "/es/_ilm/policy"},
 				{http.MethodPost, "/api/_sql"},
+				// {http.MethodGet, "/api/fleet/agents"},
+				// {http.MethodGet, "/api/fleet/policies"},
 			} {
 				w := serve(r, httptest.NewRequest(route.method, route.path, nil))
 				assert.Equal(t, http.StatusUnauthorized, w.Code, route.path)

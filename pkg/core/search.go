@@ -250,12 +250,18 @@ func searchV2(shardNum, readerNum int64, dmi search.DocumentMatchIterator, query
 			continue
 		}
 		if hasSource {
-			value, rerr := vectors.Restore(storedSource)
-			if rerr != nil {
-				log.Printf("core.SearchV2: error restoring _source vectors of [%s]: %s", id, rerr.Error())
-				value = storedSource
+			src := query.Source.(*meta.Source)
+			value := storedSource
+			// "_source": false without fields reads nothing of it, so the
+			// vectors are not decoded and encoded back into it
+			if src.Enable || query.Fields != nil {
+				var rerr error
+				if value, rerr = vectors.Restore(storedSource); rerr != nil {
+					log.Printf("core.SearchV2: error restoring _source vectors of [%s]: %s", id, rerr.Error())
+					value = storedSource
+				}
 			}
-			sourceData = source.Response(query.Source.(*meta.Source), value)
+			sourceData = source.Response(src, value)
 			if query.Fields != nil {
 				m := mappings
 				if index, ok := indexes[indexName]; ok {

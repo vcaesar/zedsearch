@@ -128,6 +128,46 @@ func TestHTTPTransportRefusesRedirects(t *testing.T) {
 	assert.Contains(t, err.Error(), "307")
 }
 
+// A batch encoded by hand decodes to what json.Marshal would have sent,
+// with every entry byte for byte as recorded.
+func TestBatchEncode(t *testing.T) {
+	entry := json.RawMessage(`{"@_action":"update","@_id":"1","@_shard":-2,"emb":[0.25,1e-7],"name":"a \"b\""}`)
+	tests := []struct {
+		name  string
+		batch Batch
+	}{
+		{name: "probe", batch: Batch{Index: "x", Term: "t", From: 4}},
+		{name: "one shard", batch: Batch{Index: "x", Term: "t", From: 1, Ops: []Op{
+			{Seq: 1, Shard: "0", Entry: entry}, {Seq: 2, Shard: "0", Entry: entry},
+		}}},
+		{name: "shards and mappings", batch: Batch{Index: `logs "a"\b`, Term: "0007-0001", From: 9, Ops: []Op{
+			{Seq: 9, Shard: "0", Entry: entry}, {Seq: 10, Shard: `s"1`, Entry: entry}, {Seq: 11, Shard: "0", Entry: json.RawMessage(`{}`)},
+		}, Mappings: json.RawMessage(`{"properties":{"name":{"type":"text"}}}`)}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := tt.batch.encode()
+			require.NoError(t, err)
+			require.True(t, json.Valid(data), "%s", data)
+			var got, want Batch
+			require.NoError(t, json.Unmarshal(data, &got))
+			std, err := json.Marshal(&tt.batch)
+			require.NoError(t, err)
+			require.NoError(t, json.Unmarshal(std, &want))
+			assert.Equal(t, want.Index, got.Index)
+			assert.Equal(t, want.Term, got.Term)
+			assert.Equal(t, want.From, got.From)
+			assert.Equal(t, string(want.Mappings), string(got.Mappings))
+			require.Len(t, got.Ops, len(tt.batch.Ops))
+			for i, op := range tt.batch.Ops {
+				assert.Equal(t, op.Seq, got.Ops[i].Seq)
+				assert.Equal(t, op.Shard, got.Ops[i].Shard)
+				assert.Equal(t, string(op.Entry), string(got.Ops[i].Entry))
+			}
+		})
+	}
+}
+
 // The HTTP transport talks to the internal endpoints of the node it
 // resolves through the cluster; here node-a is this test server.
 func TestHTTPTransport(t *testing.T) {

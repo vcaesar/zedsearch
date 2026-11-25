@@ -706,6 +706,51 @@ func TestIndex_Search_TopHitsRestoresVectors(t *testing.T) {
 	assert.Equal(t, []interface{}{1.0, 2.0}, top.Hits[0].Source.(map[string]interface{})["emb"])
 }
 
+// "_source": false skips restoring the excluded vectors; fields still read them.
+func TestIndex_Search_SourceFalseSkipsVectors(t *testing.T) {
+	indexName := "TestIndex_Search_SourceFalseSkipsVectors.index_1"
+	index, err := NewIndex(indexName, "disk", 1)
+	require.NoError(t, err)
+	exclude := true
+	require.NoError(t, index.SetSettings(&meta.IndexSettings{ExcludeSourceVectors: &exclude}))
+	require.NoError(t, StoreIndex(index))
+	defer func() { assert.NoError(t, DeleteIndex(indexName)) }()
+	index.GetMappings().SetProperty("emb", meta.NewProperty("vector"))
+	index.GetMappings().SetProperty("name", meta.NewProperty("keyword"))
+
+	require.NoError(t, index.CreateDocument("1", map[string]interface{}{"name": "x", "emb": []interface{}{1.0, 2.0}}, false))
+	waitForDocs(t, index, 1)
+
+	tests := []struct {
+		name       string
+		fields     interface{}
+		wantFields map[string]interface{}
+	}{
+		{name: "no fields"},
+		{name: "fields", fields: []interface{}{"emb"},
+			wantFields: map[string]interface{}{"emb": []interface{}{[]interface{}{1.0, 2.0}}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, err := index.Search(&meta.ZedQuery{
+				Query:  &meta.Query{MatchAll: &meta.MatchAllQuery{}},
+				Size:   10,
+				Source: false,
+				Fields: tt.fields,
+			})
+			require.NoError(t, err)
+			require.Len(t, resp.Hits.Hits, 1)
+			assert.NotContains(t, resp.Hits.Hits[0].Source, "emb")
+			assert.NotContains(t, resp.Hits.Hits[0].Source, "name")
+			if tt.wantFields == nil {
+				assert.Nil(t, resp.Hits.Hits[0].Fields)
+				return
+			}
+			assert.Equal(t, tt.wantFields["emb"], resp.Hits.Hits[0].Fields["emb"])
+		})
+	}
+}
+
 func TestIndex_Search_SourceDisabled(t *testing.T) {
 	indexName := "TestIndex_Search_SourceDisabled.index_1"
 	index, err := NewIndex(indexName, "disk", 1)
