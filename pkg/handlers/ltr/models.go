@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -70,6 +71,10 @@ type ListResponse struct {
 // @Router /es/_ml/trained_models/{model_id} [put]
 func PutModel(c zhttp.Context) {
 	id := c.Param("model_id")
+	if id == "_all" || id == "*" {
+		renderError(c, http.StatusBadRequest, errors.ErrorTypeIllegalArgumentException, fmt.Sprintf("trained model id [%s] is reserved", id))
+		return
+	}
 	model := new(meta.LTRModel)
 	if err := zutils.BindJSON(c, model); err != nil {
 		renderError(c, http.StatusBadRequest, errors.ErrorTypeParsingException, err.Error())
@@ -107,21 +112,36 @@ func PutModel(c zhttp.Context) {
 // @security BasicAuth
 // @Tags    LearningToRank
 // @Produce json
-// @Param   model_id path string false "Model id"
+// @Param   model_id path  string false "Model id"
+// @Param   from     query int    false "Models to skip, sorted by id" default(0)
+// @Param   size     query int    false "Models to return" default(100)
 // @Success 200 {object} ltr.ListResponse
+// @Failure 400 {object} map[string]interface{}
 // @Failure 404 {object} map[string]interface{}
 // @Router /es/_ml/trained_models [get]
 // @Router /es/_ml/trained_models/{model_id} [get]
 func GetModels(c zhttp.Context) {
 	id := c.Param("model_id")
 	if id == "" || id == "_all" || id == "*" {
+		from, err := strconv.Atoi(c.DefaultQuery("from", "0"))
+		if err != nil || from < 0 {
+			renderError(c, http.StatusBadRequest, errors.ErrorTypeIllegalArgumentException, "[from] must be a non-negative integer")
+			return
+		}
+		size, err := strconv.Atoi(c.DefaultQuery("size", "100"))
+		if err != nil || size < 0 {
+			renderError(c, http.StatusBadRequest, errors.ErrorTypeIllegalArgumentException, "[size] must be a non-negative integer")
+			return
+		}
 		models, err := metadata.LTRModels.List(0, 0)
 		if err != nil {
 			renderError(c, http.StatusInternalServerError, errors.ErrorTypeRuntimeException, err.Error())
 			return
 		}
 		sort.Slice(models, func(i, j int) bool { return models[i].ModelID < models[j].ModelID })
-		zutils.RenderJSON(c, http.StatusOK, ListResponse{Count: len(models), Models: models})
+		page := models[min(from, len(models)):]
+		page = page[:min(size, len(page))]
+		zutils.RenderJSON(c, http.StatusOK, ListResponse{Count: len(models), Models: page})
 		return
 	}
 	model, ok := load(c, id)

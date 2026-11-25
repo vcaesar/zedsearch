@@ -16,6 +16,7 @@
 package core
 
 import (
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -107,6 +108,33 @@ func TestSearch_LearningToRank(t *testing.T) {
 			assert.ErrorContains(t, err, tt.want)
 		})
 	}
+
+	linearModel := func(t *testing.T, id string, def obj) {
+		t.Helper()
+		require.NoError(t, metadata.LTRModels.Set(id, meta.LTRModel{
+			InferenceConfig: obj{"learning_to_rank": obj{"feature_extractors": []interface{}{
+				obj{"query_extractor": obj{"feature_name": "tag", "query": obj{"constant_score": obj{"filter": obj{"term": obj{"tag": "y"}}}}, "default_score": 0.0}},
+			}}},
+			Definition: obj{"linear": def},
+		}))
+		t.Cleanup(func() { assert.NoError(t, metadata.LTRModels.Delete(id)) })
+	}
+
+	t.Run("max_score of negative model scores", func(t *testing.T) {
+		linearModel(t, model+"_negative", obj{"weights": []interface{}{1.0}, "bias": -5.0})
+		resp, err := index.Search(rescoreQuery(obj{"learning_to_rank": obj{"model_id": model + "_negative"}}))
+		require.NoError(t, err)
+		require.Len(t, resp.Hits.Hits, 2)
+		assert.Equal(t, "b", resp.Hits.Hits[0].ID)
+		assert.InDelta(t, -4.0, resp.Hits.Hits[0].Score, 1e-6)
+		assert.InDelta(t, -4.0, resp.Hits.MaxScore, 1e-6, "seeded from a hit, not 0")
+	})
+
+	t.Run("a non-finite model score fails the search", func(t *testing.T) {
+		linearModel(t, model+"_inf", obj{"weights": []interface{}{math.MaxFloat64}, "bias": math.MaxFloat64})
+		_, err := index.Search(rescoreQuery(obj{"learning_to_rank": obj{"model_id": model + "_inf"}}))
+		assert.ErrorContains(t, err, "non-finite")
+	})
 
 	t.Run("a bad feature query fails the search", func(t *testing.T) {
 		require.NoError(t, metadata.LTRModels.Set(model+"_bad", meta.LTRModel{

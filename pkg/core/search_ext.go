@@ -27,6 +27,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 
@@ -234,8 +235,11 @@ func (ext *searchExt) rescore(ctx context.Context, resp *meta.SearchResponse) er
 		sort.SliceStable(hits, func(i, j int) bool { return hits[i].Score > hits[j].Score })
 	}
 	resp.Hits.MaxScore = 0
-	for _, h := range hits {
-		resp.Hits.MaxScore = max(resp.Hits.MaxScore, h.Score)
+	if len(hits) > 0 {
+		resp.Hits.MaxScore = hits[0].Score
+		for _, h := range hits[1:] {
+			resp.Hits.MaxScore = max(resp.Hits.MaxScore, h.Score)
+		}
 	}
 	start := min(ext.from, len(hits))
 	end := min(start+ext.size, len(hits))
@@ -283,6 +287,10 @@ func (ext *searchExt) ltrScores(ctx context.Context, r *uquery.LTRRescore, windo
 	out := make([]float64, len(window))
 	for i, x := range features {
 		out[i] = r.Model.Score(x)
+		if math.IsNaN(out[i]) || math.IsInf(out[i], 0) {
+			return nil, errors.New(errors.ErrorTypeIllegalArgumentException,
+				fmt.Sprintf("[learning_to_rank] model [%s] scored [%s] with non-finite [%v]", r.ModelID, window[i].ID, out[i]))
+		}
 	}
 	return out, nil
 }

@@ -19,6 +19,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strconv"
+	"strings"
 	"testing"
 	_ "unsafe" // go:linkname
 
@@ -148,6 +151,86 @@ func TestModelCRUD(t *testing.T) {
 	assert.Equal(t, errorTypeNotFound, errorType(resp))
 	w, _ = call(t, DeleteModel, id, "")
 	assert.Equal(t, http.StatusNotFound, w.Code)
+}
+
+func TestPutModel_ReservedID(t *testing.T) {
+	for _, id := range []string{"_all", "*"} {
+		w, resp := call(t, PutModel, id, model)
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+		assert.Equal(t, zederrors.ErrorTypeIllegalArgumentException, errorType(resp))
+		_, err := metadata.LTRModels.Get(id)
+		assert.ErrorIs(t, err, zederrors.ErrKeyNotFound, id)
+	}
+}
+
+func TestGetModels_Page(t *testing.T) {
+	ids := []string{"TestGetModels_Page.a", "TestGetModels_Page.b", "TestGetModels_Page.c"}
+	for _, id := range ids {
+		w, _ := call(t, PutModel, id, model)
+		require.Equal(t, http.StatusOK, w.Code)
+		t.Cleanup(func() {
+			if err := metadata.LTRModels.Delete(id); err != nil {
+				t.Log(err)
+			}
+		})
+	}
+	all, err := metadata.LTRModels.List(0, 0)
+	require.NoError(t, err)
+
+	list := func(t *testing.T, params map[string]string) (int, obj) {
+		t.Helper()
+		c, w := utils.NewContext()
+		utils.SetRequestURL(c, "/es/_ml/trained_models", params)
+		GetModels(c)
+		var resp obj
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp), w.Body.String())
+		return w.Code, resp
+	}
+	modelIDs := func(resp obj) []string {
+		var out []string
+		for _, c := range resp["trained_model_configs"].([]interface{}) {
+			if id := c.(obj)["model_id"].(string); strings.HasPrefix(id, "TestGetModels_Page.") {
+				out = append(out, id)
+			}
+		}
+		return out
+	}
+
+	t.Run("from and size cut the sorted models, count is all", func(t *testing.T) {
+		sorted := make([]string, len(all))
+		for i, m := range all {
+			sorted[i] = m.ModelID
+		}
+		slices.Sort(sorted)
+		from := slices.Index(sorted, ids[0])
+		code, resp := list(t, map[string]string{"from": strconv.Itoa(from + 1), "size": "1"})
+		require.Equal(t, http.StatusOK, code)
+		assert.Equal(t, float64(len(all)), resp["count"])
+		assert.Equal(t, []string{ids[1]}, modelIDs(resp))
+	})
+	t.Run("defaults return all", func(t *testing.T) {
+		code, resp := list(t, nil)
+		require.Equal(t, http.StatusOK, code)
+		assert.Equal(t, ids, modelIDs(resp))
+	})
+	t.Run("from past the end", func(t *testing.T) {
+		code, resp := list(t, map[string]string{"from": strconv.Itoa(len(all))})
+		require.Equal(t, http.StatusOK, code)
+		assert.Equal(t, float64(len(all)), resp["count"])
+		assert.Empty(t, resp["trained_model_configs"])
+	})
+	t.Run("size 0", func(t *testing.T) {
+		code, resp := list(t, map[string]string{"size": "0"})
+		require.Equal(t, http.StatusOK, code)
+		assert.Empty(t, resp["trained_model_configs"])
+	})
+	for _, params := range []map[string]string{{"from": "-1"}, {"from": "x"}, {"size": "-1"}, {"size": "x"}} {
+		t.Run("invalid", func(t *testing.T) {
+			code, resp := list(t, params)
+			assert.Equal(t, http.StatusBadRequest, code)
+			assert.Equal(t, zederrors.ErrorTypeIllegalArgumentException, errorType(resp))
+		})
+	}
 }
 
 func TestPutModel_Invalid(t *testing.T) {

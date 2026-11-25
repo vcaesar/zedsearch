@@ -58,6 +58,14 @@ func TestParseRescore_LTR(t *testing.T) {
 		assert.Equal(t, q, rs[0].Query)
 		assert.Nil(t, rs[0].LTR)
 	})
+	t.Run("query and learning_to_rank exclude each other", func(t *testing.T) {
+		ltr := m{"model_id": "m"}
+		query := m{"rescore_query": m{"match_all": m{}}}
+		for _, key := range []string{"query", "Query", "QUERY"} {
+			_, err := ParseRescore(m{key: query, "learning_to_rank": ltr})
+			assert.ErrorContains(t, err, "cannot have both [query] and [learning_to_rank]", key)
+		}
+	})
 }
 
 func TestRescorer_ResolveModel(t *testing.T) {

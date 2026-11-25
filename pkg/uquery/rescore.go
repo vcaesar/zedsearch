@@ -86,6 +86,7 @@ func ParseRescore(v interface{}) ([]*Rescorer, error) {
 
 func parseRescorer(m map[string]interface{}) (*Rescorer, error) {
 	r := &Rescorer{WindowSize: DefaultRescoreWindow, QueryWeight: 1, RescoreQueryWeight: 1, ScoreMode: "total"}
+	var hasQuery, hasLTR bool
 	for k, v := range m {
 		switch strings.ToLower(k) {
 		case "window_size":
@@ -95,6 +96,7 @@ func parseRescorer(m map[string]interface{}) (*Rescorer, error) {
 			}
 			r.WindowSize = n
 		case "query":
+			hasQuery = true
 			body, ok := v.(map[string]interface{})
 			if !ok {
 				return nil, errors.New(errors.ErrorTypeParsingException, fmt.Sprintf("[rescore] query doesn't support values of type: %T", v))
@@ -103,6 +105,7 @@ func parseRescorer(m map[string]interface{}) (*Rescorer, error) {
 				return nil, err
 			}
 		case "learning_to_rank":
+			hasLTR = true
 			var err error
 			if r.LTR, err = parseLTR(v, "learning_to_rank", "model_id"); err != nil {
 				return nil, err
@@ -111,7 +114,7 @@ func parseRescorer(m map[string]interface{}) (*Rescorer, error) {
 			return nil, errors.New(errors.ErrorTypeParsingException, fmt.Sprintf("[rescore] unknown rescorer [%s]", k))
 		}
 	}
-	if _, both := m["query"]; both && m["learning_to_rank"] != nil {
+	if hasQuery && hasLTR {
 		return nil, errors.New(errors.ErrorTypeParsingException, "[rescore] cannot have both [query] and [learning_to_rank]")
 	}
 	if r.Query == nil && r.LTR == nil {

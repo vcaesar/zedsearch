@@ -109,6 +109,7 @@ func TestRender(t *testing.T) {
 		{"missing in array", l{"{{x}}"}, nil, "missing param [x]"},
 		{"missing in key", m{"{{x}}": 1.0}, nil, "missing param [x]"},
 		{"missing in value", m{"k": "{{x}}"}, nil, "missing param [x]"},
+		{"rendered key collides", m{"{{q}}": 1.0, "fox": 2.0}, nil, "duplicate key [fox]"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -210,7 +211,7 @@ func TestTrainedModel_Ensemble(t *testing.T) {
 		want float64
 	}{
 		{"default weighted_sum", nil, 3},
-		{"weighted_sum weights", m{"weighted_sum": m{"weights": l{2.0, 0.5}}}, 3},
+		{"weighted_sum weights", m{"weighted_sum": m{"weights": l{2.0, 1.0}}}, 4},
 		{"weighted_sum without weights", m{"weighted_sum": m{}}, 3},
 		{"logistic_regression", m{"logistic_regression": m{"weights": l{1.0, -1.0}}}, 1 / (1 + math.Exp(1))},
 	}
@@ -252,6 +253,10 @@ func TestXGBoost(t *testing.T) {
 		{"missing branch", trees, []float64{nan, nan}, 0.6},
 		{"splits object with base_score", m{"splits": trees, "base_score": 0.5, "objective": "rank:pairwise"}, []float64{1, 1}, 0.6},
 		{"logistic objective", m{"splits": trees, "objective": "binary:logistic"}, []float64{1, 1}, 1 / (1 + math.Exp(-0.1))},
+		{"logistic default base_score", m{"splits": trees, "objective": "binary:logistic", "base_score": 0.5}, []float64{1, 1}, 1 / (1 + math.Exp(-0.1))},
+		{"logistic base_score is a probability", m{"base_score": 0.75, "splits": trees, "objective": "reg:logistic"}, []float64{1, 1}, 1 / (1 + math.Exp(-math.Log(3)-0.1))},
+		{"missing matches no", l{m{"nodeid": 0.0, "split": "title", "split_condition": 1.0, "yes": 1.0, "no": 2.0, "missing": 2.0, "children": l{
+			m{"nodeid": 1.0, "leaf": 1.0}, m{"nodeid": 2.0, "leaf": 2.0}}}}, []float64{nan, 0}, 2},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -298,6 +303,7 @@ func TestCompile_Errors(t *testing.T) {
 
 		{"linear not object", nil, m{"linear": 1.0}, "[linear] must be an object"},
 		{"linear bad bias", nil, m{"linear": m{"bias": "x"}}, "bias must be a number"},
+		{"linear bias and intercept", nil, m{"linear": m{"bias": 1.0, "intercept": 1.0}}, "cannot have both [bias] and [intercept]"},
 		{"linear unknown field", nil, m{"linear": m{"x": 1.0}}, "[linear] unknown field [x]"},
 		{"linear unknown feature", nil, m{"linear": m{"weights": m{"nope": 1.0}}}, "unknown feature [nope]"},
 		{"linear bad named weight", nil, m{"linear": m{"weights": m{"title": "x"}}}, "weight of [title]"},
@@ -328,21 +334,29 @@ func TestCompile_Errors(t *testing.T) {
 		{"tree node not object", nil, m{"trained_model": m{"tree": m{"tree_structure": l{1.0}}}}, "[tree_structure] must be an object"},
 		{"tree no node_index", nil, m{"trained_model": m{"tree": m{"tree_structure": l{m{"leaf_value": 1.0}}}}}, "requires [node_index]"},
 		{"tree fractional node_index", nil, m{"trained_model": m{"tree": m{"tree_structure": l{m{"node_index": 0.5}}}}}, "[node_index] must be an integer"},
+		{"tree node_index past 2^53", nil, m{"trained_model": m{"tree": m{"tree_structure": l{m{"node_index": float64(1 << 53)}}}}}, "[node_index] must be an integer"},
+		{"tree negative node_index past 2^53", nil, m{"trained_model": m{"tree": m{"tree_structure": l{m{"node_index": -float64(1 << 53)}}}}}, "[node_index] must be an integer"},
+		{"tree unreachable node", nil, m{"trained_model": m{"tree": m{"tree_structure": l{m{"node_index": 0.0, "leaf_value": 1.0}, m{"node_index": 1.0, "leaf_value": 2.0}}}}}, "1 nodes are not reachable from the root"},
 		{"tree bad leaf", nil, m{"trained_model": m{"tree": m{"tree_structure": l{m{"node_index": 0.0, "leaf_value": "x"}}}}}, "[leaf_value] of node [0]"},
 		{"tree no root", nil, m{"trained_model": m{"tree": m{"tree_structure": l{m{"node_index": 1.0, "leaf_value": 1.0}}}}}, "missing node [0]"},
 		{"tree duplicate node", nil, m{"trained_model": m{"tree": m{"tree_structure": l{m{"node_index": 0.0, "leaf_value": 1.0}, m{"node_index": 0.0, "leaf_value": 1.0}}}}}, "duplicate node [0]"},
 		{"tree no split_feature", nil, m{"trained_model": split(m{"split_feature": nil})}, "requires [split_feature]"},
 		{"tree split_feature range", nil, m{"trained_model": split(m{"split_feature": 5.0})}, "[split_feature] 5 of node [0] is out of range"},
 		{"tree unknown feature name", nil, m{"trained_model": m{"ensemble": m{"feature_names": l{"zzz"}, "trained_models": l{split(nil)}}}}, "unknown feature [zzz]"},
+		{"tree has no f<N> names", nil, m{"trained_model": m{"ensemble": m{"feature_names": l{"f0"}, "trained_models": l{split(nil)}}}}, "unknown feature [f0]"},
 		{"tree no threshold", nil, m{"trained_model": split(m{"threshold": nil})}, "requires [threshold]"},
 		{"tree bad threshold", nil, m{"trained_model": split(m{"threshold": "x"})}, "[threshold] must be a number"},
 		{"tree bad decision_type", nil, m{"trained_model": split(m{"decision_type": "eq"})}, "unknown decision_type [eq]"},
+		{"tree decision_type not string", nil, m{"trained_model": split(m{"decision_type": 1.0})}, "unknown decision_type [1]"},
+		{"tree default_left not bool", nil, m{"trained_model": split(m{"default_left": "true"})}, "[default_left] of node [0] must be a boolean"},
 		{"tree no left_child", nil, m{"trained_model": split(m{"left_child": nil})}, "requires [left_child]"},
 		{"tree no right_child", nil, m{"trained_model": split(m{"right_child": nil})}, "requires [right_child]"},
 		{"tree missing child", nil, m{"trained_model": split(m{"right_child": 9.0})}, "missing node [9]"},
 		{"tree cycle", nil, m{"trained_model": split(m{"left_child": 0.0})}, "node [0] is reached more than once"},
 
 		{"xgboost bad base_score", nil, m{"xgboost": m{"splits": l{xgbLeaf}, "base_score": "x"}}, "base_score must be a number"},
+		{"xgboost logistic base_score 1", nil, m{"xgboost": m{"splits": l{xgbLeaf}, "base_score": 1.0, "objective": "binary:logistic"}}, "must be in (0, 1)"},
+		{"xgboost logistic base_score 0", nil, m{"xgboost": m{"objective": "binary:logistic", "base_score": 0.0, "splits": l{xgbLeaf}}}, "must be in (0, 1)"},
 		{"xgboost bad objective", nil, m{"xgboost": m{"splits": l{xgbLeaf}, "objective": "multi:softmax"}}, "unsupported objective [multi:softmax]"},
 		{"xgboost unknown field", nil, m{"xgboost": m{"splits": l{xgbLeaf}, "x": 1.0}}, "[xgboost] unknown field [x]"},
 		{"xgboost not list", nil, m{"xgboost": 1.0}, "[xgboost] must be an array"},
@@ -355,6 +369,7 @@ func TestCompile_Errors(t *testing.T) {
 		{"xgboost no yes", nil, m{"xgboost": l{m{"nodeid": 0.0, "split": "title", "split_condition": 1.0}}}, "requires [yes]"},
 		{"xgboost no no", nil, m{"xgboost": l{m{"nodeid": 0.0, "split": "title", "split_condition": 1.0, "yes": 1.0}}}, "requires [no]"},
 		{"xgboost bad missing", nil, m{"xgboost": l{m{"nodeid": 0.0, "split": "title", "split_condition": 1.0, "yes": 1.0, "no": 2.0, "missing": "x"}}}, "[missing] must be an integer"},
+		{"xgboost missing not a child", nil, m{"xgboost": l{m{"nodeid": 0.0, "split": "title", "split_condition": 1.0, "yes": 1.0, "no": 2.0, "missing": 5.0}}}, "[missing] 5 of node [0] must be its yes or no child"},
 		{"xgboost no children", nil, m{"xgboost": l{m{"nodeid": 0.0, "split": "title", "split_condition": 1.0, "yes": 1.0, "no": 2.0}}}, "[children] must be an array"},
 		{"xgboost child not object", nil, m{"xgboost": l{m{"nodeid": 0.0, "split": "title", "split_condition": 1.0, "yes": 1.0, "no": 2.0, "children": l{1.0}}}}, "[children] must be an object"},
 		{"xgboost bad child", nil, m{"xgboost": l{m{"nodeid": 0.0, "split": "title", "split_condition": 1.0, "yes": 1.0, "no": 2.0, "children": l{m{}}}}}, "requires [nodeid]"},

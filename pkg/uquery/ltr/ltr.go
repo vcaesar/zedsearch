@@ -182,6 +182,9 @@ func render(v interface{}, params map[string]interface{}) (interface{}, error) {
 			if err != nil {
 				return nil, err
 			}
+			if _, dup := out[key]; dup {
+				return nil, parseErr("duplicate key [%s] after rendering params", key)
+			}
 			if out[key], err = render(item, params); err != nil {
 				return nil, err
 			}
@@ -247,6 +250,10 @@ func parseLinear(v interface{}, index map[string]int) (scorer, error) {
 	def, err := object(v, "linear")
 	if err != nil {
 		return nil, err
+	}
+	_, bias := def["bias"]
+	if _, intercept := def["intercept"]; bias && intercept {
+		return nil, parseErr("[linear] cannot have both [bias] and [intercept]")
 	}
 	l := &linear{weights: make([]float64, len(index))}
 	for k, item := range def {
@@ -509,6 +516,9 @@ func buildTree(raw []rawNode, rootID int) (*tree, error) {
 			t.nodes[i].left, t.nodes[i].right = pos[r.leftID], pos[r.rightID]
 		}
 	}
+	if len(t.nodes) != len(raw) {
+		return nil, parseErr("%d nodes are not reachable from the root", len(raw)-len(t.nodes))
+	}
 	return t, nil
 }
 
@@ -562,22 +572,26 @@ func parseESNode(n map[string]interface{}, names []string, index map[string]int)
 	if split < 0 || split >= len(names) {
 		return r, parseErr("[split_feature] %d of node [%d] is out of range", split, r.id)
 	}
-	if r.feature, err = featureIndex(names[split], index); err != nil {
-		return r, err
+	var ok bool
+	if r.feature, ok = index[names[split]]; !ok {
+		return r, parseErr("unknown feature [%s]", names[split])
 	}
 	if r.threshold, err = floatField(n, "threshold"); err != nil {
 		return r, err
 	}
-	if dt, ok := n["decision_type"].(string); ok {
+	if v, has := n["decision_type"]; has {
+		dt, _ := v.(string)
 		switch strings.ToLower(dt) {
 		case "lt", "lte", "gt", "gte":
 			r.op = strings.ToLower(dt)
 		default:
-			return r, parseErr("unknown decision_type [%s]", dt)
+			return r, parseErr("unknown decision_type [%v]", v)
 		}
 	}
-	if dl, ok := n["default_left"].(bool); ok {
-		r.defaultLeft = dl
+	if v, has := n["default_left"]; has {
+		if r.defaultLeft, ok = v.(bool); !ok {
+			return r, parseErr("[default_left] of node [%d] must be a boolean", r.id)
+		}
 	}
 	if r.leftID, err = intField(n, "left_child"); err != nil {
 		return r, err
@@ -588,9 +602,9 @@ func parseESNode(n map[string]interface{}, names []string, index map[string]int)
 
 var xgbFeature = regexp.MustCompile(`^f(\d+)$`)
 
-// featureIndex returns the model feature named name; f<N> names the Nth
+// xgbFeatureIndex returns the model feature named name; f<N> names the Nth
 // feature as XGBoost does without feature names.
-func featureIndex(name string, index map[string]int) (int, error) {
+func xgbFeatureIndex(name string, index map[string]int) (int, error) {
 	if i, ok := index[name]; ok {
 		return i, nil
 	}
@@ -602,8 +616,11 @@ func featureIndex(name string, index map[string]int) (int, error) {
 	return 0, parseErr("unknown feature [%s]", name)
 }
 
-// parseXGBoost parses an XGBoost JSON dump, the list of trees of
-// booster.get_dump(dump_format="json") or {"objective", "base_score", "splits"}.
+// parseXGBoost parses an XGBoost JSON dump: the list of tree objects, or
+// {"objective", "base_score", "splits"} with it as splits. Each string
+// booster.get_dump(dump_format="json") returns is one tree, to decode into
+// its object before sending the list. A logistic base_score is a probability,
+// it is added as its logit.
 func parseXGBoost(v interface{}, index map[string]int) (scorer, error) {
 	ens := &ensemble{}
 	splits := v
@@ -629,6 +646,12 @@ func parseXGBoost(v interface{}, index map[string]int) (scorer, error) {
 			}
 		}
 		splits = def["splits"]
+		if _, ok := def["base_score"]; ok && ens.logistic {
+			if ens.base <= 0 || ens.base >= 1 {
+				return nil, parseErr("[xgboost] base_score of a logistic objective must be in (0, 1)")
+			}
+			ens.base = math.Log(ens.base / (1 - ens.base))
+		}
 	}
 	trees, err := list(splits, "xgboost")
 	if err != nil {
@@ -670,7 +693,7 @@ func flattenXGBoost(n map[string]interface{}, index map[string]int, raw *[]rawNo
 		return nil
 	}
 	name, _ := n["split"].(string)
-	if r.feature, err = featureIndex(name, index); err != nil {
+	if r.feature, err = xgbFeatureIndex(name, index); err != nil {
 		return err
 	}
 	if r.threshold, err = floatField(n, "split_condition"); err != nil {
@@ -686,6 +709,9 @@ func flattenXGBoost(n map[string]interface{}, index map[string]int, raw *[]rawNo
 		missing, err := intField(n, "missing")
 		if err != nil {
 			return err
+		}
+		if missing != r.leftID && missing != r.rightID {
+			return parseErr("[missing] %d of node [%d] must be its yes or no child", missing, r.id)
 		}
 		r.defaultLeft = missing == r.leftID
 	}
@@ -728,7 +754,8 @@ func intField(m map[string]interface{}, key string) (int, error) {
 		return 0, parseErr("node requires [%s]", key)
 	}
 	f, err := zutils.ToFloat64(v)
-	if err != nil || f != math.Trunc(f) {
+	// past 2^53 distinct ids decode to the same float64
+	if err != nil || f != math.Trunc(f) || math.Abs(f) >= 1<<53 {
 		return 0, parseErr("[%s] must be an integer", key)
 	}
 	return int(f), nil
