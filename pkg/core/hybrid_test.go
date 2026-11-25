@@ -159,6 +159,15 @@ func TestSearch_Hybrid(t *testing.T) {
 		assert.Equal(t, []string{"a"}, hitIDs(resp), "the filter applies before the neighbor selection")
 	})
 
+	t.Run("knn keeps the parent and its upper case filter", func(t *testing.T) {
+		for range 5 { // map order decided the filter before
+			resp, err := index.Search(hybridRequest(t, `{"query": {"hybrid": {"filter": {"term": {"tag": "y"}},
+				"queries": [{"knn": {"emb": {"vector": [1, 0, 0], "k": 3, "FILTER": {"match": {"title": "dog"}}}}}]}}}`))
+			require.NoError(t, err)
+			assert.Equal(t, []string{"c"}, hitIDs(resp))
+		}
+	})
+
 	t.Run("linear retriever with filter", func(t *testing.T) {
 		resp, err := index.Search(hybridRequest(t, `{"retriever": {"linear": {"filter": {"term": {"tag": "y"}}, "retrievers": [
 			{"retriever": {"standard": {"query": `+hybridMatch+`}}, "weight": 2, "normalizer": "minmax"},

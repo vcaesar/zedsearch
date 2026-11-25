@@ -26,6 +26,7 @@ package uquery
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/vcaesar/zedsearch/pkg/meta"
 )
@@ -170,17 +171,17 @@ func parseHybridQuery(v, pipeline interface{}) (*Retriever, error) {
 }
 
 // hybridFiltered returns a hybrid sub-query restricted to filters: a knn
-// query filters before neighbor selection, as in OpenSearch.
+// query, of any case, filters before neighbor selection, as in OpenSearch.
 func hybridFiltered(query map[string]interface{}, filters []interface{}) (map[string]interface{}, error) {
-	knn, ok := query["knn"].(map[string]interface{})
-	if !ok || len(query) != 1 {
-		return filtered(query, filters), nil
+	if len(query) == 1 {
+		for name, v := range query {
+			if knn, ok := v.(map[string]interface{}); ok && strings.EqualFold(name, "knn") {
+				knn, err := knnWithFilters(knn, filters)
+				return map[string]interface{}{name: knn}, err
+			}
+		}
 	}
-	knn, err := knnWithFilters(knn, filters)
-	if err != nil {
-		return nil, err
-	}
-	return map[string]interface{}{"knn": knn}, nil
+	return filtered(query, filters), nil
 }
 
 // parsePipeline parses an inline OpenSearch search pipeline with one phase

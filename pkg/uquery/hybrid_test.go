@@ -84,6 +84,31 @@ func TestHybrid_Retriever(t *testing.T) {
 		assert.Equal(t, map[string]interface{}{"emb": map[string]interface{}{"vector": []interface{}{1.0, 0.0}}}, r.Retrievers[0].Query["knn"])
 	})
 
+	t.Run("knn filter keys of any case join one filter", func(t *testing.T) {
+		all := map[string]interface{}{"match_all": map[string]interface{}{}}
+		exists := map[string]interface{}{"exists": map[string]interface{}{"field": "title"}}
+		tests := []struct {
+			name, knn string
+			want      map[string]interface{}
+		}{
+			{"upper case", `{"field": "emb", "query_vector": [1, 0], "FILTER": {"match_all": {}}}`,
+				map[string]interface{}{"field": "emb", "query_vector": []interface{}{1.0, 0.0}, "filter": []interface{}{term, all}}},
+			{"two spellings", `{"field": "emb", "Filter": {"match_all": {}}, "filter": {"exists": {"field": "title"}}}`,
+				map[string]interface{}{"field": "emb", "filter": []interface{}{term, all, exists}}},
+			{"field-keyed", `{"emb": {"vector": [1, 0], "FILTER": {"match_all": {}}}}`,
+				map[string]interface{}{"emb": map[string]interface{}{"vector": []interface{}{1.0, 0.0}, "filter": []interface{}{term, all}}}},
+			{"a lone filter is no field", `{"FILTER": {"match_all": {}}}`,
+				map[string]interface{}{"filter": []interface{}{term, all}}},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				r, err := Hybrid(hybridZedQuery(t, `{"retriever": {"rrf": {"filter": {"term": {"tag": "x"}}, "retrievers": [{"knn": `+tt.knn+`}]}}}`))
+				require.NoError(t, err)
+				assert.Equal(t, tt.want, r.Retrievers[0].Query["knn"])
+			})
+		}
+	})
+
 	t.Run("weighted linear with normalizers", func(t *testing.T) {
 		r, err := Hybrid(hybridZedQuery(t, `{"retriever": {"linear": {"normalizer": "l2_norm", "min_score": 0.5, "retrievers": [
 			{"retriever": {"standard": {"query": {"match": {"title": "fox"}}}}, "weight": 2, "normalizer": "MinMax"},
@@ -228,6 +253,20 @@ func TestHybrid_OpenSearch(t *testing.T) {
 
 	t.Run("knn with other keys is a bool filter", func(t *testing.T) {
 		r, err := Hybrid(hybridZedQuery(t, `{"query": {"hybrid": {"filter": {"term": {"tag": "x"}}, "queries": [{"knn": 1, "boost": 2}]}}}`))
+		require.NoError(t, err)
+		assert.Contains(t, r.Retrievers[0].Query, "bool")
+	})
+
+	t.Run("knn of any case filters before neighbor selection", func(t *testing.T) {
+		r, err := Hybrid(hybridZedQuery(t, `{"query": {"hybrid": {"filter": {"term": {"tag": "x"}}, "queries": [{"KNN": {"emb": {"vector": [1, 0]}}}]}}}`))
+		require.NoError(t, err)
+		assert.Equal(t, map[string]interface{}{"KNN": map[string]interface{}{"emb": map[string]interface{}{
+			"vector": []interface{}{1.0, 0.0}, "filter": []interface{}{map[string]interface{}{"term": map[string]interface{}{"tag": "x"}}},
+		}}}, r.Retrievers[0].Query)
+	})
+
+	t.Run("a knn that is no object is a bool filter", func(t *testing.T) {
+		r, err := Hybrid(hybridZedQuery(t, `{"query": {"hybrid": {"filter": {"term": {"tag": "x"}}, "queries": [{"knn": 1}]}}}`))
 		require.NoError(t, err)
 		assert.Contains(t, r.Retrievers[0].Query, "bool")
 	})

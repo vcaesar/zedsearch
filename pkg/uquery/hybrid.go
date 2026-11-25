@@ -26,9 +26,11 @@ package uquery
 
 import (
 	"fmt"
+	"maps"
 	"math"
 	"slices"
 	"sort"
+	"strings"
 
 	"github.com/vcaesar/zedsearch/pkg/errors"
 	"github.com/vcaesar/zedsearch/pkg/meta"
@@ -179,25 +181,28 @@ func withFilters(filters []interface{}, v interface{}) ([]interface{}, error) {
 
 // knnWithFilters returns the knn options with filters joining their filter,
 // applied before neighbor selection. Field-keyed options keep their one key.
+// Options are case-insensitive, as KnnQuery reads them: every spelling of
+// filter joins the one canonical filter.
 func knnWithFilters(knn map[string]interface{}, filters []interface{}) (map[string]interface{}, error) {
 	if len(filters) == 0 {
 		return knn, nil
 	}
 	if len(knn) == 1 {
 		for field, v := range knn {
-			if opts, ok := v.(map[string]interface{}); ok && field != "filter" && field != "method_parameters" {
+			if opts, ok := v.(map[string]interface{}); ok && !strings.EqualFold(field, "filter") && !strings.EqualFold(field, "method_parameters") {
 				opts, err := knnWithFilters(opts, filters)
 				return map[string]interface{}{field: opts}, err
 			}
 		}
 	}
 	out := make(map[string]interface{}, len(knn)+1)
-	for k, v := range knn {
-		out[k] = v
-	}
-	if f, ok := knn["filter"]; ok {
+	for _, k := range slices.Sorted(maps.Keys(knn)) {
+		if !strings.EqualFold(k, "filter") {
+			out[k] = knn[k]
+			continue
+		}
 		var err error
-		if filters, err = withFilters(filters, f); err != nil {
+		if filters, err = withFilters(filters, knn[k]); err != nil {
 			return nil, err
 		}
 	}
