@@ -27,6 +27,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 
@@ -78,6 +79,19 @@ func prepareSearch(ctx context.Context, query *meta.ZedQuery, mappings *meta.Map
 		return nil, err
 	}
 	for _, r := range ext.rescorers {
+		if r.LTR != nil {
+			if err := r.ResolveModel(metadata.LTRModels.Get); err != nil {
+				return nil, err
+			}
+			for i, fq := range r.LTR.Queries {
+				q, err := uquery.Transform(fq, fns)
+				if err != nil {
+					return nil, err
+				}
+				r.LTR.Queries[i], _ = q.(map[string]interface{})
+			}
+			continue
+		}
 		q, err := uquery.Transform(r.Query, fns)
 		if err != nil {
 			return nil, err
@@ -186,6 +200,8 @@ func (ext *searchExt) finish(ctx context.Context, resp *meta.SearchResponse) err
 // hits, as Elasticsearch weights the hits past the window by query_weight,
 // then cuts the requested page. The window is cut from the merged hits of
 // all shards, not from the hits of each shard as Elasticsearch does.
+// A learning_to_rank rescorer only reorders its window, which stays on top:
+// model scores are not comparable with the scores past it.
 func (ext *searchExt) rescore(ctx context.Context, resp *meta.SearchResponse) error {
 	hits := resp.Hits.Hits
 	for _, r := range ext.rescorers {
@@ -193,7 +209,18 @@ func (ext *searchExt) rescore(ctx context.Context, resp *meta.SearchResponse) er
 		if len(window) == 0 {
 			continue
 		}
-		scores, err := ext.scoreHits(ctx, r.Query, window)
+		if r.LTR != nil && !r.LTR.Combine {
+			scores, err := ext.ltrScores(ctx, r.LTR, window)
+			if err != nil {
+				return err
+			}
+			for i := range window {
+				window[i].Score = scores[i]
+			}
+			sort.SliceStable(window, func(i, j int) bool { return window[i].Score > window[j].Score })
+			continue
+		}
+		scores, err := ext.windowScores(ctx, r, window)
 		if err != nil {
 			return err
 		}
@@ -208,13 +235,64 @@ func (ext *searchExt) rescore(ctx context.Context, resp *meta.SearchResponse) er
 		sort.SliceStable(hits, func(i, j int) bool { return hits[i].Score > hits[j].Score })
 	}
 	resp.Hits.MaxScore = 0
-	for _, h := range hits {
-		resp.Hits.MaxScore = max(resp.Hits.MaxScore, h.Score)
+	if len(hits) > 0 {
+		resp.Hits.MaxScore = hits[0].Score
+		for _, h := range hits[1:] {
+			resp.Hits.MaxScore = max(resp.Hits.MaxScore, h.Score)
+		}
 	}
 	start := min(ext.from, len(hits))
 	end := min(start+ext.size, len(hits))
 	resp.Hits.Hits = hits[start:end]
 	return nil
+}
+
+// windowScores returns the rescore score of each hit of window matching the
+// rescore query, of every hit for an sltr model.
+func (ext *searchExt) windowScores(ctx context.Context, r *uquery.Rescorer, window []meta.Hit) (map[string]float64, error) {
+	if r.LTR == nil {
+		return ext.scoreHits(ctx, r.Query, window)
+	}
+	scores, err := ext.ltrScores(ctx, r.LTR, window)
+	if err != nil {
+		return nil, err
+	}
+	byKey := make(map[string]float64, len(window))
+	for i, h := range window {
+		byKey[hitKey(h.Index, h.ID)] = scores[i]
+	}
+	return byKey, nil
+}
+
+// ltrScores returns the model score of each hit of window: every feature
+// query scores the window, a hit it does not match gets the feature default.
+func (ext *searchExt) ltrScores(ctx context.Context, r *uquery.LTRRescore, window []meta.Hit) ([]float64, error) {
+	features := make([][]float64, len(window))
+	for i := range features {
+		features[i] = make([]float64, len(r.Queries))
+	}
+	for j, q := range r.Queries {
+		scores, err := ext.scoreHits(ctx, q, window)
+		if err != nil {
+			return nil, err
+		}
+		for i, h := range window {
+			v, ok := scores[hitKey(h.Index, h.ID)]
+			if !ok {
+				v = r.Model.Features[j].Default
+			}
+			features[i][j] = v
+		}
+	}
+	out := make([]float64, len(window))
+	for i, x := range features {
+		out[i] = r.Model.Score(x)
+		if math.IsNaN(out[i]) || math.IsInf(out[i], 0) {
+			return nil, errors.New(errors.ErrorTypeIllegalArgumentException,
+				fmt.Sprintf("[learning_to_rank] model [%s] scored [%s] with non-finite [%v]", r.ModelID, window[i].ID, out[i]))
+		}
+	}
+	return out, nil
 }
 
 // scoreHits returns the score of rescore query q for each of hits matching it.

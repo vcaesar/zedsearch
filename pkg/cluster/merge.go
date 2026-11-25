@@ -36,6 +36,7 @@ import (
 
 	"github.com/vcaesar/zedsearch/pkg/config"
 	"github.com/vcaesar/zedsearch/pkg/meta"
+	"github.com/vcaesar/zedsearch/pkg/uquery"
 	"github.com/vcaesar/zedsearch/pkg/uquery/aggregation"
 	"github.com/vcaesar/zedsearch/pkg/uquery/source"
 	"github.com/vcaesar/zedsearch/pkg/zutils/json"
@@ -154,6 +155,9 @@ func MergeSearch(responses []*meta.SearchResponse, query *meta.ZedQuery) *meta.S
 	aggs := make(map[string]map[string]interface{})
 	aggDocs := make(map[string]float64) // docs matched by the responses merged so far
 	var names []string
+	window := ltrWindow(query)
+	var ltrHits []meta.Hit // the owners' learning_to_rank windows
+	var scored bool
 
 	for _, resp := range responses {
 		if resp == nil {
@@ -171,10 +175,18 @@ func MergeSearch(responses []*meta.SearchResponse, query *meta.ZedQuery) *meta.S
 			out.Error = resp.Error
 		}
 		out.Hits.Total.Value += resp.Hits.Total.Value
-		if resp.Hits.MaxScore > out.Hits.MaxScore {
+		// model scores can all be negative, so the first hits seed the max
+		if len(resp.Hits.Hits) > 0 && (!scored || resp.Hits.MaxScore > out.Hits.MaxScore) {
 			out.Hits.MaxScore = resp.Hits.MaxScore
+			scored = true
 		}
-		out.Hits.Hits = append(out.Hits.Hits, resp.Hits.Hits...)
+		if window > 0 {
+			n := min(window, len(resp.Hits.Hits))
+			ltrHits = append(ltrHits, resp.Hits.Hits[:n]...)
+			out.Hits.Hits = append(out.Hits.Hits, resp.Hits.Hits[n:]...)
+		} else {
+			out.Hits.Hits = append(out.Hits.Hits, resp.Hits.Hits...)
+		}
 
 		docs := float64(resp.Hits.Total.Value)
 		for name, agg := range resp.Aggregations {
@@ -191,6 +203,10 @@ func MergeSearch(responses []*meta.SearchResponse, query *meta.ZedQuery) *meta.S
 	}
 
 	sortHits(out.Hits.Hits, query)
+	if window > 0 {
+		sortHits(ltrHits, query)
+		out.Hits.Hits = append(ltrHits, out.Hits.Hits...)
+	}
 	out.Hits.Hits = windowHits(out.Hits.Hits, query)
 
 	if len(names) > 0 {
@@ -209,6 +225,25 @@ func MergeSearch(responses []*meta.SearchResponse, query *meta.ZedQuery) *meta.S
 		}
 	}
 	return out
+}
+
+// ltrWindow is the window_size of a learning_to_rank rescorer run last, 0
+// without one. Each owner returns its window on top, scored by the model,
+// as an Elasticsearch shard does: these scores do not compare with the
+// ones past the window, so the merge keeps the windows on top.
+func ltrWindow(query *meta.ZedQuery) int {
+	if query == nil {
+		return 0
+	}
+	rescorers, err := uquery.ParseRescore(query.Rescore)
+	if err != nil || len(rescorers) == 0 {
+		return 0 // the owners rejected it
+	}
+	last := rescorers[len(rescorers)-1]
+	if last.LTR == nil || last.LTR.Combine {
+		return 0
+	}
+	return last.WindowSize
 }
 
 // isPipeline reports whether def reads the buckets of other aggregations
