@@ -239,3 +239,54 @@ func TestRequireToken_WithheldBody(t *testing.T) {
 	_, err = r.ReadByte()
 	assert.ErrorIs(t, err, io.EOF, "server closes the connection")
 }
+
+// startServer serves h with the server settings run uses and readTimeout d.
+func startServer(t *testing.T, h http.Handler, d time.Duration) *httptest.Server {
+	t.Helper()
+	old := readTimeout
+	readTimeout = d
+	defer func() { readTimeout = old }()
+	srv := httptest.NewUnstartedServer(nil)
+	srv.Config = newServer("", h)
+	srv.Start()
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// Withheld bodies are bounded by the read timeout, for authenticated and
+// tokenless (loopback) servers alike.
+func TestServer_ReadTimeoutWithheldBody(t *testing.T) {
+	for _, token := range []string{"", "secret"} {
+		t.Run("token="+token, func(t *testing.T) {
+			srv := startServer(t, testServer(token), 200*time.Millisecond)
+			conn, err := net.Dial("tcp", srv.Listener.Addr().String())
+			require.NoError(t, err)
+			t.Cleanup(func() { assert.NoError(t, conn.Close()) })
+			_, err = io.WriteString(conn, "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer secret\r\n"+
+				"Content-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: 10\r\n\r\n{")
+			require.NoError(t, err)
+			require.NoError(t, conn.SetReadDeadline(time.Now().Add(3*time.Second)))
+			_, err = io.Copy(io.Discard, conn)
+			assert.NoError(t, err, "server closes the connection after the read timeout")
+		})
+	}
+}
+
+// The read timeout must not cut a tool call that takes longer than it.
+func TestHandler_SlowCallOutlivesReadTimeout(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(500 * time.Millisecond)
+		_, err := io.WriteString(w, `{"status":"green"}`)
+		assert.NoError(t, err)
+	}))
+	t.Cleanup(backend.Close)
+	srv := startServer(t, handler(mcp.NewServer(mcp.NewClient(backend.URL, "", ""), mcp.Options{}), ""), 100*time.Millisecond)
+
+	transport := &sdk.StreamableClientTransport{Endpoint: srv.URL, DisableStandaloneSSE: true}
+	cs, err := sdk.NewClient(&sdk.Implementation{Name: "test"}, nil).Connect(context.Background(), transport, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, cs.Close()) })
+	res, err := cs.CallTool(context.Background(), &sdk.CallToolParams{Name: "cluster_health", Arguments: map[string]any{}})
+	require.NoError(t, err)
+	assert.False(t, res.IsError)
+}

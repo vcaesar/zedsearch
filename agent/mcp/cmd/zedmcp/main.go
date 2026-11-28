@@ -84,6 +84,21 @@ func main() {
 	}
 }
 
+// readTimeout bounds reading a whole request, so a client cannot pin a
+// connection by withholding its body. It does not cut streamed responses:
+// the server's read of an idle connection after the body may time out
+// without canceling the request.
+var readTimeout = 30 * time.Second
+
+func newServer(addr string, h http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           h,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       readTimeout,
+	}
+}
+
 type config struct {
 	transport, addr, token, certFile, keyFile string
 }
@@ -104,11 +119,7 @@ func run(ctx context.Context, server *sdk.Server, cfg config) error {
 				log.Warn().Str("addr", cfg.addr).Msg("the bearer token is sent unencrypted; set -tls-cert and -tls-key or terminate TLS at a proxy")
 			}
 		}
-		srv := &http.Server{
-			Addr:              cfg.addr,
-			Handler:           handler(server, cfg.token),
-			ReadHeaderTimeout: 10 * time.Second,
-		}
+		srv := newServer(cfg.addr, handler(server, cfg.token))
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
 		done := make(chan struct{})
