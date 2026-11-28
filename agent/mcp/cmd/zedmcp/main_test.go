@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -158,13 +159,16 @@ func freeAddr(t *testing.T) string {
 // run must drain a tool call that is in flight when the context is canceled.
 func TestRun_DrainsInFlightCall(t *testing.T) {
 	arrived, release := make(chan struct{}), make(chan struct{})
+	var arrivedOnce, releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		close(arrived)
+		arrivedOnce.Do(func() { close(arrived) })
 		<-release
 		_, err := io.WriteString(w, `{"status":"green"}`)
 		assert.NoError(t, err)
 	}))
 	defer backend.Close()
+	defer unblock() // runs first, so Close never waits on a blocked handler
 
 	addr := freeAddr(t)
 	server := mcp.NewServer(mcp.NewClient(backend.URL, "", ""), mcp.Options{})
@@ -201,7 +205,7 @@ func TestRun_DrainsInFlightCall(t *testing.T) {
 		t.Fatalf("run returned while a call was in flight: %v", err)
 	case <-time.After(200 * time.Millisecond):
 	}
-	close(release)
+	unblock()
 	require.NoError(t, <-callc, "in-flight call completes during shutdown")
 	select {
 	case err := <-errc:
