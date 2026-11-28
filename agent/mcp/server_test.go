@@ -196,3 +196,61 @@ func TestClient_Do(t *testing.T) {
 	_, err = c.Do(context.Background(), "BAD METHOD", "/es/", nil)
 	assert.Error(t, err)
 }
+
+func TestClient_CleartextAuth(t *testing.T) {
+	tests := []struct {
+		url, user string
+		want      bool
+	}{
+		{"http://localhost:4080", "admin", false},
+		{"http://127.0.0.1:4080", "admin", false},
+		{"http://[::1]:4080", "admin", false},
+		{"https://zed.example.com", "admin", false},
+		{"http://zed.example.com", "", false},
+		{"http://zed.example.com", "admin", true},
+		{"http://10.0.0.5:4080", "admin", true},
+		{"://bad", "admin", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.url+"/"+tt.user, func(t *testing.T) {
+			assert.Equal(t, tt.want, NewClient(tt.url, tt.user, "secret").CleartextAuth())
+		})
+	}
+}
+
+func TestCheckRedirect(t *testing.T) {
+	tests := []struct {
+		target string
+		auth   bool
+	}{
+		{"https://zed.example.com/es/", true},
+		{"http://localhost:4080/es/", true},
+		{"http://zed.example.com/es/", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.target, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tt.target, nil)
+			req.SetBasicAuth("admin", "secret")
+			require.NoError(t, checkRedirect(req, make([]*http.Request, 1)))
+			_, _, ok := req.BasicAuth()
+			assert.Equal(t, tt.auth, ok)
+		})
+	}
+	req := httptest.NewRequest(http.MethodGet, "https://zed.example.com/", nil)
+	assert.ErrorContains(t, checkRedirect(req, make([]*http.Request, 10)), "redirects")
+}
+
+func TestClient_RedirectKeepsLoopbackAuth(t *testing.T) {
+	var user string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/old" {
+			http.Redirect(w, r, "/new", http.StatusFound)
+			return
+		}
+		user, _, _ = r.BasicAuth()
+	}))
+	t.Cleanup(srv.Close)
+	_, err := NewClient(srv.URL, "admin", "secret").Do(context.Background(), http.MethodGet, "/old", nil)
+	require.NoError(t, err)
+	assert.Equal(t, "admin", user)
+}

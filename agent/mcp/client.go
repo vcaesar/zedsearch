@@ -27,9 +27,12 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -45,13 +48,47 @@ type Client struct {
 }
 
 // NewClient returns a client with basic auth and a request timeout.
+// Redirects never carry credentials over cleartext HTTP to a remote host.
 func NewClient(baseURL, username, password string) *Client {
 	return &Client{
 		URL:      strings.TrimRight(baseURL, "/"),
 		Username: username,
 		Password: password,
-		HTTP:     &http.Client{Timeout: 60 * time.Second},
+		HTTP:     &http.Client{Timeout: 60 * time.Second, CheckRedirect: checkRedirect},
 	}
+}
+
+// CleartextAuth reports whether credentials are sent over plain HTTP to a
+// non-loopback host.
+func (c *Client) CleartextAuth() bool {
+	if c.Username == "" {
+		return false
+	}
+	u, err := url.Parse(c.URL)
+	return err == nil && cleartext(u)
+}
+
+// IsLoopback reports whether host is localhost or a loopback IP.
+func IsLoopback(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func cleartext(u *url.URL) bool {
+	return u.Scheme != "https" && !IsLoopback(u.Hostname())
+}
+
+func checkRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	if cleartext(req.URL) {
+		req.Header.Del("Authorization")
+	}
+	return nil
 }
 
 // Do sends body (JSON encoded when not nil) and returns the raw response.
