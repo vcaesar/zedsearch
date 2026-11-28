@@ -179,6 +179,42 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/_ccr/indexes": {
+            "get": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Cluster"
+                ],
+                "summary": "Leader indexes for cross-cluster replication",
+                "operationId": "CCRIndexes",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Index pattern",
+                        "name": "pattern",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/api/_internal/indexes": {
             "get": {
                 "security": [
@@ -242,6 +278,18 @@ const docTemplate = `{
                     },
                     "400": {
                         "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
                         "schema": {
                             "$ref": "#/definitions/meta.HTTPResponseError"
                         }
@@ -354,6 +402,491 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/cluster.PartitionsResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/cluster/remotes": {
+            "get": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Cluster"
+                ],
+                "summary": "List remote clusters",
+                "operationId": "ListRemotes",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "$ref": "#/definitions/cluster.RemoteCluster"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/cluster/remotes/{alias}": {
+            "put": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Cluster"
+                ],
+                "summary": "Add or replace a remote cluster",
+                "operationId": "PutRemote",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Remote cluster alias",
+                        "name": "alias",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Seeds and credentials",
+                        "name": "remote",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/cluster.RemoteCluster"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Cluster"
+                ],
+                "summary": "Remove a remote cluster",
+                "operationId": "DeleteRemote",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Remote cluster alias",
+                        "name": "alias",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/fleet/agents": {
+            "get": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Fleet"
+                ],
+                "summary": "List enrolled agents",
+                "operationId": "ListFleetAgents",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/fleetapi.Agent"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/fleet/agents/{id}": {
+            "delete": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Fleet"
+                ],
+                "summary": "Unenroll an agent",
+                "operationId": "DeleteFleetAgent",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Agent id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseID"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/fleet/checkin/{id}": {
+            "post": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Fleet"
+                ],
+                "summary": "Report agent status and fetch a pending policy",
+                "operationId": "FleetCheckin",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Agent id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Status",
+                        "name": "checkin",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/fleetapi.CheckinRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fleetapi.CheckinResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/fleet/enroll": {
+            "post": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Fleet"
+                ],
+                "summary": "Enroll an agent under a policy",
+                "operationId": "FleetEnroll",
+                "parameters": [
+                    {
+                        "description": "Agent",
+                        "name": "agent",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/fleetapi.EnrollRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fleetapi.EnrollResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/fleet/policies": {
+            "get": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Fleet"
+                ],
+                "summary": "List agent policies",
+                "operationId": "ListFleetPolicies",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/fleetapi.Policy"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Fleet"
+                ],
+                "summary": "Create or update an agent policy; agents pick it up on checkin",
+                "operationId": "CreateUpdateFleetPolicy",
+                "parameters": [
+                    {
+                        "description": "Policy",
+                        "name": "policy",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/fleetapi.Policy"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseID"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Fleet"
+                ],
+                "summary": "Create or update an agent policy; agents pick it up on checkin",
+                "operationId": "CreateFleetPolicy",
+                "parameters": [
+                    {
+                        "description": "Policy",
+                        "name": "policy",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/fleetapi.Policy"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseID"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/fleet/policies/{id}": {
+            "delete": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Fleet"
+                ],
+                "summary": "Delete an agent policy that no agent uses",
+                "operationId": "DeleteFleetPolicy",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Policy id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseID"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
                         }
                     }
                 }
@@ -2045,6 +2578,191 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/{target}/_ccr/changes": {
+            "post": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Cluster"
+                ],
+                "summary": "Leader operations for cross-cluster replication",
+                "operationId": "CCRChanges",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Leader index",
+                        "name": "target",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "History point",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/replication.ChangesRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/replication.ChangesResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/{target}/_ccr/snapshot": {
+            "post": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/x-tar"
+                ],
+                "tags": [
+                    "Cluster"
+                ],
+                "summary": "Leader file copy for cross-cluster replication",
+                "operationId": "CCRSnapshot",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Leader index",
+                        "name": "target",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Follower and held segments",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/ccr.SnapshotBody"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Tar archive of the index files",
+                        "schema": {
+                            "type": "file"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
+        "/es/": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Cluster"
+                ],
+                "summary": "Get cluster info for compatible ES",
+                "operationId": "ESInfo",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/elastic.ESInfo"
+                        }
+                    }
+                }
+            }
+        },
+        "/es/_alias": {
+            "get": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Index"
+                ],
+                "summary": "Get index alias for compatible ES",
+                "operationId": "GetESAliases",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/es/_alias/{alias}": {
+            "get": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Index"
+                ],
+                "summary": "Get index alias by name for compatible ES",
+                "operationId": "GetESAliasesByAlias",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Aliases, comma separated",
+                        "name": "alias",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/es/_aliases": {
             "post": {
                 "security": [
@@ -2234,6 +2952,12 @@ const docTemplate = `{
                         "description": "Index",
                         "name": "index",
                         "in": "path"
+                    },
+                    {
+                        "type": "string",
+                        "description": "cluster, indices or shards",
+                        "name": "level",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -2241,6 +2965,168 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/elastic.ClusterHealthResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/es/_cluster/settings": {
+            "put": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Cluster"
+                ],
+                "summary": "Update cluster settings (remote clusters only)",
+                "operationId": "ClusterSettings",
+                "parameters": [
+                    {
+                        "description": "persistent or transient cluster.remote.\u003calias\u003e.seeds and .skip_unavailable",
+                        "name": "settings",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "object",
+                                "additionalProperties": true
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
+        "/es/_count": {
+            "post": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Search"
+                ],
+                "summary": "Count documents of all indexes for compatible ES",
+                "operationId": "CountAll",
+                "parameters": [
+                    {
+                        "description": "Query",
+                        "name": "query",
+                        "in": "body",
+                        "schema": {
+                            "$ref": "#/definitions/meta.ZedQueryForSDK"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/elastic.CountResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
+        "/es/_data_stream/{name}": {
+            "get": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Index"
+                ],
+                "summary": "Get data stream for compatible ES",
+                "operationId": "GetDataStream",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Data stream",
+                        "name": "name",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Index"
+                ],
+                "summary": "Create data stream for compatible ES",
+                "operationId": "PutDataStream",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Data stream",
+                        "name": "name",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
                         }
                     }
                 }
@@ -2618,6 +3504,430 @@ const docTemplate = `{
                 }
             }
         },
+        "/es/_inference": {
+            "get": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Inference"
+                ],
+                "summary": "Get inference endpoints for compatible ES",
+                "operationId": "GetInference",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/inference.ListResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/es/_inference/{task_type}/{inference_id}": {
+            "put": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Inference"
+                ],
+                "summary": "Create inference endpoint for compatible ES",
+                "operationId": "PutInference",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "text_embedding or rerank",
+                        "name": "task_type",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Inference id",
+                        "name": "inference_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "service, service_settings and task_settings",
+                        "name": "endpoint",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/meta.InferenceEndpoint"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/meta.InferenceEndpoint"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Inference"
+                ],
+                "summary": "Perform inference for compatible ES",
+                "operationId": "PostInference",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "text_embedding or rerank",
+                        "name": "task_type",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Inference id",
+                        "name": "inference_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "input and, for rerank, query",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/inference.InferRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Inference"
+                ],
+                "summary": "Delete inference endpoint for compatible ES",
+                "operationId": "DeleteInference",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "text_embedding or rerank",
+                        "name": "task_type",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Inference id",
+                        "name": "inference_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/es/_license": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Cluster"
+                ],
+                "summary": "Get license for compatible ES",
+                "operationId": "ESLicense",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/elastic.ESLicense"
+                        }
+                    }
+                }
+            }
+        },
+        "/es/_ml/trained_models": {
+            "get": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "LearningToRank"
+                ],
+                "summary": "Get learning to rank models for compatible ES",
+                "operationId": "GetTrainedModels",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Models to skip, sorted by id, default 0",
+                        "name": "from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Models to return, default 100",
+                        "name": "size",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/ltr.ListResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/es/_ml/trained_models/{model_id}": {
+            "get": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "LearningToRank"
+                ],
+                "summary": "Get a learning to rank model for compatible ES",
+                "operationId": "GetTrainedModelsByModelId",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Model id",
+                        "name": "model_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/ltr.ListResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "LearningToRank"
+                ],
+                "summary": "Create learning to rank model for compatible ES",
+                "operationId": "PutTrainedModel",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Model id",
+                        "name": "model_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "inference_config.learning_to_rank and definition",
+                        "name": "model",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/meta.LTRModel"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/meta.LTRModel"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "LearningToRank"
+                ],
+                "summary": "Delete learning to rank model for compatible ES",
+                "operationId": "DeleteTrainedModel",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Model id",
+                        "name": "model_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/es/_msearch": {
             "post": {
                 "security": [
@@ -2664,6 +3974,350 @@ const docTemplate = `{
                     },
                     "400": {
                         "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
+        "/es/_plugins/_replication/_autofollow": {
+            "get": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Cluster"
+                ],
+                "summary": "List auto-follow rules",
+                "operationId": "ListAutoFollow",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "$ref": "#/definitions/cluster.AutoFollowRule"
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Cluster"
+                ],
+                "summary": "Add an auto-follow rule",
+                "operationId": "PutAutoFollow",
+                "parameters": [
+                    {
+                        "description": "Rule",
+                        "name": "rule",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/cluster.AutoFollowRule"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "boolean"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Cluster"
+                ],
+                "summary": "Remove an auto-follow rule",
+                "operationId": "DeleteAutoFollow",
+                "parameters": [
+                    {
+                        "description": "Rule name",
+                        "name": "rule",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/cluster.AutoFollowRule"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "boolean"
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
+        "/es/_plugins/_replication/{index}/_pause": {
+            "post": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Cluster"
+                ],
+                "summary": "Pause cross-cluster replication",
+                "operationId": "PauseReplication",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Follower index",
+                        "name": "index",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "boolean"
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
+        "/es/_plugins/_replication/{index}/_resume": {
+            "post": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Cluster"
+                ],
+                "summary": "Resume cross-cluster replication",
+                "operationId": "ResumeReplication",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Follower index",
+                        "name": "index",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "boolean"
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
+        "/es/_plugins/_replication/{index}/_start": {
+            "put": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Cluster"
+                ],
+                "summary": "Start cross-cluster replication",
+                "operationId": "StartReplication",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Follower index",
+                        "name": "index",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Leader cluster and index",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/ccr.FollowRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "boolean"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
+        "/es/_plugins/_replication/{index}/_status": {
+            "get": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Cluster"
+                ],
+                "summary": "Cross-cluster replication status",
+                "operationId": "ReplicationStatus",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Follower index",
+                        "name": "index",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/cluster.Follow"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
+        "/es/_plugins/_replication/{index}/_stop": {
+            "post": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Cluster"
+                ],
+                "summary": "Stop cross-cluster replication",
+                "operationId": "StopReplication",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Follower index",
+                        "name": "index",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "boolean"
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
                         "schema": {
                             "$ref": "#/definitions/meta.HTTPResponseError"
                         }
@@ -3041,7 +4695,7 @@ const docTemplate = `{
                         "required": true
                     },
                     {
-                        "description": "Criteria to match, e.g. {\\",
+                        "description": "Criteria to match, e.g. match_criteria.query_string",
                         "name": "body",
                         "in": "body",
                         "required": true,
@@ -3108,6 +4762,85 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/elastic.ReindexResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
+        "/es/_remote/info": {
+            "get": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Cluster"
+                ],
+                "summary": "Remote cluster info",
+                "operationId": "RemoteInfo",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "$ref": "#/definitions/cluster.RemoteInfo"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/es/_search": {
+            "post": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Search"
+                ],
+                "summary": "Search all indexes V2 DSL for compatible ES",
+                "operationId": "SearchAll",
+                "parameters": [
+                    {
+                        "description": "Query",
+                        "name": "query",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/meta.ZedQueryForSDK"
+                        }
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "Answer a cluster search with the parts that succeeded, default zed_cluster_allow_partial_search_results",
+                        "name": "allow_partial_search_results",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/meta.SearchResponse"
                         }
                     },
                     "400": {
@@ -3592,6 +5325,26 @@ const docTemplate = `{
                 }
             }
         },
+        "/es/_xpack": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Cluster"
+                ],
+                "summary": "Get X-Pack info for compatible ES",
+                "operationId": "ESXPack",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/elastic.ESXPack"
+                        }
+                    }
+                }
+            }
+        },
         "/es/{index}": {
             "put": {
                 "security": [
@@ -3680,6 +5433,94 @@ const docTemplate = `{
                 }
             }
         },
+        "/es/{index}/_alias": {
+            "get": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Index"
+                ],
+                "summary": "Get index alias of indexes for compatible ES",
+                "operationId": "GetESAliasesByIndex",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Indexes, comma separated",
+                        "name": "index",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/es/{index}/_bulk": {
+            "post": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "text/plain"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Document"
+                ],
+                "summary": "ES bulk documents of an index",
+                "operationId": "ESBulkIndex",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Default index",
+                        "name": "index",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Query",
+                        "name": "query",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
         "/es/{index}/_count": {
             "post": {
                 "security": [
@@ -3731,6 +5572,72 @@ const docTemplate = `{
                 }
             }
         },
+        "/es/{index}/_create/{id}": {
+            "put": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Document"
+                ],
+                "summary": "Create document with id for compatible ES",
+                "operationId": "ESCreateDocument",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Index",
+                        "name": "index",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Document",
+                        "name": "document",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseID"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
         "/es/{index}/_delete_by_query": {
             "post": {
                 "security": [
@@ -3772,6 +5679,227 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/meta.HTTPResponseDeleteByQuery"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
+        "/es/{index}/_doc": {
+            "post": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Document"
+                ],
+                "summary": "Create document for compatible ES",
+                "operationId": "ESIndexDocument",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Index",
+                        "name": "index",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Document",
+                        "name": "document",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseID"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
+        "/es/{index}/_doc/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Document"
+                ],
+                "summary": "Get document with id for compatible ES",
+                "operationId": "ESGetDocument",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Index",
+                        "name": "index",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/meta.Hit"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Document"
+                ],
+                "summary": "Create or update document with id for compatible ES",
+                "operationId": "ESIndexDocumentWithID",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Index",
+                        "name": "index",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Document",
+                        "name": "document",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseID"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Document"
+                ],
+                "summary": "Delete document for compatible ES",
+                "operationId": "ESDeleteDocument",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Index",
+                        "name": "index",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseDocument"
                         }
                     },
                     "400": {
@@ -3960,6 +6088,112 @@ const docTemplate = `{
                 }
             }
         },
+        "/es/{index}/_msearch": {
+            "post": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "text/plain"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Search"
+                ],
+                "summary": "Search V2 MultipleSearch of indexes for compatible ES",
+                "operationId": "MSearchIndex",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Default indexes, comma separated",
+                        "name": "index",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Query",
+                        "name": "query",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "One result per query; a failed query has error set",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "responses": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/definitions/meta.SearchResponse"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
+        "/es/{index}/_refresh": {
+            "post": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Index"
+                ],
+                "summary": "Refresh index for compatible ES",
+                "operationId": "ESRefresh",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Index",
+                        "name": "index",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
         "/es/{index}/_reload_search_analyzers": {
             "post": {
                 "security": [
@@ -4008,6 +6242,7 @@ const docTemplate = `{
                         "BasicAuth": []
                     }
                 ],
+                "description": "Index may be a comma separated list, a pattern, or ` + "`" + `alias:index` + "`" + ` for a remote cluster search.",
                 "consumes": [
                     "application/json"
                 ],
@@ -4035,6 +6270,12 @@ const docTemplate = `{
                         "schema": {
                             "$ref": "#/definitions/meta.ZedQueryForSDK"
                         }
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "Answer a cluster search with the parts that succeeded, default zed_cluster_allow_partial_search_results",
+                        "name": "allow_partial_search_results",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -4053,45 +6294,65 @@ const docTemplate = `{
                 }
             }
         },
-        "/es/{target}/_alias/{target_alias}": {
-            "get": {
+        "/es/{index}/_update/{id}": {
+            "post": {
                 "security": [
                     {
                         "BasicAuth": []
                     }
                 ],
+                "consumes": [
+                    "application/json"
+                ],
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
-                    "Index"
+                    "Document"
                 ],
-                "summary": "Get index alias for compatible ES",
-                "operationId": "GetESAliases",
+                "summary": "Update document with id for compatible ES",
+                "operationId": "ESUpdateDocument",
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Target Index",
-                        "name": "target",
-                        "in": "path"
+                        "description": "Index",
+                        "name": "index",
+                        "in": "path",
+                        "required": true
                     },
                     {
                         "type": "string",
-                        "description": "Target Alias",
-                        "name": "target_alias",
-                        "in": "path"
+                        "description": "ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Document",
+                        "name": "document",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
                     }
                 ],
                 "responses": {
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": true
+                            "$ref": "#/definitions/meta.HTTPResponseID"
                         }
                     },
                     "400": {
                         "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
                         "schema": {
                             "$ref": "#/definitions/meta.HTTPResponseError"
                         }
@@ -4109,6 +6370,29 @@ const docTemplate = `{
                 "responses": {
                     "200": {
                         "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HealthzResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/readyz": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "summary": "Get readiness",
+                "operationId": "Readyz",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HealthzResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
                         "schema": {
                             "$ref": "#/definitions/meta.HealthzResponse"
                         }
@@ -4201,6 +6485,77 @@ const docTemplate = `{
                 }
             }
         },
+        "ccr.FollowRequest": {
+            "type": "object",
+            "properties": {
+                "leader_alias": {
+                    "type": "string"
+                },
+                "leader_index": {
+                    "type": "string"
+                }
+            }
+        },
+        "ccr.SnapshotBody": {
+            "type": "object",
+            "properties": {
+                "files": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/replication.FileSum"
+                    }
+                },
+                "follower": {
+                    "type": "string"
+                }
+            }
+        },
+        "cluster.AutoFollowRule": {
+            "type": "object",
+            "properties": {
+                "leader_alias": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "pattern": {
+                    "type": "string"
+                }
+            }
+        },
+        "cluster.Follow": {
+            "type": "object",
+            "properties": {
+                "checkpoint": {
+                    "description": "Checkpoint is the last leader operation applied here.",
+                    "type": "integer"
+                },
+                "index": {
+                    "type": "string"
+                },
+                "leader_alias": {
+                    "type": "string"
+                },
+                "leader_checkpoint": {
+                    "description": "LeaderCheckpoint is the last operation the leader acknowledged when\nit was last asked.",
+                    "type": "integer"
+                },
+                "leader_index": {
+                    "type": "string"
+                },
+                "reason": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "term": {
+                    "description": "Term names the leader history Checkpoint counts in; empty until the\nfollower bootstrapped, and again when it has to bootstrap anew.",
+                    "type": "string"
+                }
+            }
+        },
         "cluster.IndexOwner": {
             "type": "object",
             "properties": {
@@ -4246,6 +6601,14 @@ const docTemplate = `{
                 },
                 "query": {
                     "$ref": "#/definitions/meta.ZedQuery"
+                },
+                "replica": {
+                    "description": "Replica asks for copies this node replicates: 404 unless it may serve them.",
+                    "type": "boolean"
+                },
+                "sort_keys": {
+                    "description": "SortKeys adds the ` + "`" + `_sort_key` + "`" + ` the coordinator merges top_hits by.",
+                    "type": "boolean"
                 }
             }
         },
@@ -4327,6 +6690,59 @@ const docTemplate = `{
                 },
                 "partitions": {
                     "type": "integer"
+                }
+            }
+        },
+        "cluster.RemoteCluster": {
+            "type": "object",
+            "properties": {
+                "alias": {
+                    "type": "string"
+                },
+                "password": {
+                    "description": "write only: listing answers \"******\", writing \"******\" or \"\" keeps the stored one",
+                    "type": "string"
+                },
+                "seeds": {
+                    "description": "Seeds are http(s) addresses of nodes of the remote cluster.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "skip_unavailable": {
+                    "description": "SkipUnavailable leaves the remote out of a search it fails instead\nof failing the search.",
+                    "type": "boolean"
+                },
+                "username": {
+                    "description": "Username and Password authenticate the background calls of\ncross-cluster replication. A search carries the client's credentials.",
+                    "type": "string"
+                }
+            }
+        },
+        "cluster.RemoteInfo": {
+            "type": "object",
+            "properties": {
+                "connected": {
+                    "type": "boolean"
+                },
+                "error": {
+                    "type": "string"
+                },
+                "mode": {
+                    "type": "string"
+                },
+                "num_nodes_connected": {
+                    "type": "integer"
+                },
+                "seeds": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "skip_unavailable": {
+                    "type": "boolean"
                 }
             }
         },
@@ -4476,6 +6892,83 @@ const docTemplate = `{
                 }
             }
         },
+        "elastic.ESInfo": {
+            "type": "object",
+            "properties": {
+                "cluster_name": {
+                    "type": "string"
+                },
+                "cluster_uuid": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "tagline": {
+                    "type": "string"
+                },
+                "version": {
+                    "$ref": "#/definitions/elastic.ESInfoVersion"
+                }
+            }
+        },
+        "elastic.ESInfoVersion": {
+            "type": "object",
+            "properties": {
+                "build_date": {
+                    "type": "string"
+                },
+                "build_flavor": {
+                    "type": "string"
+                },
+                "build_hash": {
+                    "type": "string"
+                },
+                "build_snapshot": {
+                    "type": "boolean"
+                },
+                "lucene_version": {
+                    "type": "string"
+                },
+                "minimum_index_compatibility": {
+                    "type": "string"
+                },
+                "minimum_wire_version": {
+                    "type": "string"
+                },
+                "number": {
+                    "type": "string"
+                }
+            }
+        },
+        "elastic.ESLicense": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string"
+                }
+            }
+        },
+        "elastic.ESXPack": {
+            "type": "object",
+            "properties": {
+                "build": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "boolean"
+                    }
+                },
+                "features": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "boolean"
+                    }
+                },
+                "license": {
+                    "$ref": "#/definitions/elastic.ESLicense"
+                }
+            }
+        },
         "elastic.FieldCap": {
             "type": "object",
             "properties": {
@@ -4560,6 +7053,167 @@ const docTemplate = `{
                 },
                 "version_conflicts": {
                     "type": "integer"
+                }
+            }
+        },
+        "fleetapi.Agent": {
+            "type": "object",
+            "properties": {
+                "arch": {
+                    "type": "string"
+                },
+                "enrolled_at": {
+                    "type": "string"
+                },
+                "events_failed": {
+                    "type": "integer"
+                },
+                "events_sent": {
+                    "type": "integer"
+                },
+                "health": {
+                    "type": "string"
+                },
+                "hostname": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "last_checkin": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "os": {
+                    "type": "string"
+                },
+                "policy_id": {
+                    "type": "string"
+                },
+                "policy_revision": {
+                    "type": "integer"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
+                }
+            }
+        },
+        "fleetapi.CheckinRequest": {
+            "type": "object",
+            "properties": {
+                "events_failed": {
+                    "type": "integer"
+                },
+                "events_sent": {
+                    "type": "integer"
+                },
+                "health": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "policy_revision": {
+                    "type": "integer"
+                }
+            }
+        },
+        "fleetapi.CheckinResponse": {
+            "type": "object",
+            "properties": {
+                "policy": {
+                    "$ref": "#/definitions/fleetapi.Policy"
+                }
+            }
+        },
+        "fleetapi.EnrollRequest": {
+            "type": "object",
+            "properties": {
+                "arch": {
+                    "type": "string"
+                },
+                "hostname": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "os": {
+                    "type": "string"
+                },
+                "policy_id": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
+                }
+            }
+        },
+        "fleetapi.EnrollResponse": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string"
+                },
+                "policy": {
+                    "$ref": "#/definitions/fleetapi.Policy"
+                }
+            }
+        },
+        "fleetapi.Input": {
+            "type": "object",
+            "properties": {
+                "index": {
+                    "type": "string"
+                },
+                "interval": {
+                    "type": "string"
+                },
+                "paths": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "type": {
+                    "type": "string"
+                }
+            }
+        },
+        "fleetapi.Policy": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "inputs": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/fleetapi.Input"
+                    }
+                },
+                "name": {
+                    "type": "string"
+                },
+                "revision": {
+                    "type": "integer"
+                },
+                "updated_at": {
+                    "type": "string"
                 }
             }
         },
@@ -4659,6 +7313,28 @@ const docTemplate = `{
                 }
             }
         },
+        "inference.InferRequest": {
+            "type": "object",
+            "properties": {
+                "input": {
+                    "description": "a string or an array of strings"
+                },
+                "query": {
+                    "type": "string"
+                }
+            }
+        },
+        "inference.ListResponse": {
+            "type": "object",
+            "properties": {
+                "endpoints": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/meta.InferenceEndpoint"
+                    }
+                }
+            }
+        },
         "logs.IngestResponse": {
             "type": "object",
             "properties": {
@@ -4687,6 +7363,20 @@ const docTemplate = `{
                 },
                 "successful": {
                     "type": "integer"
+                }
+            }
+        },
+        "ltr.ListResponse": {
+            "type": "object",
+            "properties": {
+                "count": {
+                    "type": "integer"
+                },
+                "trained_model_configs": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/meta.LTRModel"
+                    }
                 }
             }
         },
@@ -5464,6 +8154,20 @@ const docTemplate = `{
                 }
             }
         },
+        "meta.Clusters": {
+            "type": "object",
+            "properties": {
+                "skipped": {
+                    "type": "integer"
+                },
+                "successful": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                }
+            }
+        },
         "meta.DateRange": {
             "type": "object",
             "properties": {
@@ -5789,6 +8493,10 @@ const docTemplate = `{
                 "analysis": {
                     "$ref": "#/definitions/meta.IndexAnalysis"
                 },
+                "cluster_shards": {
+                    "description": "ClusterShards spreads the index over that many shard indexes, each\nowned, replicated and failed over on its own in a cluster. Set at\ncreation only; 0 and 1 keep the index on one node.",
+                    "type": "integer"
+                },
                 "exclude_source_vectors": {
                     "description": "ExcludeSourceVectors keeps vector fields out of the stored _source and\nrestores them from the stored vectors on read; nil takes\nzed_exclude_source_vectors. Set at creation only.",
                     "type": "boolean"
@@ -5862,6 +8570,31 @@ const docTemplate = `{
                 }
             }
         },
+        "meta.InferenceEndpoint": {
+            "type": "object",
+            "properties": {
+                "create_time": {
+                    "type": "integer"
+                },
+                "inference_id": {
+                    "type": "string"
+                },
+                "service": {
+                    "type": "string"
+                },
+                "service_settings": {
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "task_settings": {
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "task_type": {
+                    "type": "string"
+                }
+            }
+        },
         "meta.JSONIngest": {
             "type": "object",
             "properties": {
@@ -5874,6 +8607,28 @@ const docTemplate = `{
                         "type": "object",
                         "additionalProperties": true
                     }
+                }
+            }
+        },
+        "meta.LTRModel": {
+            "type": "object",
+            "properties": {
+                "create_time": {
+                    "type": "integer"
+                },
+                "definition": {
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "description": {
+                    "type": "string"
+                },
+                "inference_config": {
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "model_id": {
+                    "type": "string"
                 }
             }
         },
@@ -6068,6 +8823,10 @@ const docTemplate = `{
                             "$ref": "#/definitions/meta.VectorIndexOptions"
                         }
                     ]
+                },
+                "inference_id": {
+                    "description": "InferenceID makes a text field a semantic_text field: documents embed\nits value with this endpoint into SemanticEmbeddingField.",
+                    "type": "string"
                 },
                 "properties": {
                     "description": "Properties holds the sub-fields of a \"nested\" property. Each element of\nthe nested array is indexed as its own hidden document tagged with\nNestedPathField / NestedParentField so nested queries and aggregations\nkeep per-object semantics.",
@@ -6449,6 +9208,14 @@ const docTemplate = `{
         "meta.SearchResponse": {
             "type": "object",
             "properties": {
+                "_clusters": {
+                    "description": "Clusters counts the clusters of a cross-cluster search.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/meta.Clusters"
+                        }
+                    ]
+                },
                 "_shards": {
                     "$ref": "#/definitions/meta.Shards"
                 },
@@ -6477,11 +9244,45 @@ const docTemplate = `{
                 }
             }
         },
+        "meta.ShardFailure": {
+            "type": "object",
+            "properties": {
+                "index": {
+                    "type": "string"
+                },
+                "node": {
+                    "type": "string"
+                },
+                "reason": {
+                    "$ref": "#/definitions/meta.ShardFailureReason"
+                },
+                "shard": {
+                    "type": "integer"
+                }
+            }
+        },
+        "meta.ShardFailureReason": {
+            "type": "object",
+            "properties": {
+                "reason": {
+                    "type": "string"
+                },
+                "type": {
+                    "type": "string"
+                }
+            }
+        },
         "meta.Shards": {
             "type": "object",
             "properties": {
                 "failed": {
                     "type": "integer"
+                },
+                "failures": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/meta.ShardFailure"
+                    }
                 },
                 "skipped": {
                     "type": "integer"
@@ -6703,6 +9504,11 @@ const docTemplate = `{
                 "explain": {
                     "type": "boolean"
                 },
+                "ext": {
+                    "description": "OpenSearch ext, rerank.query_context of a rerank processor",
+                    "type": "object",
+                    "additionalProperties": true
+                },
                 "fields": {
                     "description": "[\"field1\", \"field2.*\", {\"field\": \"fieldName\", \"format\": \"epoch_millis\"}]"
                 },
@@ -6716,8 +9522,17 @@ const docTemplate = `{
                     "description": "top-level knn: one object or an array, ORed with query"
                 },
                 "query": {},
+                "rank": {
+                    "description": "legacy Elasticsearch {\"rrf\": {...}} fusing query and knn"
+                },
                 "rescore": {
                     "description": "one rescorer or an array, applied in order"
+                },
+                "retriever": {
+                    "description": "Elasticsearch retriever: standard, knn, rrf or linear"
+                },
+                "search_pipeline": {
+                    "description": "inline OpenSearch pipeline of a hybrid query"
                 },
                 "size": {
                     "type": "integer"
@@ -6776,6 +9591,12 @@ const docTemplate = `{
                 "query": {
                     "$ref": "#/definitions/meta.QueryForSDK"
                 },
+                "retriever": {
+                    "description": "Elasticsearch retriever: standard, knn, rrf or linear"
+                },
+                "search_pipeline": {
+                    "description": "inline OpenSearch pipeline of a hybrid query"
+                },
                 "size": {
                     "type": "integer"
                 },
@@ -6814,6 +9635,74 @@ const docTemplate = `{
                     "additionalProperties": {
                         "$ref": "#/definitions/metadata.ILMPhase"
                     }
+                }
+            }
+        },
+        "replication.ChangesRequest": {
+            "type": "object",
+            "properties": {
+                "follower": {
+                    "description": "Follower names the follower index, its lease on the log.",
+                    "type": "string"
+                },
+                "from": {
+                    "type": "integer"
+                },
+                "max": {
+                    "type": "integer"
+                },
+                "term": {
+                    "type": "string"
+                }
+            }
+        },
+        "replication.ChangesResponse": {
+            "type": "object",
+            "properties": {
+                "checkpoint": {
+                    "type": "integer"
+                },
+                "mappings": {
+                    "type": "object"
+                },
+                "ops": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/replication.Op"
+                    }
+                },
+                "term": {
+                    "type": "string"
+                }
+            }
+        },
+        "replication.FileSum": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "description": "slash separated, relative to the index directory",
+                    "type": "string"
+                },
+                "size": {
+                    "type": "integer"
+                },
+                "sum": {
+                    "description": "hex sha256",
+                    "type": "string"
+                }
+            }
+        },
+        "replication.Op": {
+            "type": "object",
+            "properties": {
+                "entry": {
+                    "type": "object"
+                },
+                "seq": {
+                    "type": "integer"
+                },
+                "shard": {
+                    "type": "string"
                 }
             }
         },
