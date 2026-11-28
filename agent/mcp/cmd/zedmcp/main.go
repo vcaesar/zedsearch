@@ -54,6 +54,8 @@ func main() {
 	transport := flag.String("transport", "stdio", "stdio or http (streamable HTTP)")
 	addr := flag.String("addr", "127.0.0.1:8090",
 		"listen address for the http transport; a non-loopback address exposes the tools to the network and requires ZED_MCP_TOKEN")
+	certFile := flag.String("tls-cert", "", "TLS certificate file for the http transport")
+	keyFile := flag.String("tls-key", "", "TLS key file for the http transport")
 	write := flag.Bool("write", false, "enable the index_document and delete_document tools")
 	version := flag.Bool("version", false, "print version")
 	flag.Parse()
@@ -68,30 +70,43 @@ func main() {
 	}
 	client := mcp.NewClient(baseURL, os.Getenv("ZED_MCP_USERNAME"), os.Getenv("ZED_MCP_PASSWORD"))
 	if client.CleartextAuth() {
-		log.Warn().Str("url", baseURL).Msg("ZedSearch credentials are sent unencrypted over http; use https for remote servers")
+		log.Warn().Str("url", client.Endpoint()).Msg("ZedSearch credentials are sent unencrypted over http; use https for remote servers")
 	}
 	server := mcp.NewServer(client, mcp.Options{AllowWrite: *write})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := run(ctx, server, *transport, *addr, os.Getenv("ZED_MCP_TOKEN")); err != nil {
+	cfg := config{transport: *transport, addr: *addr, token: os.Getenv("ZED_MCP_TOKEN"), certFile: *certFile, keyFile: *keyFile}
+	if err := run(ctx, server, cfg); err != nil {
 		log.Error().Err(err).Msg("zedmcp stopped")
 		stop()
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, server *sdk.Server, transport, addr, token string) error {
-	switch transport {
+type config struct {
+	transport, addr, token, certFile, keyFile string
+}
+
+func run(ctx context.Context, server *sdk.Server, cfg config) error {
+	switch cfg.transport {
 	case "stdio":
 		return server.Run(ctx, &sdk.StdioTransport{})
 	case "http":
-		if token == "" && !loopback(addr) {
-			return errors.New("ZED_MCP_TOKEN is required to listen on non-loopback address " + addr)
+		if (cfg.certFile == "") != (cfg.keyFile == "") {
+			return errors.New("-tls-cert and -tls-key must be set together")
+		}
+		if !loopback(cfg.addr) {
+			if cfg.token == "" {
+				return errors.New("ZED_MCP_TOKEN is required to listen on non-loopback address " + cfg.addr)
+			}
+			if cfg.certFile == "" {
+				log.Warn().Str("addr", cfg.addr).Msg("the bearer token is sent unencrypted; set -tls-cert and -tls-key or terminate TLS at a proxy")
+			}
 		}
 		srv := &http.Server{
-			Addr:              addr,
-			Handler:           handler(server, token),
+			Addr:              cfg.addr,
+			Handler:           handler(server, cfg.token),
 			ReadHeaderTimeout: 10 * time.Second,
 		}
 		ctx, cancel := context.WithCancel(ctx)
@@ -109,14 +124,20 @@ func run(ctx context.Context, server *sdk.Server, transport, addr, token string)
 				}
 			}
 		}()
-		log.Info().Str("addr", addr).Msg("zedmcp listening")
-		if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+		log.Info().Str("addr", cfg.addr).Bool("tls", cfg.certFile != "").Msg("zedmcp listening")
+		var err error
+		if cfg.certFile != "" {
+			err = srv.ListenAndServeTLS(cfg.certFile, cfg.keyFile)
+		} else {
+			err = srv.ListenAndServe()
+		}
+		if !errors.Is(err, http.ErrServerClosed) {
 			return err
 		}
 		<-done
 		return nil
 	default:
-		return errors.New("unknown transport " + transport)
+		return errors.New("unknown transport " + cfg.transport)
 	}
 }
 
@@ -144,6 +165,12 @@ func requireToken(next http.Handler, token string) http.Handler {
 	want := []byte("Bearer " + token)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), want) != 1 {
+			// Closing and expiring reads skip draining an unread body an
+			// unauthenticated client could withhold to pin the connection.
+			w.Header().Set("Connection", "close")
+			if err := http.NewResponseController(w).SetReadDeadline(time.Now()); err != nil && !errors.Is(err, http.ErrNotSupported) {
+				log.Debug().Err(err).Msg("expire unauthenticated read")
+			}
 			w.Header().Set("WWW-Authenticate", `Bearer realm="zedmcp"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return

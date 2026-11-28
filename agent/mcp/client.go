@@ -58,14 +58,24 @@ func NewClient(baseURL, username, password string) *Client {
 	}
 }
 
-// CleartextAuth reports whether credentials are sent over plain HTTP to a
-// non-loopback host.
+// CleartextAuth reports whether credentials, configured or embedded in the
+// URL, are sent over plain HTTP to a non-loopback host.
 func (c *Client) CleartextAuth() bool {
-	if c.Username == "" {
+	u, err := url.Parse(c.URL)
+	if err != nil || (c.Username == "" && u.User == nil) {
 		return false
 	}
+	return cleartext(u)
+}
+
+// Endpoint returns the scheme and host of the server URL, without
+// credentials, path or query, so it is safe to log.
+func (c *Client) Endpoint() string {
 	u, err := url.Parse(c.URL)
-	return err == nil && cleartext(u)
+	if err != nil {
+		return "invalid URL"
+	}
+	return u.Scheme + "://" + u.Host
 }
 
 // IsLoopback reports whether host is localhost or a loopback IP.

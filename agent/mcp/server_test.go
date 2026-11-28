@@ -209,11 +209,28 @@ func TestClient_CleartextAuth(t *testing.T) {
 		{"http://zed.example.com", "", false},
 		{"http://zed.example.com", "admin", true},
 		{"http://10.0.0.5:4080", "admin", true},
+		{"http://admin:secret@zed.example.com", "", true},
+		{"https://admin:secret@zed.example.com", "", false},
 		{"://bad", "admin", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.url+"/"+tt.user, func(t *testing.T) {
 			assert.Equal(t, tt.want, NewClient(tt.url, tt.user, "secret").CleartextAuth())
+		})
+	}
+}
+
+func TestClient_Endpoint(t *testing.T) {
+	tests := map[string]string{
+		"http://admin:secret@zed.example.com:4080/es?x=1": "http://zed.example.com:4080",
+		"https://zed.example.com/":                        "https://zed.example.com",
+		"://bad":                                          "invalid URL",
+	}
+	for in, want := range tests {
+		t.Run(in, func(t *testing.T) {
+			got := NewClient(in, "", "").Endpoint()
+			assert.Equal(t, want, got)
+			assert.NotContains(t, got, "secret")
 		})
 	}
 }
