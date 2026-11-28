@@ -26,8 +26,9 @@ import (
 
 type spec struct {
 	Paths map[string]map[string]struct {
-		Produces  []string `json:"produces"`
-		Responses map[string]struct {
+		OperationID string   `json:"operationId"`
+		Produces    []string `json:"produces"`
+		Responses   map[string]struct {
 			Schema struct {
 				Ref        string                 `json:"$ref"`
 				Properties map[string]interface{} `json:"properties"`
@@ -77,4 +78,58 @@ func TestSwaggerSpec(t *testing.T) {
 	assert.NotContains(t, sig, "filter_duplicate_text")
 	assert.NotContains(t, sig, "source_fields")
 	assert.NotContains(t, s.Paths, "/api/fleet/enroll", "docs must not include untracked work")
+
+	assert.Contains(t, s.Paths["/es/_ml/trained_models"], "get")
+	for _, method := range []string{"get", "put", "delete"} {
+		assert.Contains(t, s.Paths["/es/_ml/trained_models/{model_id}"], method)
+	}
+	assert.Equal(t, "#/definitions/meta.LTRModel", s.Paths["/es/_ml/trained_models/{model_id}"]["put"].Responses["200"].Schema.Ref)
+	assert.Contains(t, s.Definitions["ltr.ListResponse"].Properties, "trained_model_configs")
+	assert.Equal(t, "GetTrainedModelsByModelId", s.Paths["/es/_ml/trained_models/{model_id}"]["get"].OperationID)
+
+	for path, id := range map[string]string{
+		"/es/_alias":         "GetESAliases",
+		"/es/{index}/_alias": "GetESAliasesByIndex",
+		"/es/_alias/{alias}": "GetESAliasesByAlias",
+	} {
+		assert.Equal(t, id, s.Paths[path]["get"].OperationID, path)
+	}
+	assert.NotContains(t, s.Paths, "/es/{target}/_alias/{target_alias}", "not a registered route")
+	assert.Equal(t, "GetDataStream", s.Paths["/es/_data_stream/{name}"]["get"].OperationID)
+	assert.Equal(t, "PutDataStream", s.Paths["/es/_data_stream/{name}"]["put"].OperationID)
+	assert.Contains(t, s.Definitions["meta.Shards"].Properties, "failures")
+
+	for path, methods := range map[string][]string{
+		"/api/cluster/remotes":                      {"get"},
+		"/api/cluster/remotes/{alias}":              {"put", "delete"},
+		"/es/_remote/info":                          {"get"},
+		"/es/_cluster/settings":                     {"put"},
+		"/es/_plugins/_replication/_autofollow":     {"get", "post", "delete"},
+		"/es/_plugins/_replication/{index}/_start":  {"put"},
+		"/es/_plugins/_replication/{index}/_pause":  {"post"},
+		"/es/_plugins/_replication/{index}/_resume": {"post"},
+		"/es/_plugins/_replication/{index}/_stop":   {"post"},
+		"/es/_plugins/_replication/{index}/_status": {"get"},
+		"/api/_ccr/indexes":                         {"get"},
+		"/api/{target}/_ccr/changes":                {"post"},
+		"/api/{target}/_ccr/snapshot":               {"post"},
+		"/es/_inference":                            {"get"},
+		"/es/_inference/{task_type}/{inference_id}": {"put", "post", "delete"},
+	} {
+		for _, method := range methods {
+			assert.Contains(t, s.Paths[path], method, path)
+		}
+	}
+	assert.Equal(t, "#/definitions/replication.ChangesResponse", s.Paths["/api/{target}/_ccr/changes"]["post"].Responses["200"].Schema.Ref)
+	assert.Contains(t, s.Definitions["replication.Op"].Properties, "entry")
+
+	ids := map[string]string{}
+	for path, ops := range s.Paths {
+		for method, op := range ops {
+			if prev, ok := ids[op.OperationID]; ok {
+				t.Errorf("operationId %s of %s %s already used by %s", op.OperationID, method, path, prev)
+			}
+			ids[op.OperationID] = method + " " + path
+		}
+	}
 }

@@ -43,6 +43,57 @@ definitions:
       password:
         type: string
     type: object
+  ccr.FollowRequest:
+    properties:
+      leader_alias:
+        type: string
+      leader_index:
+        type: string
+    type: object
+  ccr.SnapshotBody:
+    properties:
+      files:
+        items:
+          $ref: '#/definitions/replication.FileSum'
+        type: array
+      follower:
+        type: string
+    type: object
+  cluster.AutoFollowRule:
+    properties:
+      leader_alias:
+        type: string
+      name:
+        type: string
+      pattern:
+        type: string
+    type: object
+  cluster.Follow:
+    properties:
+      checkpoint:
+        description: Checkpoint is the last leader operation applied here.
+        type: integer
+      index:
+        type: string
+      leader_alias:
+        type: string
+      leader_checkpoint:
+        description: |-
+          LeaderCheckpoint is the last operation the leader acknowledged when
+          it was last asked.
+        type: integer
+      leader_index:
+        type: string
+      reason:
+        type: string
+      status:
+        type: string
+      term:
+        description: |-
+          Term names the leader history Checkpoint counts in; empty until the
+          follower bootstrapped, and again when it has to bootstrap anew.
+        type: string
+    type: object
   cluster.IndexOwner:
     properties:
       local:
@@ -73,6 +124,14 @@ definitions:
         type: array
       query:
         $ref: '#/definitions/meta.ZedQuery'
+      replica:
+        description: 'Replica asks for copies this node replicates: 404 unless it
+          may serve them.'
+        type: boolean
+      sort_keys:
+        description: SortKeys adds the `_sort_key` the coordinator merges top_hits
+          by.
+        type: boolean
     type: object
   cluster.NodeStatus:
     properties:
@@ -127,6 +186,45 @@ definitions:
         type: array
       partitions:
         type: integer
+    type: object
+  cluster.RemoteCluster:
+    properties:
+      alias:
+        type: string
+      password:
+        type: string
+      seeds:
+        description: Seeds are http(s) addresses of nodes of the remote cluster.
+        items:
+          type: string
+        type: array
+      skip_unavailable:
+        description: |-
+          SkipUnavailable leaves the remote out of a search it fails instead
+          of failing the search.
+        type: boolean
+      username:
+        description: |-
+          Username and Password authenticate the background calls of
+          cross-cluster replication. A search carries the client's credentials.
+        type: string
+    type: object
+  cluster.RemoteInfo:
+    properties:
+      connected:
+        type: boolean
+      error:
+        type: string
+      mode:
+        type: string
+      num_nodes_connected:
+        type: integer
+      seeds:
+        items:
+          type: string
+        type: array
+      skip_unavailable:
+        type: boolean
     type: object
   core.Index:
     type: object
@@ -344,6 +442,20 @@ definitions:
       tier:
         type: string
     type: object
+  inference.InferRequest:
+    properties:
+      input:
+        description: a string or an array of strings
+      query:
+        type: string
+    type: object
+  inference.ListResponse:
+    properties:
+      endpoints:
+        items:
+          $ref: '#/definitions/meta.InferenceEndpoint'
+        type: array
+    type: object
   logs.IngestResponse:
     properties:
       code:
@@ -363,6 +475,15 @@ definitions:
         type: string
       successful:
         type: integer
+    type: object
+  ltr.ListResponse:
+    properties:
+      count:
+        type: integer
+      trained_model_configs:
+        items:
+          $ref: '#/definitions/meta.LTRModel'
+        type: array
     type: object
   meta.AggregationAutoDateHistogram:
     properties:
@@ -888,6 +1009,15 @@ definitions:
           $ref: '#/definitions/meta.QueryForSDK'
         type: array
     type: object
+  meta.Clusters:
+    properties:
+      skipped:
+        type: integer
+      successful:
+        type: integer
+      total:
+        type: integer
+    type: object
   meta.DateRange:
     properties:
       from:
@@ -1101,6 +1231,12 @@ definitions:
     properties:
       analysis:
         $ref: '#/definitions/meta.IndexAnalysis'
+      cluster_shards:
+        description: |-
+          ClusterShards spreads the index over that many shard indexes, each
+          owned, replicated and failed over on its own in a cluster. Set at
+          creation only; 0 and 1 keep the index on one node.
+        type: integer
       exclude_source_vectors:
         description: |-
           ExcludeSourceVectors keeps vector fields out of the stored _source and
@@ -1156,6 +1292,23 @@ definitions:
       updated_at:
         type: string
     type: object
+  meta.InferenceEndpoint:
+    properties:
+      create_time:
+        type: integer
+      inference_id:
+        type: string
+      service:
+        type: string
+      service_settings:
+        additionalProperties: true
+        type: object
+      task_settings:
+        additionalProperties: true
+        type: object
+      task_type:
+        type: string
+    type: object
   meta.JSONIngest:
     properties:
       index:
@@ -1165,6 +1318,21 @@ definitions:
           additionalProperties: true
           type: object
         type: array
+    type: object
+  meta.LTRModel:
+    properties:
+      create_time:
+        type: integer
+      definition:
+        additionalProperties: true
+        type: object
+      description:
+        type: string
+      inference_config:
+        additionalProperties: true
+        type: object
+      model_id:
+        type: string
     type: object
   meta.Mappings:
     properties:
@@ -1299,6 +1467,11 @@ definitions:
         - $ref: '#/definitions/meta.VectorIndexOptions'
         description: IndexOptions enables HNSW approximate search on a vector field
           by default.
+      inference_id:
+        description: |-
+          InferenceID makes a text field a semantic_text field: documents embed
+          its value with this endpoint into SemanticEmbeddingField.
+        type: string
       properties:
         additionalProperties:
           $ref: '#/definitions/meta.Property'
@@ -1555,6 +1728,10 @@ definitions:
     type: object
   meta.SearchResponse:
     properties:
+      _clusters:
+        allOf:
+        - $ref: '#/definitions/meta.Clusters'
+        description: Clusters counts the clusters of a cross-cluster search.
       _shards:
         $ref: '#/definitions/meta.Shards'
       aggregations:
@@ -1574,10 +1751,32 @@ definitions:
         description: Time it took to generate the response
         type: integer
     type: object
+  meta.ShardFailure:
+    properties:
+      index:
+        type: string
+      node:
+        type: string
+      reason:
+        $ref: '#/definitions/meta.ShardFailureReason'
+      shard:
+        type: integer
+    type: object
+  meta.ShardFailureReason:
+    properties:
+      reason:
+        type: string
+      type:
+        type: string
+    type: object
   meta.Shards:
     properties:
       failed:
         type: integer
+      failures:
+        items:
+          $ref: '#/definitions/meta.ShardFailure'
+        type: array
       skipped:
         type: integer
       successful:
@@ -1724,6 +1923,10 @@ definitions:
         type: object
       explain:
         type: boolean
+      ext:
+        additionalProperties: true
+        description: OpenSearch ext, rerank.query_context of a rerank processor
+        type: object
       fields:
         description: '["field1", "field2.*", {"field": "fieldName", "format": "epoch_millis"}]'
       from:
@@ -1733,8 +1936,14 @@ definitions:
       knn:
         description: 'top-level knn: one object or an array, ORed with query'
       query: {}
+      rank:
+        description: 'legacy Elasticsearch {"rrf": {...}} fusing query and knn'
       rescore:
         description: one rescorer or an array, applied in order
+      retriever:
+        description: 'Elasticsearch retriever: standard, knn, rrf or linear'
+      search_pipeline:
+        description: inline OpenSearch pipeline of a hybrid query
       size:
         type: integer
       sort:
@@ -1802,6 +2011,51 @@ definitions:
         additionalProperties:
           $ref: '#/definitions/metadata.ILMPhase'
         type: object
+    type: object
+  replication.ChangesRequest:
+    properties:
+      follower:
+        description: Follower names the follower index, its lease on the log.
+        type: string
+      from:
+        type: integer
+      max:
+        type: integer
+      term:
+        type: string
+    type: object
+  replication.ChangesResponse:
+    properties:
+      checkpoint:
+        type: integer
+      mappings:
+        type: object
+      ops:
+        items:
+          $ref: '#/definitions/replication.Op'
+        type: array
+      term:
+        type: string
+    type: object
+  replication.FileSum:
+    properties:
+      path:
+        description: slash separated, relative to the index directory
+        type: string
+      size:
+        type: integer
+      sum:
+        description: hex sha256
+        type: string
+    type: object
+  replication.Op:
+    properties:
+      entry:
+        type: object
+      seq:
+        type: integer
+      shard:
+        type: string
     type: object
   rules.ListResponse:
     properties:
@@ -2135,6 +2389,28 @@ paths:
       summary: Bulkv2 documents
       tags:
       - Document
+  /api/_ccr/indexes:
+    get:
+      operationId: CCRIndexes
+      parameters:
+      - description: Index pattern
+        in: query
+        name: pattern
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              type: string
+            type: array
+      security:
+      - BasicAuth: []
+      summary: Leader indexes for cross-cluster replication
+      tags:
+      - Cluster
   /api/_internal/indexes:
     get:
       operationId: InternalIndexes
@@ -2171,6 +2447,14 @@ paths:
             $ref: '#/definitions/meta.SearchResponse'
         "400":
           description: Bad Request
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+        "503":
+          description: Service Unavailable
           schema:
             $ref: '#/definitions/meta.HTTPResponseError'
       security:
@@ -2778,6 +3062,70 @@ paths:
       summary: Ingest OTLP logs (HTTP/JSON)
       tags:
       - Document
+  /api/{target}/_ccr/changes:
+    post:
+      consumes:
+      - application/json
+      operationId: CCRChanges
+      parameters:
+      - description: Leader index
+        in: path
+        name: target
+        required: true
+        type: string
+      - description: History point
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/replication.ChangesRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/replication.ChangesResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+      security:
+      - BasicAuth: []
+      summary: Leader operations for cross-cluster replication
+      tags:
+      - Cluster
+  /api/{target}/_ccr/snapshot:
+    post:
+      consumes:
+      - application/json
+      operationId: CCRSnapshot
+      parameters:
+      - description: Leader index
+        in: path
+        name: target
+        required: true
+        type: string
+      - description: Follower and held segments
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/ccr.SnapshotBody'
+      produces:
+      - application/x-tar
+      responses:
+        "200":
+          description: OK
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+      security:
+      - BasicAuth: []
+      summary: Leader file copy for cross-cluster replication
+      tags:
+      - Cluster
   /api/account:
     put:
       consumes:
@@ -2845,6 +3193,80 @@ paths:
       security:
       - BasicAuth: []
       summary: Get partition ownership
+      tags:
+      - Cluster
+  /api/cluster/remotes:
+    get:
+      operationId: ListRemotes
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              $ref: '#/definitions/cluster.RemoteCluster'
+            type: object
+      security:
+      - BasicAuth: []
+      summary: List remote clusters
+      tags:
+      - Cluster
+  /api/cluster/remotes/{alias}:
+    delete:
+      operationId: DeleteRemote
+      parameters:
+      - description: Remote cluster alias
+        in: path
+        name: alias
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/meta.HTTPResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+      security:
+      - BasicAuth: []
+      summary: Remove a remote cluster
+      tags:
+      - Cluster
+    put:
+      consumes:
+      - application/json
+      operationId: PutRemote
+      parameters:
+      - description: Remote cluster alias
+        in: path
+        name: alias
+        required: true
+        type: string
+      - description: Seeds and credentials
+        in: body
+        name: remote
+        required: true
+        schema:
+          $ref: '#/definitions/cluster.RemoteCluster'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/meta.HTTPResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+      security:
+      - BasicAuth: []
+      summary: Add or replace a remote cluster
       tags:
       - Cluster
   /api/index:
@@ -3328,6 +3750,44 @@ paths:
       summary: Delete user
       tags:
       - User
+  /es/_alias:
+    get:
+      operationId: GetESAliases
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BasicAuth: []
+      summary: Get index alias for compatible ES
+      tags:
+      - Index
+  /es/_alias/{alias}:
+    get:
+      operationId: GetESAliasesByAlias
+      parameters:
+      - description: Aliases, comma separated
+        in: path
+        name: alias
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BasicAuth: []
+      summary: Get index alias by name for compatible ES
+      tags:
+      - Index
   /es/_aliases:
     post:
       operationId: AddOrRemoveESAlias
@@ -3441,6 +3901,10 @@ paths:
         in: path
         name: index
         type: string
+      - description: cluster, indices or shards
+        in: query
+        name: level
+        type: string
       produces:
       - application/json
       responses:
@@ -3453,6 +3917,71 @@ paths:
       summary: Get cluster health for compatible ES
       tags:
       - Cluster
+  /es/_cluster/settings:
+    put:
+      consumes:
+      - application/json
+      operationId: ClusterSettings
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+      security:
+      - BasicAuth: []
+      summary: Update cluster settings (remote clusters only)
+      tags:
+      - Cluster
+  /es/_data_stream/{name}:
+    get:
+      operationId: GetDataStream
+      parameters:
+      - description: Data stream
+        in: path
+        name: name
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BasicAuth: []
+      summary: Get data stream for compatible ES
+      tags:
+      - Index
+    put:
+      operationId: PutDataStream
+      parameters:
+      - description: Data stream
+        in: path
+        name: name
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BasicAuth: []
+      summary: Create data stream for compatible ES
+      tags:
+      - Index
   /es/_ilm/policy:
     get:
       operationId: ListILMPolicy
@@ -3688,6 +4217,269 @@ paths:
       summary: Create update index template
       tags:
       - Index
+  /es/_inference:
+    get:
+      operationId: GetInference
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/inference.ListResponse'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BasicAuth: []
+      summary: Get inference endpoints for compatible ES
+      tags:
+      - Inference
+  /es/_inference/{task_type}/{inference_id}:
+    delete:
+      operationId: DeleteInference
+      parameters:
+      - description: text_embedding or rerank
+        in: path
+        name: task_type
+        required: true
+        type: string
+      - description: Inference id
+        in: path
+        name: inference_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BasicAuth: []
+      summary: Delete inference endpoint for compatible ES
+      tags:
+      - Inference
+    post:
+      consumes:
+      - application/json
+      operationId: PostInference
+      parameters:
+      - description: text_embedding or rerank
+        in: path
+        name: task_type
+        required: true
+        type: string
+      - description: Inference id
+        in: path
+        name: inference_id
+        required: true
+        type: string
+      - description: input and, for rerank, query
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/inference.InferRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BasicAuth: []
+      summary: Perform inference for compatible ES
+      tags:
+      - Inference
+    put:
+      consumes:
+      - application/json
+      operationId: PutInference
+      parameters:
+      - description: text_embedding or rerank
+        in: path
+        name: task_type
+        required: true
+        type: string
+      - description: Inference id
+        in: path
+        name: inference_id
+        required: true
+        type: string
+      - description: service, service_settings and task_settings
+        in: body
+        name: endpoint
+        required: true
+        schema:
+          $ref: '#/definitions/meta.InferenceEndpoint'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/meta.InferenceEndpoint'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BasicAuth: []
+      summary: Create inference endpoint for compatible ES
+      tags:
+      - Inference
+  /es/_ml/trained_models:
+    get:
+      operationId: GetTrainedModels
+      parameters:
+      - description: Models to skip, sorted by id, default 0
+        in: query
+        name: from
+        type: integer
+      - description: Models to return, default 100
+        in: query
+        name: size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/ltr.ListResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BasicAuth: []
+      summary: Get learning to rank models for compatible ES
+      tags:
+      - LearningToRank
+  /es/_ml/trained_models/{model_id}:
+    delete:
+      operationId: DeleteTrainedModel
+      parameters:
+      - description: Model id
+        in: path
+        name: model_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BasicAuth: []
+      summary: Delete learning to rank model for compatible ES
+      tags:
+      - LearningToRank
+    get:
+      operationId: GetTrainedModelsByModelId
+      parameters:
+      - description: Model id
+        in: path
+        name: model_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/ltr.ListResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BasicAuth: []
+      summary: Get a learning to rank model for compatible ES
+      tags:
+      - LearningToRank
+    put:
+      consumes:
+      - application/json
+      operationId: PutTrainedModel
+      parameters:
+      - description: Model id
+        in: path
+        name: model_id
+        required: true
+        type: string
+      - description: inference_config.learning_to_rank and definition
+        in: body
+        name: model
+        required: true
+        schema:
+          $ref: '#/definitions/meta.LTRModel'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/meta.LTRModel'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BasicAuth: []
+      summary: Create learning to rank model for compatible ES
+      tags:
+      - LearningToRank
   /es/_msearch:
     post:
       consumes:
@@ -3721,6 +4513,222 @@ paths:
       summary: Search V2 MultipleSearch for compatible ES
       tags:
       - Search
+  /es/_plugins/_replication/_autofollow:
+    delete:
+      consumes:
+      - application/json
+      operationId: DeleteAutoFollow
+      parameters:
+      - description: Rule name
+        in: body
+        name: rule
+        required: true
+        schema:
+          $ref: '#/definitions/cluster.AutoFollowRule'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: boolean
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+      security:
+      - BasicAuth: []
+      summary: Remove an auto-follow rule
+      tags:
+      - Cluster
+    get:
+      operationId: ListAutoFollow
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              $ref: '#/definitions/cluster.AutoFollowRule'
+            type: object
+      security:
+      - BasicAuth: []
+      summary: List auto-follow rules
+      tags:
+      - Cluster
+    post:
+      consumes:
+      - application/json
+      operationId: PutAutoFollow
+      parameters:
+      - description: Rule
+        in: body
+        name: rule
+        required: true
+        schema:
+          $ref: '#/definitions/cluster.AutoFollowRule'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: boolean
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+      security:
+      - BasicAuth: []
+      summary: Add an auto-follow rule
+      tags:
+      - Cluster
+  /es/_plugins/_replication/{index}/_pause:
+    post:
+      operationId: PauseReplication
+      parameters:
+      - description: Follower index
+        in: path
+        name: index
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: boolean
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+      security:
+      - BasicAuth: []
+      summary: Pause cross-cluster replication
+      tags:
+      - Cluster
+  /es/_plugins/_replication/{index}/_resume:
+    post:
+      operationId: ResumeReplication
+      parameters:
+      - description: Follower index
+        in: path
+        name: index
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: boolean
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+      security:
+      - BasicAuth: []
+      summary: Resume cross-cluster replication
+      tags:
+      - Cluster
+  /es/_plugins/_replication/{index}/_start:
+    put:
+      consumes:
+      - application/json
+      operationId: StartReplication
+      parameters:
+      - description: Follower index
+        in: path
+        name: index
+        required: true
+        type: string
+      - description: Leader cluster and index
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/ccr.FollowRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: boolean
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+      security:
+      - BasicAuth: []
+      summary: Start cross-cluster replication
+      tags:
+      - Cluster
+  /es/_plugins/_replication/{index}/_status:
+    get:
+      operationId: ReplicationStatus
+      parameters:
+      - description: Follower index
+        in: path
+        name: index
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/cluster.Follow'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+      security:
+      - BasicAuth: []
+      summary: Cross-cluster replication status
+      tags:
+      - Cluster
+  /es/_plugins/_replication/{index}/_stop:
+    post:
+      operationId: StopReplication
+      parameters:
+      - description: Follower index
+        in: path
+        name: index
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: boolean
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+      security:
+      - BasicAuth: []
+      summary: Stop cross-cluster replication
+      tags:
+      - Cluster
   /es/_query_rules:
     get:
       operationId: ListQueryRulesets
@@ -3954,7 +4962,7 @@ paths:
         name: id
         required: true
         type: string
-      - description: Criteria to match, e.g. {\
+      - description: Criteria to match, e.g. match_criteria.query_string
         in: body
         name: body
         required: true
@@ -4010,6 +5018,23 @@ paths:
       summary: Reindex documents for compatible ES
       tags:
       - Index
+  /es/_remote/info:
+    get:
+      operationId: RemoteInfo
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              $ref: '#/definitions/cluster.RemoteInfo'
+            type: object
+      security:
+      - BasicAuth: []
+      summary: Remote cluster info
+      tags:
+      - Cluster
   /es/_sql:
     post:
       consumes:
@@ -4376,6 +5401,28 @@ paths:
       summary: Create index for compatible ES
       tags:
       - Index
+  /es/{index}/_alias:
+    get:
+      operationId: GetESAliasesByIndex
+      parameters:
+      - description: Indexes, comma separated
+        in: path
+        name: index
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BasicAuth: []
+      summary: Get index alias of indexes for compatible ES
+      tags:
+      - Index
   /es/{index}/_count:
     post:
       consumes:
@@ -4612,35 +5659,6 @@ paths:
       summary: Search V2 DSL for compatible ES
       tags:
       - Search
-  /es/{target}/_alias/{target_alias}:
-    get:
-      operationId: GetESAliases
-      parameters:
-      - description: Target Index
-        in: path
-        name: target
-        type: string
-      - description: Target Alias
-        in: path
-        name: target_alias
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            additionalProperties: true
-            type: object
-        "400":
-          description: Bad Request
-          schema:
-            $ref: '#/definitions/meta.HTTPResponseError'
-      security:
-      - BasicAuth: []
-      summary: Get index alias for compatible ES
-      tags:
-      - Index
   /healthz:
     get:
       operationId: Healthz
@@ -4652,6 +5670,21 @@ paths:
           schema:
             $ref: '#/definitions/meta.HealthzResponse'
       summary: Get healthz
+  /readyz:
+    get:
+      operationId: Readyz
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/meta.HealthzResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/meta.HealthzResponse'
+      summary: Get readiness
   /version:
     get:
       operationId: Version
