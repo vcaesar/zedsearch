@@ -141,12 +141,20 @@ go + gin（`-tags fiber` で fiber v3 に切り替え可能）+ react
 14. Elasticsearch SQL API（`/es/_sql`, `/api/_sql`, `/es/_sql/translate`）による SQL クエリ：`SELECT … WHERE` (`LIKE`, `IN`, `BETWEEN`, `IS NULL`, `MATCH()`, `QUERY()`), `COUNT`/`SUM`/`AVG`/`MIN`/`MAX`, `GROUP BY` (`HISTOGRAM`, `DATE_HISTOGRAM`), `HAVING`, `ORDER BY`, `LIMIT`、出力は JSON・txt・csv・tsv。MySQL の `CREATE TABLE` [スキーマをマッピングとして利用](../docs/sql-mappings.md)
 15. 高可用性[クラスター](../pkg/cluster/README.md)：etcd で調整されるパーティション所有権、フェンシング付きハンドオフ、レプリカ、scatter-gather 検索
 16. OTLP/HTTP による OpenTelemetry トレーシング（`zed_tracing_enable`）。すべてのリクエストにノードをまたいで引き継がれる `X-Trace-Id` を付与
-17. Fleet と `zedagent`（`agent/`）：エージェントの登録、ポリシー管理、ログファイルとシステムメトリクスの送信、スタンドアロン実行にも対応
-18. robots.txt を尊重する[Web クローラー](../pkg/crawler/README.md)（`cmd/zedcrawl`）、PageRank 計算と ZedSearch へのバルク投入に対応
-19. データティア：hot（ローカルディスク）、warm（オブジェクトストレージ）、cold（全ノードで共有する読み取り専用オブジェクトストレージ）。`/api/index/{index}/_tier`、またはインデックスライフサイクル（`warm_after`、`cold_after`、`delete_after`）と ILM ポリシー（`/es/_ilm/policy`）で切り替え
-20. シノニムセット（`/es/_synonyms`）と検索アナライザーの再読み込み、ドキュメントを固定・除外するクエリルール（`/es/_query_rules`）
-21. 線形・ツリー・XGBoost モデル（`/es/_ml/trained_models`）による[ランキング学習](../docs/learning-to-rank.md)のリスコア、純 Go で評価
-22. その他の Elasticsearch API：`_msearch`、`_count`、`_delete_by_query`、`_reindex`、`_field_caps`、エイリアス、インデックステンプレート、`_cat/indices`、`_cat/health`、`_cluster/health`
+17. データティア：hot（ローカルディスク）、warm（オブジェクトストレージ）、cold（全ノードで共有する読み取り専用オブジェクトストレージ）。`/api/index/{index}/_tier`、またはインデックスライフサイクル（`warm_after`、`cold_after`、`delete_after`）と ILM ポリシー（`/es/_ilm/policy`）で切り替え
+18. シノニムセット（`/es/_synonyms`）と検索アナライザーの再読み込み、ドキュメントを固定・除外するクエリルール（`/es/_query_rules`）
+19. 線形・ツリー・XGBoost モデル（`/es/_ml/trained_models`）による[ランキング学習](../docs/learning-to-rank.md)のリスコア、純 Go で評価
+20. その他の Elasticsearch API：`_msearch`、`_count`、`_delete_by_query`、`_reindex`、`_field_caps`、エイリアス、インデックステンプレート、`_cat/indices`、`_cat/health`、`_cluster/health`
+
+## エンタープライズ
+
+1. クロスクラスタ検索（CCS）：リモートクラスタを登録し（`/api/cluster/remotes`、`/es/_cluster/settings`、`/es/_remote/info`）、`/es/<alias>:<index>/_search` で検索
+2. クロスクラスタレプリケーション（CCR）：OpenSearch レプリケーション API によるフォロワーインデックスと自動フォローパターン（`/es/_plugins/_replication/{index}/_start`、`_pause`、`_resume`、`_stop`、`_status`、`_autofollow`）
+3. [クラスタ](../pkg/cluster/README.md#scale-out-of-a-single-index)全体での単一インデックスのスケールアウト：`settings.cluster_shards` でインデックスを複数のシャードインデックスに分散し、それぞれがオーナーとレプリカを持つ。ID によるドキュメントのルーティング、scatter-gather 検索、`_count` / `_delete_by_query` の合算。`_cluster/health?level=indices|shards` と部分検索結果（オプション）に対応
+4. 推論エンドポイント（`/es/_inference`）：OpenAI 互換（Ollama、vLLM、LocalAI）、Cohere、Jina、Hugging Face TEI サービスによるテキスト埋め込みとリランク。`semantic_text` フィールド、`semantic` / `neural` クエリ、`text_similarity_reranker` リトリーバー、OpenSearch の `rerank` レスポンスプロセッサに対応
+5. Fleet と `zedagent`（`agent/`）：エージェントの登録、ポリシー管理、ログファイルとシステムメトリクスの送信、スタンドアロン実行にも対応。Web UI に Fleet ビュー
+6. OpenSearch スタイルのシャード[クラスタエンジン](../pkg/nodes/README.md)（シャード割り当て、クォーラム調整、ピアリカバリ、スナップショット、ホット/ウォーム階層化）と実験的な Raft + gRPC [分散ノード](../cmd/distribution/README.md)
+7. robots.txt を尊重する[Web クローラー](../pkg/crawler/README.md)（`cmd/zedcrawl`）、PageRank 計算と ZedSearch へのバルク投入に対応
 
 # ベンチマーク
 

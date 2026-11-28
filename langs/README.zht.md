@@ -141,12 +141,20 @@ go + gin（或使用 `-tags fiber` 改用 fiber v3）+ react
 14. 透過 Elasticsearch SQL API（`/es/_sql`, `/api/_sql`, `/es/_sql/translate`）執行 SQL 查詢：`SELECT … WHERE` (`LIKE`, `IN`, `BETWEEN`, `IS NULL`, `MATCH()`, `QUERY()`), `COUNT`/`SUM`/`AVG`/`MIN`/`MAX`, `GROUP BY` (`HISTOGRAM`, `DATE_HISTOGRAM`), `HAVING`, `ORDER BY`, `LIMIT`，輸出 JSON、txt、csv 或 tsv；並支援將 MySQL `CREATE TABLE` [schema 用作 mappings](../docs/sql-mappings.md)
 15. 高可用[叢集](../pkg/cluster/README.md)：以 etcd 協調的分區擁有權、具 fencing 的移交、副本以及 scatter-gather 搜尋
 16. 透過 OTLP/HTTP 匯出 OpenTelemetry 追蹤（`zed_tracing_enable`）；每個請求都有跨節點傳遞的 `X-Trace-Id`
-17. Fleet 與 `zedagent`（`agent/`）：註冊 agent、管理政策、收集日誌檔與系統指標，也可獨立執行 agent
-18. 遵循 robots 的[網頁爬蟲](../pkg/crawler/README.md)（`cmd/zedcrawl`），支援 PageRank 並批次寫入 ZedSearch
-19. 資料分層：hot（本機磁碟）、warm（物件儲存）和 cold（唯讀物件儲存，所有節點共用），可透過 `/api/index/{index}/_tier` 或索引生命週期（`warm_after`、`cold_after`、`delete_after`）及 ILM 策略（`/es/_ilm/policy`）切換
-20. 同義詞集（`/es/_synonyms`），支援重新載入搜尋分析器；查詢規則（`/es/_query_rules`）可置頂或排除文件
-21. [排序學習](../docs/learning-to-rank.md)（Learning to rank）重新評分，支援線性、樹和 XGBoost 模型（`/es/_ml/trained_models`），純 Go 實作
-22. 更多 Elasticsearch API：`_msearch`、`_count`、`_delete_by_query`、`_reindex`、`_field_caps`、別名、索引範本、`_cat/indices`、`_cat/health` 和 `_cluster/health`
+17. 資料分層：hot（本機磁碟）、warm（物件儲存）和 cold（唯讀物件儲存，所有節點共用），可透過 `/api/index/{index}/_tier` 或索引生命週期（`warm_after`、`cold_after`、`delete_after`）及 ILM 策略（`/es/_ilm/policy`）切換
+18. 同義詞集（`/es/_synonyms`），支援重新載入搜尋分析器；查詢規則（`/es/_query_rules`）可置頂或排除文件
+19. [排序學習](../docs/learning-to-rank.md)（Learning to rank）重新評分，支援線性、樹和 XGBoost 模型（`/es/_ml/trained_models`），純 Go 實作
+20. 更多 Elasticsearch API：`_msearch`、`_count`、`_delete_by_query`、`_reindex`、`_field_caps`、別名、索引範本、`_cat/indices`、`_cat/health` 和 `_cluster/health`
+
+## 企業版
+
+1. 跨叢集搜尋（CCS）：註冊遠端叢集（`/api/cluster/remotes`、`/es/_cluster/settings`、`/es/_remote/info`），透過 `/es/<alias>:<index>/_search` 搜尋
+2. 跨叢集複寫（CCR）：基於 OpenSearch replication API 的 follower 索引與自動跟隨模式（`/es/_plugins/_replication/{index}/_start`、`_pause`、`_resume`、`_stop`、`_status`、`_autofollow`）
+3. 單一索引在[叢集](../pkg/cluster/README.md#scale-out-of-a-single-index)中水平擴展：`settings.cluster_shards` 將索引分散到多個分片索引，各自擁有 owner 與副本；依 id 路由文件、scatter-gather 搜尋，並加總 `_count` / `_delete_by_query`；支援 `_cluster/health?level=indices|shards` 與可選的部分搜尋結果
+4. 推論端點（`/es/_inference`）：透過 OpenAI 相容（Ollama、vLLM、LocalAI）、Cohere、Jina 與 Hugging Face TEI 服務進行文字向量化與重新排序；支援 `semantic_text` 欄位、`semantic` 與 `neural` 查詢、`text_similarity_reranker` 檢索器以及 OpenSearch `rerank` 回應處理器
+5. Fleet 與 `zedagent`（`agent/`）：註冊 agent、管理政策、收集日誌檔與系統指標，也可獨立執行 agent；Web UI 提供 Fleet 檢視
+6. OpenSearch 風格的分片[叢集引擎](../pkg/nodes/README.md)（分片配置、法定人數協調、節點間復原、快照、冷熱分層），以及實驗性的 Raft + gRPC [分散式節點](../cmd/distribution/README.md)
+7. 遵循 robots 的[網頁爬蟲](../pkg/crawler/README.md)（`cmd/zedcrawl`），支援 PageRank 並批次寫入 ZedSearch
 
 # 效能測試
 

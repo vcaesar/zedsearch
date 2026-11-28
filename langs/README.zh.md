@@ -141,12 +141,20 @@ go + gin（或使用 `-tags fiber` 切换为 fiber v3）+ react
 14. 通过 Elasticsearch SQL API（`/es/_sql`, `/api/_sql`, `/es/_sql/translate`）执行 SQL 查询：`SELECT … WHERE` (`LIKE`, `IN`, `BETWEEN`, `IS NULL`, `MATCH()`, `QUERY()`), `COUNT`/`SUM`/`AVG`/`MIN`/`MAX`, `GROUP BY` (`HISTOGRAM`, `DATE_HISTOGRAM`), `HAVING`, `ORDER BY`, `LIMIT`，输出 JSON、txt、csv 或 tsv；并支持将 MySQL `CREATE TABLE` [schema 用作 mappings](../docs/sql-mappings.md)
 15. 高可用[集群](../pkg/cluster/README.md)：基于 etcd 协调的分区所有权、带 fencing 的切换、副本以及 scatter-gather 搜索
 16. 通过 OTLP/HTTP 导出 OpenTelemetry 追踪（`zed_tracing_enable`）；每个请求都有跨节点传递的 `X-Trace-Id`
-17. Fleet 与 `zedagent`（`agent/`）：注册 agent、管理策略、采集日志文件和系统指标，也可独立运行 agent
-18. 遵循 robots 的[网页爬虫](../pkg/crawler/README.md)（`cmd/zedcrawl`），支持 PageRank 并批量写入 ZedSearch
-19. 数据分层：hot（本地磁盘）、warm（对象存储）和 cold（只读对象存储，所有节点共享），可通过 `/api/index/{index}/_tier` 或索引生命周期（`warm_after`、`cold_after`、`delete_after`）及 ILM 策略（`/es/_ilm/policy`）切换
-20. 同义词集（`/es/_synonyms`），支持重新加载搜索分析器；查询规则（`/es/_query_rules`）可置顶或排除文档
-21. [排序学习](../docs/learning-to-rank.md)（Learning to rank）重打分，支持线性、树和 XGBoost 模型（`/es/_ml/trained_models`），纯 Go 实现
-22. 更多 Elasticsearch API：`_msearch`、`_count`、`_delete_by_query`、`_reindex`、`_field_caps`、别名、索引模板、`_cat/indices`、`_cat/health` 和 `_cluster/health`
+17. 数据分层：hot（本地磁盘）、warm（对象存储）和 cold（只读对象存储，所有节点共享），可通过 `/api/index/{index}/_tier` 或索引生命周期（`warm_after`、`cold_after`、`delete_after`）及 ILM 策略（`/es/_ilm/policy`）切换
+18. 同义词集（`/es/_synonyms`），支持重新加载搜索分析器；查询规则（`/es/_query_rules`）可置顶或排除文档
+19. [排序学习](../docs/learning-to-rank.md)（Learning to rank）重打分，支持线性、树和 XGBoost 模型（`/es/_ml/trained_models`），纯 Go 实现
+20. 更多 Elasticsearch API：`_msearch`、`_count`、`_delete_by_query`、`_reindex`、`_field_caps`、别名、索引模板、`_cat/indices`、`_cat/health` 和 `_cluster/health`
+
+## 企业版
+
+1. 跨集群搜索（CCS）：注册远程集群（`/api/cluster/remotes`、`/es/_cluster/settings`、`/es/_remote/info`），通过 `/es/<alias>:<index>/_search` 搜索
+2. 跨集群复制（CCR）：基于 OpenSearch replication API 的 follower 索引和自动跟随模式（`/es/_plugins/_replication/{index}/_start`、`_pause`、`_resume`、`_stop`、`_status`、`_autofollow`）
+3. 单个索引在[集群](../pkg/cluster/README.md#scale-out-of-a-single-index)中横向扩展：`settings.cluster_shards` 将索引分布到多个分片索引，各自拥有 owner 和副本；按 id 路由文档、scatter-gather 搜索，并汇总 `_count` / `_delete_by_query`；支持 `_cluster/health?level=indices|shards` 和可选的部分搜索结果
+4. 推理端点（`/es/_inference`）：通过 OpenAI 兼容（Ollama、vLLM、LocalAI）、Cohere、Jina 和 Hugging Face TEI 服务进行文本向量化和重排序；支持 `semantic_text` 字段、`semantic` 与 `neural` 查询、`text_similarity_reranker` 检索器以及 OpenSearch `rerank` 响应处理器
+5. Fleet 与 `zedagent`（`agent/`）：注册 agent、管理策略、采集日志文件和系统指标，也可独立运行 agent；Web UI 提供 Fleet 视图
+6. OpenSearch 风格的分片[集群引擎](../pkg/nodes/README.md)（分片分配、法定人数协调、节点间恢复、快照、冷热分层），以及实验性的 Raft + gRPC [分布式节点](../cmd/distribution/README.md)
+7. 遵循 robots 的[网页爬虫](../pkg/crawler/README.md)（`cmd/zedcrawl`），支持 PageRank 并批量写入 ZedSearch
 
 # 基准测试
 
