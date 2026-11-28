@@ -2668,7 +2668,10 @@ const docTemplate = `{
                 ],
                 "responses": {
                     "200": {
-                        "description": "OK"
+                        "description": "Tar archive of the index files",
+                        "schema": {
+                            "type": "file"
+                        }
                     },
                     "404": {
                         "description": "Not Found",
@@ -2985,6 +2988,21 @@ const docTemplate = `{
                 ],
                 "summary": "Update cluster settings (remote clusters only)",
                 "operationId": "ClusterSettings",
+                "parameters": [
+                    {
+                        "description": "persistent or transient cluster.remote.\u003calias\u003e.seeds and .skip_unavailable",
+                        "name": "settings",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "object",
+                                "additionalProperties": true
+                            }
+                        }
+                    }
+                ],
                 "responses": {
                     "200": {
                         "description": "OK",
@@ -9571,6 +9589,12 @@ const docTemplate = `{
                 },
                 "query": {
                     "$ref": "#/definitions/meta.QueryForSDK"
+                },
+                "retriever": {
+                    "description": "Elasticsearch retriever: standard, knn, rrf or linear"
+                },
+                "search_pipeline": {
+                    "description": "inline OpenSearch pipeline of a hybrid query"
                 },
                 "size": {
                     "type": "integer"

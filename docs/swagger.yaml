@@ -2139,6 +2139,10 @@ definitions:
         description: 'top-level knn: one object or an array, ORed with query'
       query:
         $ref: '#/definitions/meta.QueryForSDK'
+      retriever:
+        description: 'Elasticsearch retriever: standard, knn, rrf or linear'
+      search_pipeline:
+        description: inline OpenSearch pipeline of a hybrid query
       size:
         type: integer
       sort:
@@ -3271,7 +3275,9 @@ paths:
       - application/x-tar
       responses:
         "200":
-          description: OK
+          description: Tar archive of the index files
+          schema:
+            type: file
         "404":
           description: Not Found
           schema:
@@ -4321,6 +4327,16 @@ paths:
       consumes:
       - application/json
       operationId: ClusterSettings
+      parameters:
+      - description: persistent or transient cluster.remote.<alias>.seeds and .skip_unavailable
+        in: body
+        name: settings
+        required: true
+        schema:
+          additionalProperties:
+            additionalProperties: true
+            type: object
+          type: object
       produces:
       - application/json
       responses:

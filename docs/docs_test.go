@@ -30,9 +30,12 @@ type spec struct {
 		Produces    []string `json:"produces"`
 		Parameters  []struct {
 			Name string `json:"name"`
+			In   string `json:"in"`
+			Type string `json:"type"`
 		} `json:"parameters"`
 		Responses map[string]struct {
 			Schema struct {
+				Type       string                 `json:"type"`
 				Ref        string                 `json:"$ref"`
 				Properties map[string]interface{} `json:"properties"`
 			} `json:"schema"`
@@ -48,7 +51,9 @@ func TestSwaggerSpec(t *testing.T) {
 	var s spec
 	require.NoError(t, json.Unmarshal([]byte(SwaggerInfo.ReadDoc()), &s))
 
-	assert.Contains(t, s.Definitions["meta.ZedQueryForSDK"].Properties, "knn")
+	for _, field := range []string{"knn", "retriever", "search_pipeline"} {
+		assert.Contains(t, s.Definitions["meta.ZedQueryForSDK"].Properties, field)
+	}
 
 	const errRef = "#/definitions/meta.HTTPResponseError"
 	tests := []struct {
@@ -89,7 +94,9 @@ func TestSwaggerSpec(t *testing.T) {
 		"/api/fleet/checkin/{id}":  {"post": "FleetCheckin"},
 	} {
 		for method, id := range ops {
-			assert.Equal(t, id, s.Paths[path][method].OperationID, method+" "+path)
+			t.Run(method+" "+path, func(t *testing.T) {
+				assert.Equal(t, id, s.Paths[path][method].OperationID)
+			})
 		}
 	}
 	assert.Equal(t, "#/definitions/fleetapi.EnrollResponse", s.Paths["/api/fleet/enroll"]["post"].Responses["200"].Schema.Ref)
@@ -98,7 +105,9 @@ func TestSwaggerSpec(t *testing.T) {
 
 	assert.Contains(t, s.Paths["/es/_ml/trained_models"], "get")
 	for _, method := range []string{"get", "put", "delete"} {
-		assert.Contains(t, s.Paths["/es/_ml/trained_models/{model_id}"], method)
+		t.Run(method+" /es/_ml/trained_models/{model_id}", func(t *testing.T) {
+			assert.Contains(t, s.Paths["/es/_ml/trained_models/{model_id}"], method)
+		})
 	}
 	assert.Equal(t, "#/definitions/meta.LTRModel", s.Paths["/es/_ml/trained_models/{model_id}"]["put"].Responses["200"].Schema.Ref)
 	assert.Contains(t, s.Definitions["ltr.ListResponse"].Properties, "trained_model_configs")
@@ -109,7 +118,9 @@ func TestSwaggerSpec(t *testing.T) {
 		"/es/{index}/_alias": "GetESAliasesByIndex",
 		"/es/_alias/{alias}": "GetESAliasesByAlias",
 	} {
-		assert.Equal(t, id, s.Paths[path]["get"].OperationID, path)
+		t.Run("get "+path, func(t *testing.T) {
+			assert.Equal(t, id, s.Paths[path]["get"].OperationID)
+		})
 	}
 	assert.NotContains(t, s.Paths, "/es/{target}/_alias/{target_alias}", "not a registered route")
 	assert.Equal(t, "GetDataStream", s.Paths["/es/_data_stream/{name}"]["get"].OperationID)
@@ -134,9 +145,14 @@ func TestSwaggerSpec(t *testing.T) {
 		"/es/_inference/{task_type}/{inference_id}": {"put", "post", "delete"},
 	} {
 		for _, method := range methods {
-			assert.Contains(t, s.Paths[path], method, path)
+			t.Run(method+" "+path, func(t *testing.T) {
+				assert.Contains(t, s.Paths[path], method)
+			})
 		}
 	}
+	snapshot := s.Paths["/api/{target}/_ccr/snapshot"]["post"].Responses
+	assert.Equal(t, "file", snapshot["200"].Schema.Type, "tar archive body")
+	assert.Equal(t, errRef, snapshot["404"].Schema.Ref)
 	assert.Equal(t, "#/definitions/replication.ChangesResponse", s.Paths["/api/{target}/_ccr/changes"]["post"].Responses["200"].Schema.Ref)
 	assert.Contains(t, s.Definitions["replication.Op"].Properties, "entry")
 
@@ -155,22 +171,37 @@ func TestSwaggerSpec(t *testing.T) {
 		"/es/{index}/_update/{id}": {"post": "ESUpdateDocument"},
 	} {
 		for method, id := range ops {
-			assert.Equal(t, id, s.Paths[path][method].OperationID, method+" "+path)
+			t.Run(method+" "+path, func(t *testing.T) {
+				assert.Equal(t, id, s.Paths[path][method].OperationID)
+			})
 		}
 	}
 	assert.Equal(t, "#/definitions/meta.HTTPResponseID", s.Paths["/es/{index}/_doc"]["post"].Responses["200"].Schema.Ref)
 	assert.Equal(t, "#/definitions/elastic.ESInfo", s.Paths["/es/"]["get"].Responses["200"].Schema.Ref)
 	for _, path := range []string{"/es/_search", "/es/{index}/_search"} {
-		var names []string
-		for _, p := range s.Paths[path]["post"].Parameters {
-			names = append(names, p.Name)
-		}
-		assert.Contains(t, names, "allow_partial_search_results", path)
+		t.Run("allow_partial_search_results "+path, func(t *testing.T) {
+			var in, typ string
+			for _, p := range s.Paths[path]["post"].Parameters {
+				if p.Name == "allow_partial_search_results" {
+					in, typ = p.In, p.Type
+				}
+			}
+			assert.Equal(t, "query", in)
+			assert.Equal(t, "boolean", typ)
+		})
 	}
+	var settingsBody bool
+	for _, p := range s.Paths["/es/_cluster/settings"]["put"].Parameters {
+		settingsBody = settingsBody || p.In == "body"
+	}
+	assert.True(t, settingsBody, "PUT /es/_cluster/settings declares its body")
 
 	ids := map[string]string{}
 	for path, ops := range s.Paths {
 		for method, op := range ops {
+			if op.OperationID == "" {
+				continue
+			}
 			if prev, ok := ids[op.OperationID]; ok {
 				t.Errorf("operationId %s of %s %s already used by %s", op.OperationID, method, path, prev)
 			}
