@@ -525,6 +525,373 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/fleet/agents": {
+            "get": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Fleet"
+                ],
+                "summary": "List enrolled agents",
+                "operationId": "ListFleetAgents",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/fleetapi.Agent"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/fleet/agents/{id}": {
+            "delete": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Fleet"
+                ],
+                "summary": "Unenroll an agent",
+                "operationId": "DeleteFleetAgent",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Agent id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseID"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/fleet/checkin/{id}": {
+            "post": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Fleet"
+                ],
+                "summary": "Report agent status and fetch a pending policy",
+                "operationId": "FleetCheckin",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Agent id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Status",
+                        "name": "checkin",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/fleetapi.CheckinRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fleetapi.CheckinResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/fleet/enroll": {
+            "post": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Fleet"
+                ],
+                "summary": "Enroll an agent under a policy",
+                "operationId": "FleetEnroll",
+                "parameters": [
+                    {
+                        "description": "Agent",
+                        "name": "agent",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/fleetapi.EnrollRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fleetapi.EnrollResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/fleet/policies": {
+            "get": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Fleet"
+                ],
+                "summary": "List agent policies",
+                "operationId": "ListFleetPolicies",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/fleetapi.Policy"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Fleet"
+                ],
+                "summary": "Create or update an agent policy; agents pick it up on checkin",
+                "operationId": "CreateUpdateFleetPolicy",
+                "parameters": [
+                    {
+                        "description": "Policy",
+                        "name": "policy",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/fleetapi.Policy"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseID"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Fleet"
+                ],
+                "summary": "Create or update an agent policy; agents pick it up on checkin",
+                "operationId": "CreateFleetPolicy",
+                "parameters": [
+                    {
+                        "description": "Policy",
+                        "name": "policy",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/fleetapi.Policy"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseID"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/fleet/policies/{id}": {
+            "delete": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Fleet"
+                ],
+                "summary": "Delete an agent policy that no agent uses",
+                "operationId": "DeleteFleetPolicy",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Policy id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseID"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
         "/api/index": {
             "get": {
                 "security": [
@@ -2312,6 +2679,26 @@ const docTemplate = `{
                 }
             }
         },
+        "/es/": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Cluster"
+                ],
+                "summary": "Get cluster info for compatible ES",
+                "operationId": "ESInfo",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/elastic.ESInfo"
+                        }
+                    }
+                }
+            }
+        },
         "/es/_alias": {
             "get": {
                 "security": [
@@ -2604,6 +2991,50 @@ const docTemplate = `{
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
+        "/es/_count": {
+            "post": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Search"
+                ],
+                "summary": "Count documents of all indexes for compatible ES",
+                "operationId": "CountAll",
+                "parameters": [
+                    {
+                        "description": "Query",
+                        "name": "query",
+                        "in": "body",
+                        "schema": {
+                            "$ref": "#/definitions/meta.ZedQueryForSDK"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/elastic.CountResponse"
                         }
                     },
                     "400": {
@@ -3262,6 +3693,26 @@ const docTemplate = `{
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/es/_license": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Cluster"
+                ],
+                "summary": "Get license for compatible ES",
+                "operationId": "ESLicense",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/elastic.ESLicense"
                         }
                     }
                 }
@@ -4332,6 +4783,57 @@ const docTemplate = `{
                 }
             }
         },
+        "/es/_search": {
+            "post": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Search"
+                ],
+                "summary": "Search all indexes V2 DSL for compatible ES",
+                "operationId": "SearchAll",
+                "parameters": [
+                    {
+                        "description": "Query",
+                        "name": "query",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/meta.ZedQueryForSDK"
+                        }
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "Answer a cluster search with the parts that succeeded, default zed_cluster_allow_partial_search_results",
+                        "name": "allow_partial_search_results",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/meta.SearchResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
         "/es/_sql": {
             "post": {
                 "security": [
@@ -4805,6 +5307,26 @@ const docTemplate = `{
                 }
             }
         },
+        "/es/_xpack": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Cluster"
+                ],
+                "summary": "Get X-Pack info for compatible ES",
+                "operationId": "ESXPack",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/elastic.ESXPack"
+                        }
+                    }
+                }
+            }
+        },
         "/es/{index}": {
             "put": {
                 "security": [
@@ -4928,6 +5450,59 @@ const docTemplate = `{
                 }
             }
         },
+        "/es/{index}/_bulk": {
+            "post": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "text/plain"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Document"
+                ],
+                "summary": "ES bulk documents of an index",
+                "operationId": "ESBulkIndex",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Default index",
+                        "name": "index",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Query",
+                        "name": "query",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
         "/es/{index}/_count": {
             "post": {
                 "security": [
@@ -4979,6 +5554,72 @@ const docTemplate = `{
                 }
             }
         },
+        "/es/{index}/_create/{id}": {
+            "put": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Document"
+                ],
+                "summary": "Create document with id for compatible ES",
+                "operationId": "ESCreateDocument",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Index",
+                        "name": "index",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Document",
+                        "name": "document",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseID"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
         "/es/{index}/_delete_by_query": {
             "post": {
                 "security": [
@@ -5020,6 +5661,227 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/meta.HTTPResponseDeleteByQuery"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
+        "/es/{index}/_doc": {
+            "post": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Document"
+                ],
+                "summary": "Create document for compatible ES",
+                "operationId": "ESIndexDocument",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Index",
+                        "name": "index",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Document",
+                        "name": "document",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseID"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
+        "/es/{index}/_doc/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Document"
+                ],
+                "summary": "Get document with id for compatible ES",
+                "operationId": "ESGetDocument",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Index",
+                        "name": "index",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/meta.Hit"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Document"
+                ],
+                "summary": "Create or update document with id for compatible ES",
+                "operationId": "ESIndexDocumentWithID",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Index",
+                        "name": "index",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Document",
+                        "name": "document",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseID"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Document"
+                ],
+                "summary": "Delete document for compatible ES",
+                "operationId": "ESDeleteDocument",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Index",
+                        "name": "index",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseDocument"
                         }
                     },
                     "400": {
@@ -5208,6 +6070,112 @@ const docTemplate = `{
                 }
             }
         },
+        "/es/{index}/_msearch": {
+            "post": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "text/plain"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Search"
+                ],
+                "summary": "Search V2 MultipleSearch of indexes for compatible ES",
+                "operationId": "MSearchIndex",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Default indexes, comma separated",
+                        "name": "index",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Query",
+                        "name": "query",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "One result per query; a failed query has error set",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "responses": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/definitions/meta.SearchResponse"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
+        "/es/{index}/_refresh": {
+            "post": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Index"
+                ],
+                "summary": "Refresh index for compatible ES",
+                "operationId": "ESRefresh",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Index",
+                        "name": "index",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
         "/es/{index}/_reload_search_analyzers": {
             "post": {
                 "security": [
@@ -5256,6 +6224,7 @@ const docTemplate = `{
                         "BasicAuth": []
                     }
                 ],
+                "description": "Index may be a comma separated list, a pattern, or ` + "`" + `alias:index` + "`" + ` for a remote cluster search.",
                 "consumes": [
                     "application/json"
                 ],
@@ -5283,6 +6252,12 @@ const docTemplate = `{
                         "schema": {
                             "$ref": "#/definitions/meta.ZedQueryForSDK"
                         }
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "Answer a cluster search with the parts that succeeded, default zed_cluster_allow_partial_search_results",
+                        "name": "allow_partial_search_results",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -5294,6 +6269,72 @@ const docTemplate = `{
                     },
                     "400": {
                         "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    }
+                }
+            }
+        },
+        "/es/{index}/_update/{id}": {
+            "post": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Document"
+                ],
+                "summary": "Update document with id for compatible ES",
+                "operationId": "ESUpdateDocument",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Index",
+                        "name": "index",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Document",
+                        "name": "document",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseID"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/meta.HTTPResponseError"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
                         "schema": {
                             "$ref": "#/definitions/meta.HTTPResponseError"
                         }
@@ -5832,6 +6873,83 @@ const docTemplate = `{
                 }
             }
         },
+        "elastic.ESInfo": {
+            "type": "object",
+            "properties": {
+                "cluster_name": {
+                    "type": "string"
+                },
+                "cluster_uuid": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "tagline": {
+                    "type": "string"
+                },
+                "version": {
+                    "$ref": "#/definitions/elastic.ESInfoVersion"
+                }
+            }
+        },
+        "elastic.ESInfoVersion": {
+            "type": "object",
+            "properties": {
+                "build_date": {
+                    "type": "string"
+                },
+                "build_flavor": {
+                    "type": "string"
+                },
+                "build_hash": {
+                    "type": "string"
+                },
+                "build_snapshot": {
+                    "type": "boolean"
+                },
+                "lucene_version": {
+                    "type": "string"
+                },
+                "minimum_index_compatibility": {
+                    "type": "string"
+                },
+                "minimum_wire_version": {
+                    "type": "string"
+                },
+                "number": {
+                    "type": "string"
+                }
+            }
+        },
+        "elastic.ESLicense": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string"
+                }
+            }
+        },
+        "elastic.ESXPack": {
+            "type": "object",
+            "properties": {
+                "build": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "boolean"
+                    }
+                },
+                "features": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "boolean"
+                    }
+                },
+                "license": {
+                    "$ref": "#/definitions/elastic.ESLicense"
+                }
+            }
+        },
         "elastic.FieldCap": {
             "type": "object",
             "properties": {
@@ -5916,6 +7034,167 @@ const docTemplate = `{
                 },
                 "version_conflicts": {
                     "type": "integer"
+                }
+            }
+        },
+        "fleetapi.Agent": {
+            "type": "object",
+            "properties": {
+                "arch": {
+                    "type": "string"
+                },
+                "enrolled_at": {
+                    "type": "string"
+                },
+                "events_failed": {
+                    "type": "integer"
+                },
+                "events_sent": {
+                    "type": "integer"
+                },
+                "health": {
+                    "type": "string"
+                },
+                "hostname": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "last_checkin": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "os": {
+                    "type": "string"
+                },
+                "policy_id": {
+                    "type": "string"
+                },
+                "policy_revision": {
+                    "type": "integer"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
+                }
+            }
+        },
+        "fleetapi.CheckinRequest": {
+            "type": "object",
+            "properties": {
+                "events_failed": {
+                    "type": "integer"
+                },
+                "events_sent": {
+                    "type": "integer"
+                },
+                "health": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "policy_revision": {
+                    "type": "integer"
+                }
+            }
+        },
+        "fleetapi.CheckinResponse": {
+            "type": "object",
+            "properties": {
+                "policy": {
+                    "$ref": "#/definitions/fleetapi.Policy"
+                }
+            }
+        },
+        "fleetapi.EnrollRequest": {
+            "type": "object",
+            "properties": {
+                "arch": {
+                    "type": "string"
+                },
+                "hostname": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "os": {
+                    "type": "string"
+                },
+                "policy_id": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
+                }
+            }
+        },
+        "fleetapi.EnrollResponse": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string"
+                },
+                "policy": {
+                    "$ref": "#/definitions/fleetapi.Policy"
+                }
+            }
+        },
+        "fleetapi.Input": {
+            "type": "object",
+            "properties": {
+                "index": {
+                    "type": "string"
+                },
+                "interval": {
+                    "type": "string"
+                },
+                "paths": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "type": {
+                    "type": "string"
+                }
+            }
+        },
+        "fleetapi.Policy": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "inputs": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/fleetapi.Input"
+                    }
+                },
+                "name": {
+                    "type": "string"
+                },
+                "revision": {
+                    "type": "integer"
+                },
+                "updated_at": {
+                    "type": "string"
                 }
             }
         },

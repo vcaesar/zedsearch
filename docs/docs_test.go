@@ -28,7 +28,10 @@ type spec struct {
 	Paths map[string]map[string]struct {
 		OperationID string   `json:"operationId"`
 		Produces    []string `json:"produces"`
-		Responses   map[string]struct {
+		Parameters  []struct {
+			Name string `json:"name"`
+		} `json:"parameters"`
+		Responses map[string]struct {
 			Schema struct {
 				Ref        string                 `json:"$ref"`
 				Properties map[string]interface{} `json:"properties"`
@@ -77,7 +80,21 @@ func TestSwaggerSpec(t *testing.T) {
 	sig := s.Definitions["meta.AggregationSignificantTerms"].Properties
 	assert.NotContains(t, sig, "filter_duplicate_text")
 	assert.NotContains(t, sig, "source_fields")
-	assert.NotContains(t, s.Paths, "/api/fleet/enroll", "docs must not include untracked work")
+	for path, ops := range map[string]map[string]string{
+		"/api/fleet/agents":        {"get": "ListFleetAgents"},
+		"/api/fleet/agents/{id}":   {"delete": "DeleteFleetAgent"},
+		"/api/fleet/policies":      {"get": "ListFleetPolicies", "post": "CreateFleetPolicy", "put": "CreateUpdateFleetPolicy"},
+		"/api/fleet/policies/{id}": {"delete": "DeleteFleetPolicy"},
+		"/api/fleet/enroll":        {"post": "FleetEnroll"},
+		"/api/fleet/checkin/{id}":  {"post": "FleetCheckin"},
+	} {
+		for method, id := range ops {
+			assert.Equal(t, id, s.Paths[path][method].OperationID, method+" "+path)
+		}
+	}
+	assert.Equal(t, "#/definitions/fleetapi.EnrollResponse", s.Paths["/api/fleet/enroll"]["post"].Responses["200"].Schema.Ref)
+	assert.Contains(t, s.Definitions["fleetapi.Policy"].Properties, "inputs")
+	assert.Contains(t, s.Definitions["fleetapi.Input"].Properties, "paths")
 
 	assert.Contains(t, s.Paths["/es/_ml/trained_models"], "get")
 	for _, method := range []string{"get", "put", "delete"} {
@@ -122,6 +139,34 @@ func TestSwaggerSpec(t *testing.T) {
 	}
 	assert.Equal(t, "#/definitions/replication.ChangesResponse", s.Paths["/api/{target}/_ccr/changes"]["post"].Responses["200"].Schema.Ref)
 	assert.Contains(t, s.Definitions["replication.Op"].Properties, "entry")
+
+	for path, ops := range map[string]map[string]string{
+		"/es/":                     {"get": "ESInfo"},
+		"/es/_license":             {"get": "ESLicense"},
+		"/es/_xpack":               {"get": "ESXPack"},
+		"/es/_search":              {"post": "SearchAll"},
+		"/es/_count":               {"post": "CountAll"},
+		"/es/{index}/_msearch":     {"post": "MSearchIndex"},
+		"/es/{index}/_bulk":        {"post": "ESBulkIndex"},
+		"/es/{index}/_refresh":     {"post": "ESRefresh"},
+		"/es/{index}/_doc":         {"post": "ESIndexDocument"},
+		"/es/{index}/_doc/{id}":    {"get": "ESGetDocument", "put": "ESIndexDocumentWithID", "delete": "ESDeleteDocument"},
+		"/es/{index}/_create/{id}": {"put": "ESCreateDocument"},
+		"/es/{index}/_update/{id}": {"post": "ESUpdateDocument"},
+	} {
+		for method, id := range ops {
+			assert.Equal(t, id, s.Paths[path][method].OperationID, method+" "+path)
+		}
+	}
+	assert.Equal(t, "#/definitions/meta.HTTPResponseID", s.Paths["/es/{index}/_doc"]["post"].Responses["200"].Schema.Ref)
+	assert.Equal(t, "#/definitions/elastic.ESInfo", s.Paths["/es/"]["get"].Responses["200"].Schema.Ref)
+	for _, path := range []string{"/es/_search", "/es/{index}/_search"} {
+		var names []string
+		for _, p := range s.Paths[path]["post"].Parameters {
+			names = append(names, p.Name)
+		}
+		assert.Contains(t, names, "allow_partial_search_results", path)
+	}
 
 	ids := map[string]string{}
 	for path, ops := range s.Paths {

@@ -322,6 +322,56 @@ definitions:
       count:
         type: integer
     type: object
+  elastic.ESInfo:
+    properties:
+      cluster_name:
+        type: string
+      cluster_uuid:
+        type: string
+      name:
+        type: string
+      tagline:
+        type: string
+      version:
+        $ref: '#/definitions/elastic.ESInfoVersion'
+    type: object
+  elastic.ESInfoVersion:
+    properties:
+      build_date:
+        type: string
+      build_flavor:
+        type: string
+      build_hash:
+        type: string
+      build_snapshot:
+        type: boolean
+      lucene_version:
+        type: string
+      minimum_index_compatibility:
+        type: string
+      minimum_wire_version:
+        type: string
+      number:
+        type: string
+    type: object
+  elastic.ESLicense:
+    properties:
+      status:
+        type: string
+    type: object
+  elastic.ESXPack:
+    properties:
+      build:
+        additionalProperties:
+          type: boolean
+        type: object
+      features:
+        additionalProperties:
+          type: boolean
+        type: object
+      license:
+        $ref: '#/definitions/elastic.ESLicense'
+    type: object
   elastic.FieldCap:
     properties:
       aggregatable:
@@ -378,6 +428,111 @@ definitions:
         type: integer
       version_conflicts:
         type: integer
+    type: object
+  fleetapi.Agent:
+    properties:
+      arch:
+        type: string
+      enrolled_at:
+        type: string
+      events_failed:
+        type: integer
+      events_sent:
+        type: integer
+      health:
+        type: string
+      hostname:
+        type: string
+      id:
+        type: string
+      last_checkin:
+        type: string
+      message:
+        type: string
+      name:
+        type: string
+      os:
+        type: string
+      policy_id:
+        type: string
+      policy_revision:
+        type: integer
+      status:
+        type: string
+      version:
+        type: string
+    type: object
+  fleetapi.CheckinRequest:
+    properties:
+      events_failed:
+        type: integer
+      events_sent:
+        type: integer
+      health:
+        type: string
+      message:
+        type: string
+      policy_revision:
+        type: integer
+    type: object
+  fleetapi.CheckinResponse:
+    properties:
+      policy:
+        $ref: '#/definitions/fleetapi.Policy'
+    type: object
+  fleetapi.EnrollRequest:
+    properties:
+      arch:
+        type: string
+      hostname:
+        type: string
+      name:
+        type: string
+      os:
+        type: string
+      policy_id:
+        type: string
+      version:
+        type: string
+    type: object
+  fleetapi.EnrollResponse:
+    properties:
+      id:
+        type: string
+      policy:
+        $ref: '#/definitions/fleetapi.Policy'
+    type: object
+  fleetapi.Input:
+    properties:
+      index:
+        type: string
+      interval:
+        type: string
+      paths:
+        items:
+          type: string
+        type: array
+      type:
+        type: string
+    type: object
+  fleetapi.Policy:
+    properties:
+      created_at:
+        type: string
+      description:
+        type: string
+      id:
+        type: string
+      inputs:
+        items:
+          $ref: '#/definitions/fleetapi.Input'
+        type: array
+      name:
+        type: string
+      revision:
+        type: integer
+      updated_at:
+        type: string
     type: object
   index.AnalyzeResponse:
     properties:
@@ -3269,6 +3424,237 @@ paths:
       summary: Add or replace a remote cluster
       tags:
       - Cluster
+  /api/fleet/agents:
+    get:
+      operationId: ListFleetAgents
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/fleetapi.Agent'
+            type: array
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+      security:
+      - BasicAuth: []
+      summary: List enrolled agents
+      tags:
+      - Fleet
+  /api/fleet/agents/{id}:
+    delete:
+      operationId: DeleteFleetAgent
+      parameters:
+      - description: Agent id
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseID'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+      security:
+      - BasicAuth: []
+      summary: Unenroll an agent
+      tags:
+      - Fleet
+  /api/fleet/checkin/{id}:
+    post:
+      consumes:
+      - application/json
+      operationId: FleetCheckin
+      parameters:
+      - description: Agent id
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Status
+        in: body
+        name: checkin
+        required: true
+        schema:
+          $ref: '#/definitions/fleetapi.CheckinRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fleetapi.CheckinResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+      security:
+      - BasicAuth: []
+      summary: Report agent status and fetch a pending policy
+      tags:
+      - Fleet
+  /api/fleet/enroll:
+    post:
+      consumes:
+      - application/json
+      operationId: FleetEnroll
+      parameters:
+      - description: Agent
+        in: body
+        name: agent
+        required: true
+        schema:
+          $ref: '#/definitions/fleetapi.EnrollRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fleetapi.EnrollResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+      security:
+      - BasicAuth: []
+      summary: Enroll an agent under a policy
+      tags:
+      - Fleet
+  /api/fleet/policies:
+    get:
+      operationId: ListFleetPolicies
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/fleetapi.Policy'
+            type: array
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+      security:
+      - BasicAuth: []
+      summary: List agent policies
+      tags:
+      - Fleet
+    post:
+      consumes:
+      - application/json
+      operationId: CreateFleetPolicy
+      parameters:
+      - description: Policy
+        in: body
+        name: policy
+        required: true
+        schema:
+          $ref: '#/definitions/fleetapi.Policy'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseID'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+      security:
+      - BasicAuth: []
+      summary: Create or update an agent policy; agents pick it up on checkin
+      tags:
+      - Fleet
+    put:
+      consumes:
+      - application/json
+      operationId: CreateUpdateFleetPolicy
+      parameters:
+      - description: Policy
+        in: body
+        name: policy
+        required: true
+        schema:
+          $ref: '#/definitions/fleetapi.Policy'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseID'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+      security:
+      - BasicAuth: []
+      summary: Create or update an agent policy; agents pick it up on checkin
+      tags:
+      - Fleet
+  /api/fleet/policies/{id}:
+    delete:
+      operationId: DeleteFleetPolicy
+      parameters:
+      - description: Policy id
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseID'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+      security:
+      - BasicAuth: []
+      summary: Delete an agent policy that no agent uses
+      tags:
+      - Fleet
   /api/index:
     get:
       operationId: ListIndexes
@@ -3750,6 +4136,19 @@ paths:
       summary: Delete user
       tags:
       - User
+  /es/:
+    get:
+      operationId: ESInfo
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/elastic.ESInfo'
+      summary: Get cluster info for compatible ES
+      tags:
+      - Cluster
   /es/_alias:
     get:
       operationId: GetESAliases
@@ -3939,6 +4338,33 @@ paths:
       summary: Update cluster settings (remote clusters only)
       tags:
       - Cluster
+  /es/_count:
+    post:
+      consumes:
+      - application/json
+      operationId: CountAll
+      parameters:
+      - description: Query
+        in: body
+        name: query
+        schema:
+          $ref: '#/definitions/meta.ZedQueryForSDK'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/elastic.CountResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+      security:
+      - BasicAuth: []
+      summary: Count documents of all indexes for compatible ES
+      tags:
+      - Search
   /es/_data_stream/{name}:
     get:
       operationId: GetDataStream
@@ -4356,6 +4782,19 @@ paths:
       summary: Create inference endpoint for compatible ES
       tags:
       - Inference
+  /es/_license:
+    get:
+      operationId: ESLicense
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/elastic.ESLicense'
+      summary: Get license for compatible ES
+      tags:
+      - Cluster
   /es/_ml/trained_models:
     get:
       operationId: GetTrainedModels
@@ -5035,6 +5474,39 @@ paths:
       summary: Remote cluster info
       tags:
       - Cluster
+  /es/_search:
+    post:
+      consumes:
+      - application/json
+      operationId: SearchAll
+      parameters:
+      - description: Query
+        in: body
+        name: query
+        required: true
+        schema:
+          $ref: '#/definitions/meta.ZedQueryForSDK'
+      - description: Answer a cluster search with the parts that succeeded, default
+          zed_cluster_allow_partial_search_results
+        in: query
+        name: allow_partial_search_results
+        type: boolean
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/meta.SearchResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+      security:
+      - BasicAuth: []
+      summary: Search all indexes V2 DSL for compatible ES
+      tags:
+      - Search
   /es/_sql:
     post:
       consumes:
@@ -5345,6 +5817,19 @@ paths:
       summary: Create or update synonym rule for compatible ES
       tags:
       - Synonyms
+  /es/_xpack:
+    get:
+      operationId: ESXPack
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/elastic.ESXPack'
+      summary: Get X-Pack info for compatible ES
+      tags:
+      - Cluster
   /es/{index}:
     head:
       operationId: EsExists
@@ -5423,6 +5908,40 @@ paths:
       summary: Get index alias of indexes for compatible ES
       tags:
       - Index
+  /es/{index}/_bulk:
+    post:
+      consumes:
+      - text/plain
+      operationId: ESBulkIndex
+      parameters:
+      - description: Default index
+        in: path
+        name: index
+        required: true
+        type: string
+      - description: Query
+        in: body
+        name: query
+        required: true
+        schema:
+          type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+      security:
+      - BasicAuth: []
+      summary: ES bulk documents of an index
+      tags:
+      - Document
   /es/{index}/_count:
     post:
       consumes:
@@ -5455,6 +5974,49 @@ paths:
       summary: Count documents for compatible ES
       tags:
       - Search
+  /es/{index}/_create/{id}:
+    put:
+      consumes:
+      - application/json
+      operationId: ESCreateDocument
+      parameters:
+      - description: Index
+        in: path
+        name: index
+        required: true
+        type: string
+      - description: ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Document
+        in: body
+        name: document
+        required: true
+        schema:
+          additionalProperties: true
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseID'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+      security:
+      - BasicAuth: []
+      summary: Create document with id for compatible ES
+      tags:
+      - Document
   /es/{index}/_delete_by_query:
     post:
       consumes:
@@ -5488,6 +6050,149 @@ paths:
       summary: Searches the index and deletes all matched documents
       tags:
       - Search
+  /es/{index}/_doc:
+    post:
+      consumes:
+      - application/json
+      operationId: ESIndexDocument
+      parameters:
+      - description: Index
+        in: path
+        name: index
+        required: true
+        type: string
+      - description: Document
+        in: body
+        name: document
+        required: true
+        schema:
+          additionalProperties: true
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseID'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+      security:
+      - BasicAuth: []
+      summary: Create document for compatible ES
+      tags:
+      - Document
+  /es/{index}/_doc/{id}:
+    delete:
+      operationId: ESDeleteDocument
+      parameters:
+      - description: Index
+        in: path
+        name: index
+        required: true
+        type: string
+      - description: ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseDocument'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+      security:
+      - BasicAuth: []
+      summary: Delete document for compatible ES
+      tags:
+      - Document
+    get:
+      operationId: ESGetDocument
+      parameters:
+      - description: Index
+        in: path
+        name: index
+        required: true
+        type: string
+      - description: ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/meta.Hit'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+      security:
+      - BasicAuth: []
+      summary: Get document with id for compatible ES
+      tags:
+      - Document
+    put:
+      consumes:
+      - application/json
+      operationId: ESIndexDocumentWithID
+      parameters:
+      - description: Index
+        in: path
+        name: index
+        required: true
+        type: string
+      - description: ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Document
+        in: body
+        name: document
+        required: true
+        schema:
+          additionalProperties: true
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseID'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+      security:
+      - BasicAuth: []
+      summary: Create or update document with id for compatible ES
+      tags:
+      - Document
   /es/{index}/_field_caps:
     post:
       consumes:
@@ -5600,6 +6305,73 @@ paths:
       summary: Get index mappings for compatible ES
       tags:
       - Index
+  /es/{index}/_msearch:
+    post:
+      consumes:
+      - text/plain
+      operationId: MSearchIndex
+      parameters:
+      - description: Default indexes, comma separated
+        in: path
+        name: index
+        required: true
+        type: string
+      - description: Query
+        in: body
+        name: query
+        required: true
+        schema:
+          type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: One result per query; a failed query has error set
+          schema:
+            properties:
+              responses:
+                items:
+                  $ref: '#/definitions/meta.SearchResponse'
+                type: array
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+      security:
+      - BasicAuth: []
+      summary: Search V2 MultipleSearch of indexes for compatible ES
+      tags:
+      - Search
+  /es/{index}/_refresh:
+    post:
+      operationId: ESRefresh
+      parameters:
+      - description: Index
+        in: path
+        name: index
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/meta.HTTPResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+      security:
+      - BasicAuth: []
+      summary: Refresh index for compatible ES
+      tags:
+      - Index
   /es/{index}/_reload_search_analyzers:
     post:
       operationId: ReloadSearchAnalyzers
@@ -5630,6 +6402,8 @@ paths:
     post:
       consumes:
       - application/json
+      description: Index may be a comma separated list, a pattern, or `alias:index`
+        for a remote cluster search.
       operationId: Search
       parameters:
       - description: Index
@@ -5643,6 +6417,11 @@ paths:
         required: true
         schema:
           $ref: '#/definitions/meta.ZedQueryForSDK'
+      - description: Answer a cluster search with the parts that succeeded, default
+          zed_cluster_allow_partial_search_results
+        in: query
+        name: allow_partial_search_results
+        type: boolean
       produces:
       - application/json
       responses:
@@ -5659,6 +6438,49 @@ paths:
       summary: Search V2 DSL for compatible ES
       tags:
       - Search
+  /es/{index}/_update/{id}:
+    post:
+      consumes:
+      - application/json
+      operationId: ESUpdateDocument
+      parameters:
+      - description: Index
+        in: path
+        name: index
+        required: true
+        type: string
+      - description: ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Document
+        in: body
+        name: document
+        required: true
+        schema:
+          additionalProperties: true
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseID'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/meta.HTTPResponseError'
+      security:
+      - BasicAuth: []
+      summary: Update document with id for compatible ES
+      tags:
+      - Document
   /healthz:
     get:
       operationId: Healthz
