@@ -141,12 +141,20 @@ go + gin (oder fiber v3 mit `-tags fiber`) + react
 14. SQL-Abfragen über die Elasticsearch-SQL-API (`/es/_sql`, `/api/_sql`, `/es/_sql/translate`): `SELECT … WHERE` (`LIKE`, `IN`, `BETWEEN`, `IS NULL`, `MATCH()`, `QUERY()`), `COUNT`/`SUM`/`AVG`/`MIN`/`MAX`, `GROUP BY` (`HISTOGRAM`, `DATE_HISTOGRAM`), `HAVING`, `ORDER BY`, `LIMIT`, Ausgabe als JSON, txt, csv oder tsv; und [MySQL-`CREATE TABLE`-Schemas als Mappings](../docs/sql-mappings.md)
 15. Hochverfügbarer [Cluster](../pkg/cluster/README.md): über etcd koordinierter Partitionsbesitz, Übergabe mit Fencing, Replikate und Scatter-Gather-Suche
 16. OpenTelemetry-Tracing über OTLP/HTTP (`zed_tracing_enable`); jede Anfrage erhält eine `X-Trace-Id`, die ihr über alle Knoten folgt
-17. Fleet und `zedagent` (`agent/`): Agents registrieren, Richtlinien verwalten, Logdateien und Systemmetriken senden oder den Agent eigenständig betreiben
-18. robots-konformer [Web-Crawler](../pkg/crawler/README.md) (`cmd/zedcrawl`) mit PageRank und Bulk-Indizierung in ZedSearch
-19. Daten-Tiers: hot (lokale Festplatte), warm (Objektspeicher) und cold (schreibgeschützter, von allen Knoten geteilter Objektspeicher), umgeschaltet über `/api/index/{index}/_tier` oder den Index-Lebenszyklus (`warm_after`, `cold_after`, `delete_after`) und ILM-Richtlinien (`/es/_ilm/policy`)
-20. Synonym-Sets (`/es/_synonyms`) mit Neuladen der Such-Analyzer sowie Query-Regeln (`/es/_query_rules`), die Dokumente anheften oder ausschließen
-21. [Learning to rank](../docs/learning-to-rank.md)-Rescoring mit linearen, Baum- und XGBoost-Modellen (`/es/_ml/trained_models`), in reinem Go ausgewertet
-22. Weitere Elasticsearch-APIs: `_msearch`, `_count`, `_delete_by_query`, `_reindex`, `_field_caps`, Aliase, Index-Templates, `_cat/indices`, `_cat/health` und `_cluster/health`
+17. Daten-Tiers: hot (lokale Festplatte), warm (Objektspeicher) und cold (schreibgeschützter, von allen Knoten geteilter Objektspeicher), umgeschaltet über `/api/index/{index}/_tier` oder den Index-Lebenszyklus (`warm_after`, `cold_after`, `delete_after`) und ILM-Richtlinien (`/es/_ilm/policy`)
+18. Synonym-Sets (`/es/_synonyms`) mit Neuladen der Such-Analyzer sowie Query-Regeln (`/es/_query_rules`), die Dokumente anheften oder ausschließen
+19. [Learning to rank](../docs/learning-to-rank.md)-Rescoring mit linearen, Baum- und XGBoost-Modellen (`/es/_ml/trained_models`), in reinem Go ausgewertet
+20. Weitere Elasticsearch-APIs: `_msearch`, `_count`, `_delete_by_query`, `_reindex`, `_field_caps`, Aliase, Index-Templates, `_cat/indices`, `_cat/health` und `_cluster/health`
+
+## Enterprise
+
+1. Clusterübergreifende Suche (CCS): Remote-Cluster registrieren (`/api/cluster/remotes`, `/es/_cluster/settings`, `/es/_remote/info`) und mit `/es/<alias>:<index>/_search` durchsuchen
+2. Clusterübergreifende Replikation (CCR): Follower-Indizes und Auto-Follow-Muster über die OpenSearch-Replikations-API (`/es/_plugins/_replication/{index}/_start`, `_pause`, `_resume`, `_stop`, `_status`, `_autofollow`)
+3. Scale-out eines einzelnen Index über den [Cluster](../pkg/cluster/README.md#scale-out-of-a-single-index): `settings.cluster_shards` verteilt einen Index auf Shard-Indizes mit eigenen Ownern und Replikaten, routet Dokumente nach ID, führt Scatter-Gather-Suchen aus und summiert `_count` / `_delete_by_query`; `_cluster/health?level=indices|shards` und optionale Teilergebnisse bei Suchen
+4. Inferenz-Endpunkte (`/es/_inference`): Text-Embeddings und Rerank mit OpenAI-kompatiblen (Ollama, vLLM, LocalAI), Cohere-, Jina- und Hugging-Face-TEI-Diensten; `semantic_text`-Felder, `semantic`- und `neural`-Abfragen, der `text_similarity_reranker`-Retriever und der OpenSearch-`rerank`-Response-Processor
+5. Fleet und `zedagent` (`agent/`): Agents registrieren, Richtlinien verwalten, Logdateien und Systemmetriken senden oder den Agent eigenständig betreiben; Fleet-Ansicht in der Web-UI
+6. Shard-[Cluster-Engine](../pkg/nodes/README.md) im OpenSearch-Stil (Shard-Allokation, Quorum-Koordination, Peer-Recovery, Snapshots, Hot/Warm-Tiering) und ein experimenteller Raft + gRPC [verteilter Knoten](../cmd/distribution/README.md)
+7. robots-konformer [Web-Crawler](../pkg/crawler/README.md) (`cmd/zedcrawl`) mit PageRank und Bulk-Indizierung in ZedSearch
 
 # Benchmarks
 

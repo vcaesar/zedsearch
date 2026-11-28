@@ -141,12 +141,20 @@ go + gin (or fiber v3 with `-tags fiber`) + react
 1. SQL queries through the Elasticsearch SQL API (`/es/_sql`, `/api/_sql`, `/es/_sql/translate`): `SELECT` with `WHERE` (`LIKE`, `IN`, `BETWEEN`, `IS NULL`, `MATCH()`, `QUERY()`), `COUNT`/`SUM`/`AVG`/`MIN`/`MAX`, `GROUP BY` (`HISTOGRAM`, `DATE_HISTOGRAM`), `HAVING`, `ORDER BY`, `LIMIT`, with JSON, txt, csv or tsv output; and MySQL `CREATE TABLE` [schemas as mappings](./docs/sql-mappings.md)
 1. High-availability [cluster](./pkg/cluster/README.md): etcd-coordinated partition ownership, fenced handoff, replicas and scatter-gather search
 1. OpenTelemetry tracing over OTLP/HTTP (`zed_tracing_enable`); every request gets an `X-Trace-Id` that follows it across nodes
-1. Fleet and `zedagent` (`agent/`): enroll agents, manage policies, ship log files and system metrics, or run the agent standalone
-1. Robots-aware [web crawler](./pkg/crawler/README.md) (`cmd/zedcrawl`) with PageRank and bulk indexing into ZedSearch
 1. Data tiers: hot (local disk), warm (object storage) and cold (read-only object storage shared by every node), switched with `/api/index/{index}/_tier` or by index lifecycle (`warm_after`, `cold_after`, `delete_after`) and ILM policies (`/es/_ilm/policy`)
 1. Synonyms sets (`/es/_synonyms`) with search analyzer reload, and query rules (`/es/_query_rules`) that pin or exclude documents
 1. [Learning to rank](./docs/learning-to-rank.md) rescoring with linear, tree and XGBoost models (`/es/_ml/trained_models`), evaluated in pure Go
 1. More Elasticsearch APIs: `_msearch`, `_count`, `_delete_by_query`, `_reindex`, `_field_caps`, aliases, index templates, `_cat/indices`, `_cat/health` and `_cluster/health`
+
+## Enterprise
+
+1. Cross-cluster search (CCS): register remote clusters (`/api/cluster/remotes`, `/es/_cluster/settings`, `/es/_remote/info`) and search them with `/es/<alias>:<index>/_search`
+1. Cross-cluster replication (CCR): follower indexes and auto-follow patterns over the OpenSearch replication API (`/es/_plugins/_replication/{index}/_start`, `_pause`, `_resume`, `_stop`, `_status`, `_autofollow`)
+1. Scale-out of a single index across the [cluster](./pkg/cluster/README.md#scale-out-of-a-single-index): `settings.cluster_shards` spreads an index over shard indexes with their own owners and replicas, routes documents by id, scatter-gathers searches and sums `_count` / `_delete_by_query`; `_cluster/health?level=indices|shards` and optional partial search results
+1. Inference endpoints (`/es/_inference`): text embedding and rerank with OpenAI-compatible (Ollama, vLLM, LocalAI), Cohere, Jina and Hugging Face TEI services; `semantic_text` fields, `semantic` and `neural` queries, the `text_similarity_reranker` retriever and the OpenSearch `rerank` response processor
+1. Fleet and `zedagent` (`agent/`): enroll agents, manage policies, ship log files and system metrics, or run the agent standalone; Fleet view in the web UI
+1. OpenSearch-style shard [cluster engine](./pkg/nodes/README.md) (shard allocation, quorum coordination, peer recovery, snapshots, hot/warm tiering) and an experimental Raft + gRPC [distributed node](./cmd/distribution/README.md)
+1. Robots-aware [web crawler](./pkg/crawler/README.md) (`cmd/zedcrawl`) with PageRank and bulk indexing into ZedSearch
 
 # Benchmarks
 

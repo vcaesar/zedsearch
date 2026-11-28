@@ -141,12 +141,20 @@ go + gin (или fiber v3 с `-tags fiber`) + react
 14. SQL-запросы через Elasticsearch SQL API (`/es/_sql`, `/api/_sql`, `/es/_sql/translate`): `SELECT … WHERE` (`LIKE`, `IN`, `BETWEEN`, `IS NULL`, `MATCH()`, `QUERY()`), `COUNT`/`SUM`/`AVG`/`MIN`/`MAX`, `GROUP BY` (`HISTOGRAM`, `DATE_HISTOGRAM`), `HAVING`, `ORDER BY`, `LIMIT`, вывод в JSON, txt, csv или tsv; и [схемы MySQL `CREATE TABLE` в качестве маппингов](../docs/sql-mappings.md)
 15. Отказоустойчивый [кластер](../pkg/cluster/README.md): владение партициями через etcd, передача с fencing, реплики и scatter-gather поиск
 16. Трассировка OpenTelemetry через OTLP/HTTP (`zed_tracing_enable`); каждый запрос получает `X-Trace-Id`, который передаётся между узлами
-17. Fleet и `zedagent` (`agent/`): регистрация агентов, управление политиками, отправка лог-файлов и системных метрик или автономный режим агента
-18. [Веб-краулер](../pkg/crawler/README.md) с учётом robots.txt (`cmd/zedcrawl`), PageRank и bulk-индексацией в ZedSearch
-19. Уровни данных: hot (локальный диск), warm (объектное хранилище) и cold (объектное хранилище только для чтения, общее для всех узлов), переключаются через `/api/index/{index}/_tier` или жизненный цикл индекса (`warm_after`, `cold_after`, `delete_after`) и политики ILM (`/es/_ilm/policy`)
-20. Наборы синонимов (`/es/_synonyms`) с перезагрузкой поисковых анализаторов и правила запросов (`/es/_query_rules`), закрепляющие или исключающие документы
-21. Переранжирование [Learning to rank](../docs/learning-to-rank.md) линейными, древовидными и XGBoost-моделями (`/es/_ml/trained_models`) на чистом Go
-22. Другие API Elasticsearch: `_msearch`, `_count`, `_delete_by_query`, `_reindex`, `_field_caps`, алиасы, шаблоны индексов, `_cat/indices`, `_cat/health` и `_cluster/health`
+17. Уровни данных: hot (локальный диск), warm (объектное хранилище) и cold (объектное хранилище только для чтения, общее для всех узлов), переключаются через `/api/index/{index}/_tier` или жизненный цикл индекса (`warm_after`, `cold_after`, `delete_after`) и политики ILM (`/es/_ilm/policy`)
+18. Наборы синонимов (`/es/_synonyms`) с перезагрузкой поисковых анализаторов и правила запросов (`/es/_query_rules`), закрепляющие или исключающие документы
+19. Переранжирование [Learning to rank](../docs/learning-to-rank.md) линейными, древовидными и XGBoost-моделями (`/es/_ml/trained_models`) на чистом Go
+20. Другие API Elasticsearch: `_msearch`, `_count`, `_delete_by_query`, `_reindex`, `_field_caps`, алиасы, шаблоны индексов, `_cat/indices`, `_cat/health` и `_cluster/health`
+
+## Enterprise
+
+1. Межкластерный поиск (CCS): регистрация удалённых кластеров (`/api/cluster/remotes`, `/es/_cluster/settings`, `/es/_remote/info`) и поиск через `/es/<alias>:<index>/_search`
+2. Межкластерная репликация (CCR): индексы-последователи и шаблоны автоподписки через API репликации OpenSearch (`/es/_plugins/_replication/{index}/_start`, `_pause`, `_resume`, `_stop`, `_status`, `_autofollow`)
+3. Горизонтальное масштабирование одного индекса по [кластеру](../pkg/cluster/README.md#scale-out-of-a-single-index): `settings.cluster_shards` распределяет индекс по шард-индексам со своими владельцами и репликами, маршрутизирует документы по id, выполняет scatter-gather поиск и суммирует `_count` / `_delete_by_query`; `_cluster/health?level=indices|shards` и опциональные частичные результаты поиска
+4. Эндпоинты инференса (`/es/_inference`): текстовые эмбеддинги и rerank через OpenAI-совместимые (Ollama, vLLM, LocalAI), Cohere, Jina и Hugging Face TEI сервисы; поля `semantic_text`, запросы `semantic` и `neural`, ретривер `text_similarity_reranker` и обработчик ответа OpenSearch `rerank`
+5. Fleet и `zedagent` (`agent/`): регистрация агентов, управление политиками, отправка лог-файлов и системных метрик или автономный режим агента; раздел Fleet в веб-интерфейсе
+6. Шардовый [кластерный движок](../pkg/nodes/README.md) в стиле OpenSearch (размещение шардов, кворумная координация, восстановление с пиров, снапшоты, уровни hot/warm) и экспериментальный Raft + gRPC [распределённый узел](../cmd/distribution/README.md)
+7. [Веб-краулер](../pkg/crawler/README.md) с учётом robots.txt (`cmd/zedcrawl`), PageRank и bulk-индексацией в ZedSearch
 
 # Бенчмарки
 

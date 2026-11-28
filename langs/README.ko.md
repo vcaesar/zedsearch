@@ -141,12 +141,20 @@ go + gin (`-tags fiber`로 fiber v3 사용 가능) + react
 14. Elasticsearch SQL API(`/es/_sql`, `/api/_sql`, `/es/_sql/translate`)를 통한 SQL 쿼리: `SELECT … WHERE` (`LIKE`, `IN`, `BETWEEN`, `IS NULL`, `MATCH()`, `QUERY()`), `COUNT`/`SUM`/`AVG`/`MIN`/`MAX`, `GROUP BY` (`HISTOGRAM`, `DATE_HISTOGRAM`), `HAVING`, `ORDER BY`, `LIMIT`, JSON·txt·csv·tsv 출력, MySQL `CREATE TABLE` [스키마를 매핑으로 사용](../docs/sql-mappings.md)
 15. 고가용성 [클러스터](../pkg/cluster/README.md): etcd로 조정되는 파티션 소유권, 펜싱 핸드오프, 레플리카, scatter-gather 검색
 16. OTLP/HTTP 기반 OpenTelemetry 추적(`zed_tracing_enable`). 모든 요청에 노드 간에 전달되는 `X-Trace-Id` 부여
-17. Fleet 및 `zedagent`(`agent/`): 에이전트 등록, 정책 관리, 로그 파일과 시스템 메트릭 전송, 단독 실행도 지원
-18. robots를 준수하는 [웹 크롤러](../pkg/crawler/README.md)(`cmd/zedcrawl`), PageRank 계산 및 ZedSearch 벌크 색인 지원
-19. 데이터 티어: hot(로컬 디스크), warm(오브젝트 스토리지), cold(모든 노드가 공유하는 읽기 전용 오브젝트 스토리지), `/api/index/{index}/_tier` 또는 인덱스 수명 주기(`warm_after`, `cold_after`, `delete_after`)와 ILM 정책(`/es/_ilm/policy`)으로 전환
-20. 검색 분석기 재로드를 지원하는 동의어 세트(`/es/_synonyms`), 문서를 고정하거나 제외하는 쿼리 규칙(`/es/_query_rules`)
-21. 선형, 트리, XGBoost 모델(`/es/_ml/trained_models`)을 사용하는 [Learning to rank](../docs/learning-to-rank.md) 재점수화, 순수 Go로 평가
-22. 추가 Elasticsearch API: `_msearch`, `_count`, `_delete_by_query`, `_reindex`, `_field_caps`, 별칭, 인덱스 템플릿, `_cat/indices`, `_cat/health`, `_cluster/health`
+17. 데이터 티어: hot(로컬 디스크), warm(오브젝트 스토리지), cold(모든 노드가 공유하는 읽기 전용 오브젝트 스토리지), `/api/index/{index}/_tier` 또는 인덱스 수명 주기(`warm_after`, `cold_after`, `delete_after`)와 ILM 정책(`/es/_ilm/policy`)으로 전환
+18. 검색 분석기 재로드를 지원하는 동의어 세트(`/es/_synonyms`), 문서를 고정하거나 제외하는 쿼리 규칙(`/es/_query_rules`)
+19. 선형, 트리, XGBoost 모델(`/es/_ml/trained_models`)을 사용하는 [Learning to rank](../docs/learning-to-rank.md) 재점수화, 순수 Go로 평가
+20. 추가 Elasticsearch API: `_msearch`, `_count`, `_delete_by_query`, `_reindex`, `_field_caps`, 별칭, 인덱스 템플릿, `_cat/indices`, `_cat/health`, `_cluster/health`
+
+## 엔터프라이즈
+
+1. 클러스터 간 검색(CCS): 원격 클러스터를 등록하고(`/api/cluster/remotes`, `/es/_cluster/settings`, `/es/_remote/info`) `/es/<alias>:<index>/_search`로 검색
+2. 클러스터 간 복제(CCR): OpenSearch 복제 API 기반 팔로워 인덱스와 자동 팔로우 패턴(`/es/_plugins/_replication/{index}/_start`, `_pause`, `_resume`, `_stop`, `_status`, `_autofollow`)
+3. [클러스터](../pkg/cluster/README.md#scale-out-of-a-single-index) 전체에 걸친 단일 인덱스 스케일 아웃: `settings.cluster_shards`로 인덱스를 각자 소유자와 복제본을 갖는 샤드 인덱스로 분산, ID 기반 문서 라우팅, scatter-gather 검색, `_count` / `_delete_by_query` 합산, `_cluster/health?level=indices|shards` 및 선택적 부분 검색 결과
+4. 추론 엔드포인트(`/es/_inference`): OpenAI 호환(Ollama, vLLM, LocalAI), Cohere, Jina, Hugging Face TEI 서비스로 텍스트 임베딩과 리랭크, `semantic_text` 필드, `semantic` 및 `neural` 쿼리, `text_similarity_reranker` 리트리버, OpenSearch `rerank` 응답 프로세서
+5. Fleet 및 `zedagent`(`agent/`): 에이전트 등록, 정책 관리, 로그 파일과 시스템 메트릭 전송, 단독 실행도 지원; 웹 UI의 Fleet 화면
+6. OpenSearch 스타일 샤드 [클러스터 엔진](../pkg/nodes/README.md)(샤드 할당, 쿼럼 조정, 피어 복구, 스냅샷, 핫/웜 티어링)과 실험적인 Raft + gRPC [분산 노드](../cmd/distribution/README.md)
+7. robots를 준수하는 [웹 크롤러](../pkg/crawler/README.md)(`cmd/zedcrawl`), PageRank 계산 및 ZedSearch 벌크 색인 지원
 
 # 벤치마크
 
