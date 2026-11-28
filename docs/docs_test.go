@@ -16,6 +16,7 @@
 package docs
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -54,6 +55,7 @@ func TestSwaggerSpec(t *testing.T) {
 	for _, field := range []string{"knn", "retriever", "search_pipeline"} {
 		assert.Contains(t, s.Definitions["meta.ZedQueryForSDK"].Properties, field)
 	}
+	assert.Contains(t, fmt.Sprint(s.Definitions["cluster.RemoteCluster"].Properties["password"]), "write only")
 
 	const errRef = "#/definitions/meta.HTTPResponseError"
 	tests := []struct {

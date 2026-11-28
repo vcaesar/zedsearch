@@ -6700,6 +6700,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "password": {
+                    "description": "write only: listing answers \"******\", writing \"******\" or \"\" keeps the stored one",
                     "type": "string"
                 },
                 "seeds": {

@@ -192,6 +192,8 @@ definitions:
       alias:
         type: string
       password:
+        description: 'write only: listing answers "******", writing "******" or ""
+          keeps the stored one'
         type: string
       seeds:
         description: Seeds are http(s) addresses of nodes of the remote cluster.
